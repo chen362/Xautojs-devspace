@@ -271,6 +271,32 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     return result.rows.map(rowToLoadedAgentFile);
   }
 
+  async deleteSession(id: string, owner: WorkspaceIdentity): Promise<boolean> {
+    const result = await this.query({
+      text: `
+        delete from workspace_sessions
+        where id = $1
+          and tenant_id = $2
+          and user_id = $3
+      `,
+      values: [id, owner.tenantId, owner.userId],
+    });
+
+    return result.rowCount > 0;
+  }
+
+  async deleteExpiredSessions(cutoff: string): Promise<number> {
+    const result = await this.query({
+      text: `
+        delete from workspace_sessions
+        where last_used_at < $1::timestamptz
+      `,
+      values: [cutoff],
+    });
+
+    return result.rowCount;
+  }
+
   async touchSession(id: string, owner: WorkspaceIdentity): Promise<void> {
     await this.query({
       text: `
