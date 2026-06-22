@@ -1,10 +1,12 @@
 import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
-import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 
-export type SqliteDatabase = Database.Database;
+const require = createRequire(import.meta.url);
+
+export type SqliteDatabase = import("better-sqlite3").Database;
 export type AppDatabase = ReturnType<typeof createDrizzleDatabase>;
 
 export interface DatabaseHandle {
@@ -19,6 +21,7 @@ export function databasePath(stateDir: string): string {
 
 export function openDatabase(stateDir: string): DatabaseHandle {
   mkdirSync(stateDir, { recursive: true });
+  const Database = require("better-sqlite3") as typeof import("better-sqlite3");
   const sqlite = new Database(databasePath(stateDir));
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
