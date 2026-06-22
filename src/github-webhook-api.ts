@@ -341,8 +341,12 @@ export async function handleGithubWebhook(
       },
       status: route.shouldQueue ? "accepted" : "rejected",
     });
+    const routing = record.outcome === "duplicate"
+      ? routingFromRecordedEvent(record.event, route.routing)
+      : route.routing;
+    const shouldQueue = record.outcome === "duplicate" ? record.event.status === "accepted" : route.shouldQueue;
 
-    if (!route.shouldQueue) {
+    if (!shouldQueue) {
       return {
         statusCode: 202,
         body: {
@@ -352,13 +356,13 @@ export async function handleGithubWebhook(
           dedupeGuaranteed: true,
           githubEvent: webhook.githubEvent,
           githubDelivery: webhook.githubDelivery,
-          routing: route.routing,
+          routing,
           createdAt: record.event.receivedAt,
         },
       };
     }
 
-    const run = await getOrCreateRunForEvent(input.store, owner, record.event, webhook, route.routing);
+    const run = await getOrCreateRunForEvent(input.store, owner, record.event, webhook, routing);
 
     return {
       statusCode: 202,
@@ -370,7 +374,7 @@ export async function handleGithubWebhook(
         dedupeGuaranteed: true,
         githubEvent: webhook.githubEvent,
         githubDelivery: webhook.githubDelivery,
-        routing: route.routing,
+        routing,
         createdAt: run.createdAt,
       },
     };
@@ -674,6 +678,48 @@ function policyStringArray(value: JsonValue, field: string): string[] {
 
 function invalidGithubPolicy(message: string, details?: Record<string, unknown>): GithubWebhookHttpError {
   return new GithubWebhookHttpError(500, "GITHUB_WEBHOOK_POLICY_INVALID", message, false, details);
+}
+
+function routingFromRecordedEvent(
+  event: AutomationEvent,
+  fallback: GithubWebhookRoutingSummary,
+): GithubWebhookRoutingSummary {
+  const decision = routingDecisionFromEvent(event, fallback);
+  const reason = decision === "ignored" ? metadataRoutingReason(event.metadata.routingReason) ?? fallback.reason : undefined;
+  const repository = metadataString(event.metadata.repository) ?? fallback.repository;
+  const branch = metadataString(event.metadata.branch) ?? fallback.branch;
+
+  return {
+    decision,
+    eventType: event.eventType || fallback.eventType,
+    ...(reason ? { reason } : {}),
+    ...(repository ? { repository } : {}),
+    ...(branch ? { branch } : {}),
+  };
+}
+
+function routingDecisionFromEvent(
+  event: AutomationEvent,
+  fallback: GithubWebhookRoutingSummary,
+): GithubWebhookRoutingDecision {
+  if (event.status === "accepted") return "queued";
+  if (event.status === "rejected") return "ignored";
+  return metadataRoutingDecision(event.metadata.routingDecision) ?? fallback.decision;
+}
+
+function metadataRoutingDecision(value: JsonValue | undefined): GithubWebhookRoutingDecision | undefined {
+  return value === "queued" || value === "ignored" ? value : undefined;
+}
+
+function metadataRoutingReason(value: JsonValue | undefined): GithubWebhookRoutingReason | undefined {
+  if (value === "event_not_routable" || value === "repository_not_allowed" || value === "branch_not_allowed") {
+    return value;
+  }
+  return undefined;
+}
+
+function metadataString(value: JsonValue | undefined): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 async function getOrCreateRunForEvent(
