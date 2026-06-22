@@ -160,6 +160,18 @@ export interface CreateAutomationSourceInput {
   config?: JsonObject;
 }
 
+export interface ListAutomationSourcesInput {
+  owner: WorkspaceIdentity;
+  kind?: AutomationSourceKind;
+  status?: AutomationSourceStatus;
+}
+
+export interface RotateAutomationSourceTokenInput {
+  owner: WorkspaceIdentity;
+  id: string;
+  tokenHash: string;
+}
+
 export interface RecordAutomationEventInput {
   owner: WorkspaceIdentity;
   id: string;
@@ -344,6 +356,75 @@ export class PostgresAutomationStore {
         limit 1
       `,
       values: [input.triggerId, input.tokenHash],
+    });
+
+    const row = result.rows[0];
+    return row ? rowToAutomationSource(row) : undefined;
+  }
+
+  async listSources(input: ListAutomationSourcesInput): Promise<AutomationSource[]> {
+    const result = await this.query<AutomationSourceRow>({
+      text: `
+        select
+          id,
+          tenant_id,
+          user_id,
+          kind,
+          name,
+          status,
+          secret_ref,
+          token_hash,
+          config,
+          created_at,
+          updated_at
+        from automation_sources
+        where tenant_id = $1
+          and user_id = $2
+          and ($3::text is null or kind = $3)
+          and ($4::text is null or status = $4)
+        order by updated_at desc, id asc
+      `,
+      values: [
+        input.owner.tenantId,
+        input.owner.userId,
+        input.kind ?? null,
+        input.status ?? null,
+      ],
+    });
+
+    return result.rows.map(rowToAutomationSource);
+  }
+
+  async rotateSourceToken(input: RotateAutomationSourceTokenInput): Promise<AutomationSource | undefined> {
+    const now = new Date().toISOString();
+    const result = await this.query<AutomationSourceRow>({
+      text: `
+        update automation_sources
+        set token_hash = $4,
+            updated_at = $5::timestamptz
+        where id = $1
+          and tenant_id = $2
+          and user_id = $3
+        returning
+          id,
+          tenant_id,
+          user_id,
+          kind,
+          name,
+          status,
+          secret_ref,
+          token_hash,
+          config,
+          created_at,
+          updated_at
+      `,
+      values: [
+        input.id,
+        input.owner.tenantId,
+        input.owner.userId,
+        input.tokenHash,
+        now,
+      ],
     });
 
     const row = result.rows[0];
