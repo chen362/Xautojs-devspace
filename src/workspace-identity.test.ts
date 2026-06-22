@@ -4,8 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { createOidcIdentity } from "./identity.js";
-import { SqliteWorkspaceStore } from "./workspace-store.js";
+import { PostgresWorkspaceStore } from "./postgres-workspace-store.js";
+import { createWorkspaceStore, SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
+
+const postgresStore = createWorkspaceStore({
+  provider: "postgres",
+  url: "postgres://devspace:secret@db.example.com:5432/devspace",
+  sslMode: "require",
+});
+assert.equal(postgresStore instanceof PostgresWorkspaceStore, true);
+postgresStore.close?.();
 
 const root = await mkdtemp(join(tmpdir(), "devspace-workspace-identity-test-"));
 const stateDir = join(root, ".state");
