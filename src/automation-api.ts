@@ -124,7 +124,7 @@ export function registerAutomationApiRoutes(
 
     const result = await fireAutomationTrigger({
       store,
-      triggerId: request.params.triggerId ?? "",
+      triggerId: routeParam(request.params.triggerId),
       authorization: request.get("authorization"),
       idempotencyKey: request.get("idempotency-key"),
       body: request.body,
@@ -252,6 +252,11 @@ function jsonParserStatusCode(error: unknown): number {
     if (status === 413) return 413;
   }
   return 400;
+}
+
+function routeParam(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] ?? "";
+  return value ?? "";
 }
 
 async function getOrCreateRunForEvent(
