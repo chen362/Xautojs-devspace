@@ -91,8 +91,7 @@ try {
     mode: "worktree",
   });
   await firstStore.close();
-  await writeFile(join(root, "AGENTS.md"), "changed root instructions
-");
+  await writeFile(join(root, "AGENTS.md"), "changed root instructions\n");
 
   const secondStore = new SqliteWorkspaceStore(stateDir);
   const restoredRegistry = new WorkspaceRegistry(config, secondStore);
@@ -101,9 +100,7 @@ try {
   assert.equal(restoredWorkspace.mode, "checkout");
   assert.deepEqual(
     restoredWorkspace.agentsFiles.map((file) => file.content),
-    ["global instructions
-", "root instructions
-"],
+    ["global instructions\n", "root instructions\n"],
   );
   assert.deepEqual(
     restoredWorkspace.availableAgentsFiles.map((file) => file.path),
