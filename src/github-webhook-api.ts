@@ -1,19 +1,19 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { ServerConfig } from "./config.js";
-import { isPostgresDatabaseConfig } from "./db/types.js";
+import { isPostgresDatabaseConfig, type PostgresDatabaseConfig } from "./db/types.js";
 import type { WorkspaceIdentity } from "./identity.js";
 import {
   AutomationIdempotencyConflictError,
   AutomationStoreError,
   PostgresAutomationStore,
+  PostgresAutomationStoreQueryError,
   type AutomationEvent,
   type AutomationEventRecordResult,
   type AutomationRun,
   type AutomationSource,
   type CreateAutomationRunInput,
   type JsonObject,
-  type JsonPrimitive,
   type JsonValue,
   type RecordAutomationEventInput,
 } from "./postgres-automation-store.js";
@@ -27,6 +27,44 @@ const ENV_SECRET_REF_PATTERN = /^env:([A-Za-z_][A-Za-z0-9_]*)$/;
 const MAX_SECRET_LENGTH = 4096;
 const MAX_SIGNATURE_LENGTH = 200;
 const MAX_EVENT_TYPE_SEGMENT_LENGTH = 100;
+
+type QueryValue = string | boolean | number | null;
+
+interface PgPoolResult<Row> {
+  rows: Row[];
+  rowCount: number | null;
+}
+
+interface PgPool {
+  query<Row = Record<string, unknown>>(
+    text: string,
+    values?: QueryValue[],
+  ): Promise<PgPoolResult<Row>>;
+  end(): Promise<void>;
+}
+
+interface PgPoolConstructor {
+  new (config: {
+    connectionString: string;
+    ssl?: boolean | { rejectUnauthorized: boolean };
+    application_name: string;
+    max: number;
+  }): PgPool;
+}
+
+interface AutomationSourceRow {
+  id: string;
+  tenant_id: string;
+  user_id: string;
+  kind: string;
+  name: string;
+  status: string;
+  secret_ref: string | null;
+  token_hash: string | null;
+  config: unknown;
+  created_at: string | Date;
+  updated_at: string | Date;
+}
 
 export interface GithubWebhookAcceptedResponse {
   automationRunId: string;
@@ -106,13 +144,80 @@ class GithubWebhookHttpError extends Error {
   }
 }
 
+class PostgresGithubWebhookStore implements GithubWebhookStore {
+  private readonly automationStore: PostgresAutomationStore;
+  private poolPromise: Promise<PgPool> | undefined;
+
+  constructor(private readonly config: PostgresDatabaseConfig) {
+    this.automationStore = new PostgresAutomationStore(config);
+  }
+
+  async getGithubWebhookSource(id: string): Promise<AutomationSource | undefined> {
+    const result = await this.query<AutomationSourceRow>(
+      `
+        select
+          id,
+          tenant_id,
+          user_id,
+          kind,
+          name,
+          status,
+          secret_ref,
+          token_hash,
+          config,
+          created_at,
+          updated_at
+        from automation_sources
+        where id = $1
+          and kind = 'github_webhook'
+        limit 1
+      `,
+      [id],
+    );
+
+    const row = result.rows[0];
+    return row ? rowToAutomationSource(row) : undefined;
+  }
+
+  async recordEvent(input: RecordAutomationEventInput): Promise<AutomationEventRecordResult> {
+    return this.automationStore.recordEvent(input);
+  }
+
+  async getRunForEvent(eventId: string, owner: WorkspaceIdentity): Promise<AutomationRun | undefined> {
+    return this.automationStore.getRunForEvent(eventId, owner);
+  }
+
+  async createRun(input: CreateAutomationRunInput): Promise<AutomationRun> {
+    return this.automationStore.createRun(input);
+  }
+
+  async close(): Promise<void> {
+    const poolPromise = this.poolPromise;
+    this.poolPromise = undefined;
+    await Promise.all([
+      this.automationStore.close(),
+      poolPromise ? poolPromise.then((pool) => pool.end()) : Promise.resolve(),
+    ]);
+  }
+
+  private async query<Row>(text: string, values: QueryValue[]): Promise<PgPoolResult<Row>> {
+    const pool = await this.pool();
+    return pool.query<Row>(text, values);
+  }
+
+  private pool(): Promise<PgPool> {
+    this.poolPromise ??= createPool(this.config);
+    return this.poolPromise;
+  }
+}
+
 export function registerGithubWebhookRoutes(
   app: Express,
   config: Pick<ServerConfig, "database">,
   options: GithubWebhookRouteOptions = {},
 ): GithubWebhookRouteRegistration {
   const store = options.store ?? (isPostgresDatabaseConfig(config.database)
-    ? new PostgresAutomationStore(config.database)
+    ? new PostgresGithubWebhookStore(config.database)
     : undefined);
   const ownsStore = !options.store;
 
@@ -458,18 +563,16 @@ function githubMetadata(input: {
   action?: string;
   payload: JsonObject;
 }): JsonObject {
+  const repository = nestedString(input.payload, "repository", "full_name");
+  const sender = nestedString(input.payload, "sender", "login");
   return {
     provider: "github",
     sourceId: input.sourceId,
     githubEvent: input.githubEvent,
     githubDelivery: input.githubDelivery,
     ...(input.action ? { action: input.action } : {}),
-    ...(nestedString(input.payload, "repository", "full_name") ? {
-      repository: nestedString(input.payload, "repository", "full_name")!,
-    } : {}),
-    ...(nestedString(input.payload, "sender", "login") ? {
-      sender: nestedString(input.payload, "sender", "login")!,
-    } : {}),
+    ...(repository ? { repository } : {}),
+    ...(sender ? { sender } : {}),
   };
 }
 
@@ -575,6 +678,43 @@ function plainObject(value: unknown, field: string): JsonObject {
   );
 }
 
+function rowToAutomationSource(row: AutomationSourceRow): AutomationSource {
+  if (row.kind !== "github_webhook") {
+    throw new AutomationStoreError("AUTOMATION_SOURCE_KIND_INVALID", `Invalid GitHub webhook source kind: ${row.kind}`);
+  }
+  if (row.status !== "enabled" && row.status !== "disabled") {
+    throw new AutomationStoreError("AUTOMATION_SOURCE_STATUS_INVALID", `Invalid automation source status: ${row.status}`);
+  }
+
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    userId: row.user_id,
+    kind: row.kind,
+    name: row.name,
+    status: row.status,
+    secretRef: row.secret_ref ?? undefined,
+    tokenHash: row.token_hash ?? undefined,
+    config: jsonObject(row.config),
+    createdAt: toIsoString(row.created_at),
+    updatedAt: toIsoString(row.updated_at),
+  };
+}
+
+function jsonObject(value: unknown): JsonObject {
+  if (typeof value === "string") {
+    const parsed = JSON.parse(value) as unknown;
+    return jsonObject(parsed);
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as JsonObject;
+  return {};
+}
+
+function toIsoString(value: string | Date): string {
+  if (value instanceof Date) return value.toISOString();
+  return value;
+}
+
 function isJsonValue(value: unknown): value is JsonValue {
   if (value === null) return true;
   if (typeof value === "string" || typeof value === "boolean") return true;
@@ -588,4 +728,46 @@ function isJsonValue(value: unknown): value is JsonValue {
 
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+}
+
+async function createPool(config: PostgresDatabaseConfig): Promise<PgPool> {
+  const Pool = await importPgPool();
+  return new Pool({
+    connectionString: config.url,
+    ssl: sslFor(config),
+    application_name: "devspace-github-webhook",
+    max: 10,
+  });
+}
+
+async function importPgPool(): Promise<PgPoolConstructor> {
+  const moduleName = "pg";
+
+  try {
+    const pg = (await import(moduleName)) as {
+      Pool?: PgPoolConstructor;
+      default?: { Pool?: PgPoolConstructor };
+    };
+    const Pool = pg.Pool ?? pg.default?.Pool;
+    if (!Pool) throw new Error("The pg module did not export Pool.");
+    return Pool;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isMissingPgDependency(message)) {
+      throw new PostgresAutomationStoreQueryError(
+        "GitHub webhook receiver requires the optional pg peer dependency. Install it next to DevSpace with: npm install pg",
+      );
+    }
+    throw error;
+  }
+}
+
+function isMissingPgDependency(message: string): boolean {
+  return message.includes("Cannot find package 'pg'") || message.includes("Cannot find module 'pg'");
+}
+
+function sslFor(config: PostgresDatabaseConfig): boolean | { rejectUnauthorized: boolean } | undefined {
+  if (config.sslMode === "disable") return false;
+  if (config.sslMode === "require") return { rejectUnauthorized: false };
+  return undefined;
 }
