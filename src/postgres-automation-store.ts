@@ -198,7 +198,7 @@ export class AutomationStoreError extends Error {
     readonly code: string,
     message: string,
   ) {
-    super(message);
+    super(`${code}: ${message}`);
     this.name = "AutomationStoreError";
   }
 }
