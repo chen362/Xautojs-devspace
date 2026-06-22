@@ -39,6 +39,35 @@ npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
 | `DEVSPACE_WORKTREE_ROOT` | Directory for managed Git worktrees. Defaults to `~/.devspace/worktrees`. |
 | `DEVSPACE_STATE_DIR` | Directory for SQLite state. Defaults to `~/.local/share/devspace`. |
 
+## Database
+
+SQLite is the default local database provider. Postgres mode is intended for
+production deployments and requires the schema in
+`migrations/postgres/0001_workspace_sessions.sql` to be applied before serving
+traffic.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DEVSPACE_DATABASE_PROVIDER` | `sqlite` | Set to `postgres` to use Postgres-backed workspace sessions. |
+| `DEVSPACE_DATABASE_URL` | unset | Required when `DEVSPACE_DATABASE_PROVIDER=postgres`. |
+| `DEVSPACE_POSTGRES_SSL_MODE` | `prefer` | One of `prefer`, `require`, or `disable`. |
+
+Postgres mode uses the optional `pg` peer dependency. Install it in the same
+runtime environment as DevSpace when enabling Postgres:
+
+```bash
+npm install pg
+```
+
+Example:
+
+```bash
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+DEVSPACE_POSTGRES_SSL_MODE="require" \
+npx @waishnav/devspace serve
+```
+
 ## OAuth
 
 DevSpace uses a single-user OAuth approval flow.
