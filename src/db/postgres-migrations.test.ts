@@ -16,63 +16,6 @@ import {
   type PostgresMigrationQueryResult,
 } from "./postgres-migrations.js";
 
-const migrationsDir = await mkdtemp(join(tmpdir(), "devspace-postgres-migrations-test-"));
-const config: PostgresDatabaseConfig = {
-  provider: "postgres",
-  url: "postgres://devspace:secret@db.example.com:5432/devspace",
-  sslMode: "disable",
-};
-const client = new FakeMigrationClient();
-const pool = new FakeMigrationPool(client);
-
-try {
-  await writeFile(join(migrationsDir, "0001_workspace_sessions.sql"), "create table workspace_sessions (id text primary key);\n");
-  await writeFile(join(migrationsDir, "0002_loaded_agent_files.sql"), "create table loaded_agent_files (path text primary key);\n");
-
-  const initialStatus = await getPostgresMigrationStatus(config, { migrationsDir, pool });
-  assert.equal(initialStatus.tableExists, false);
-  assert.equal(initialStatus.pendingCount, 2);
-  assert.match(formatPostgresMigrationStatus(initialStatus), /Schema migrations table: missing/);
-
-  await assert.rejects(
-    () => assertPostgresSchemaReady(config, { migrationsDir, pool }),
-    /Postgres schema is not ready/,
-  );
-
-  const result = await migratePostgresDatabase(config, { migrationsDir, pool });
-  assert.deepEqual(
-    result.applied.map((migration) => migration.name),
-    ["0001_workspace_sessions.sql", "0002_loaded_agent_files.sql"],
-  );
-  assert.equal(client.tableExists, true);
-  assert.equal(client.applied.size, 2);
-  assert.equal(client.executedMigrationSql.length, 2);
-  assert.match(formatPostgresMigrationResult(result), /Applied 2 migrations/);
-
-  const readyStatus = await getPostgresMigrationStatus(config, { migrationsDir, pool });
-  assert.equal(readyStatus.tableExists, true);
-  assert.equal(readyStatus.appliedCount, 2);
-  assert.equal(readyStatus.pendingCount, 0);
-  assert.equal(readyStatus.modifiedCount, 0);
-  assert.match(formatPostgresMigrationStatus(readyStatus), /Database schema is up to date/);
-  await assertPostgresSchemaReady(config, { migrationsDir, pool });
-
-  const noopResult = await migratePostgresDatabase(config, { migrationsDir, pool });
-  assert.equal(noopResult.applied.length, 0);
-  assert.equal(formatPostgresMigrationResult(noopResult), "Database schema is up to date.");
-
-  await writeFile(join(migrationsDir, "0002_loaded_agent_files.sql"), "create table loaded_agent_files (path text primary key);\n-- changed\n");
-  const driftStatus = await getPostgresMigrationStatus(config, { migrationsDir, pool });
-  assert.equal(driftStatus.modifiedCount, 1);
-  assert.equal(driftStatus.migrations.find((migration) => migration.name === "0002_loaded_agent_files.sql")?.state, "modified");
-  await assert.rejects(
-    () => migratePostgresDatabase(config, { migrationsDir, pool }),
-    /checksum mismatch/,
-  );
-} finally {
-  await rm(migrationsDir, { recursive: true, force: true });
-}
-
 class FakeMigrationPool implements PostgresMigrationPool {
   constructor(private readonly client: FakeMigrationClient) {}
 
@@ -138,6 +81,63 @@ class FakeMigrationClient implements PostgresMigrationClient {
   }
 
   release(): void {}
+}
+
+const migrationsDir = await mkdtemp(join(tmpdir(), "devspace-postgres-migrations-test-"));
+const config: PostgresDatabaseConfig = {
+  provider: "postgres",
+  url: "postgres://devspace:secret@db.example.com:5432/devspace",
+  sslMode: "disable",
+};
+const client = new FakeMigrationClient();
+const pool = new FakeMigrationPool(client);
+
+try {
+  await writeFile(join(migrationsDir, "0001_workspace_sessions.sql"), "create table workspace_sessions (id text primary key);\n");
+  await writeFile(join(migrationsDir, "0002_loaded_agent_files.sql"), "create table loaded_agent_files (path text primary key);\n");
+
+  const initialStatus = await getPostgresMigrationStatus(config, { migrationsDir, pool });
+  assert.equal(initialStatus.tableExists, false);
+  assert.equal(initialStatus.pendingCount, 2);
+  assert.match(formatPostgresMigrationStatus(initialStatus), /Schema migrations table: missing/);
+
+  await assert.rejects(
+    () => assertPostgresSchemaReady(config, { migrationsDir, pool }),
+    /Postgres schema is not ready/,
+  );
+
+  const result = await migratePostgresDatabase(config, { migrationsDir, pool });
+  assert.deepEqual(
+    result.applied.map((migration) => migration.name),
+    ["0001_workspace_sessions.sql", "0002_loaded_agent_files.sql"],
+  );
+  assert.equal(client.tableExists, true);
+  assert.equal(client.applied.size, 2);
+  assert.equal(client.executedMigrationSql.length, 2);
+  assert.match(formatPostgresMigrationResult(result), /Applied 2 migrations/);
+
+  const readyStatus = await getPostgresMigrationStatus(config, { migrationsDir, pool });
+  assert.equal(readyStatus.tableExists, true);
+  assert.equal(readyStatus.appliedCount, 2);
+  assert.equal(readyStatus.pendingCount, 0);
+  assert.equal(readyStatus.modifiedCount, 0);
+  assert.match(formatPostgresMigrationStatus(readyStatus), /Database schema is up to date/);
+  await assertPostgresSchemaReady(config, { migrationsDir, pool });
+
+  const noopResult = await migratePostgresDatabase(config, { migrationsDir, pool });
+  assert.equal(noopResult.applied.length, 0);
+  assert.equal(formatPostgresMigrationResult(noopResult), "Database schema is up to date.");
+
+  await writeFile(join(migrationsDir, "0002_loaded_agent_files.sql"), "create table loaded_agent_files (path text primary key);\n-- changed\n");
+  const driftStatus = await getPostgresMigrationStatus(config, { migrationsDir, pool });
+  assert.equal(driftStatus.modifiedCount, 1);
+  assert.equal(driftStatus.migrations.find((migration) => migration.name === "0002_loaded_agent_files.sql")?.state, "modified");
+  await assert.rejects(
+    () => migratePostgresDatabase(config, { migrationsDir, pool }),
+    /checksum mismatch/,
+  );
+} finally {
+  await rm(migrationsDir, { recursive: true, force: true });
 }
 
 function emptyResult<Row>(): PostgresMigrationQueryResult<Row> {
