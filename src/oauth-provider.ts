@@ -11,6 +11,7 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import { createLocalIdentity, createOidcIdentity, type DevSpaceAuthInfo } from "./identity.js";
 
 export interface OidcOAuthConfig {
   issuer: string;
@@ -316,13 +317,15 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       throw new InvalidTokenError("Invalid or expired access token");
     }
 
-    return {
+    const authInfo: DevSpaceAuthInfo = {
       token,
       clientId: record.clientId,
       scopes: record.scopes,
       expiresAt: record.expiresAt,
       resource: record.resource,
+      devspace: createLocalIdentity(record.scopes, record.clientId),
     };
+    return authInfo;
   }
 
   async revokeToken(_client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest): Promise<void> {
@@ -355,14 +358,26 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       if (!subject) {
         throw new InvalidTokenError(`Token is missing user claim: ${oidc.userClaim}`);
       }
-
-      return {
+      const tenantExternalId = oidc.tenantClaim ? claimAsString(payload, oidc.tenantClaim) : undefined;
+      if (oidc.tenantClaim && !tenantExternalId) {
+        throw new InvalidTokenError(`Token is missing tenant claim: ${oidc.tenantClaim}`);
+      }
+      const clientId = claimAsString(payload, "client_id") ?? claimAsString(payload, "azp") ?? subject;
+      const authInfo: DevSpaceAuthInfo = {
         token,
-        clientId: claimAsString(payload, "client_id") ?? claimAsString(payload, "azp") ?? subject,
+        clientId,
         scopes,
         expiresAt: payload.exp,
         resource: this.resourceServerUrl,
+        devspace: createOidcIdentity({
+          issuer: oidc.issuer,
+          subject,
+          tenantExternalId,
+          clientId,
+          scopes,
+        }),
       };
+      return authInfo;
     } catch (error) {
       if (error instanceof InvalidTokenError) throw error;
       throw new InvalidTokenError(error instanceof Error ? error.message : "Invalid OIDC access token");
