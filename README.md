@@ -103,7 +103,7 @@ DevSpace gives ChatGPT tools to:
 DevSpace is remote access to selected local folders.
 
 You decide which roots are allowed. The MCP client still has powerful local
-capabilities inside an opened workspace, including shell execution. Treat a
+capabilities inside the opened workspace, including shell execution. Treat a
 connected client like a trusted coding partner with access to your machine.
 
 For a normal ChatGPT coding session:
@@ -130,11 +130,24 @@ DEVSPACE_POSTGRES_SSL_MODE="require" \
 npx @waishnav/devspace db migrate
 ```
 
+Check schema readiness in a deployment script with JSON output:
+
+```bash
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+npx @waishnav/devspace db status --json
+```
+
 Then start the server with the same database settings. `devspace serve` checks
-that migrations are current before accepting traffic. Long-running deployments
-can enable session expiry with `DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS`; loaded
-AGENTS/CLAUDE file snapshots are deleted automatically when their workspace
-session is cleaned up.
+that migrations are current before accepting traffic. `devspace doctor --json`
+reports the resolved production config, redacted Postgres URL, and schema
+readiness for smoke checks. Long-running deployments can enable session expiry
+with `DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS`; loaded AGENTS/CLAUDE file
+snapshots are deleted automatically when their workspace session is cleaned up.
+
+For a full Ubuntu/Linux, macOS, and Windows production smoke flow, see
+[Production Smoke Check](docs/production-smoke.md). A copyable environment
+reference lives at [`examples/production.env.example`](examples/production.env.example).
 
 ## Platform Support
 
@@ -159,6 +172,7 @@ devspace doctor
 - [Setup Guide](docs/setup.md)
 - [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
 - [Configuration Reference](docs/configuration.md)
+- [Production Smoke Check](docs/production-smoke.md)
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)
 
