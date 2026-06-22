@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
 import type { ServerConfig } from "./config.js";
 import { createManagedWorktree } from "./git-worktrees.js";
+import { LOCAL_WORKSPACE_IDENTITY, type WorkspaceIdentity } from "./identity.js";
 import { assertAllowedPath, isPathInsideRoot, resolveAllowedPath } from "./roots.js";
 import {
   loadWorkspaceSkills,
@@ -34,6 +35,7 @@ export interface WorkspaceWorktree {
 
 export interface Workspace {
   id: string;
+  owner: WorkspaceIdentity;
   root: string;
   mode: WorkspaceMode;
   sourceRoot?: string;
@@ -67,6 +69,7 @@ export class WorkspaceRegistry {
   constructor(
     private readonly config: ServerConfig,
     private readonly store?: WorkspaceStore,
+    private readonly owner: WorkspaceIdentity = LOCAL_WORKSPACE_IDENTITY,
   ) {}
 
   async openWorkspace(input: string | OpenWorkspaceInput): Promise<WorkspaceContext> {
@@ -83,11 +86,11 @@ export class WorkspaceRegistry {
   getWorkspace(workspaceId: string): Workspace {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) {
-      this.store?.touchSession(workspaceId);
+      this.store?.touchSession(workspaceId, this.owner);
       return workspace;
     }
 
-    const session = this.store?.getSession(workspaceId);
+    const session = this.store?.getSession(workspaceId, this.owner);
     if (!session) {
       throw new Error(`Unknown workspaceId: ${workspaceId}. Call open_workspace first.`);
     }
@@ -95,6 +98,7 @@ export class WorkspaceRegistry {
     const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
     const restoredWorkspace: Workspace = {
       id: session.id,
+      owner: this.owner,
       root,
       mode: session.mode,
       sourceRoot: session.sourceRoot,
@@ -112,7 +116,7 @@ export class WorkspaceRegistry {
       ...this.loadSkillsForWorkspace(root),
       activatedSkillDirs: new Set(),
     };
-    this.store?.touchSession(workspaceId);
+    this.store?.touchSession(workspaceId, this.owner);
     this.workspaces.set(restoredWorkspace.id, restoredWorkspace);
 
     return restoredWorkspace;
@@ -195,6 +199,7 @@ export class WorkspaceRegistry {
   }): Promise<WorkspaceContext> {
     const workspace: Workspace = {
       id: `ws_${randomUUID()}`,
+      owner: this.owner,
       root: input.root,
       mode: input.mode,
       sourceRoot: input.sourceRoot,
@@ -204,6 +209,7 @@ export class WorkspaceRegistry {
     };
 
     this.store?.createSession({
+      owner: this.owner,
       id: workspace.id,
       root: workspace.root,
       mode: workspace.mode,
