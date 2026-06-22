@@ -104,7 +104,7 @@ try {
   );
   assert.deepEqual(
     restoredWorkspace.availableAgentsFiles.map((file) => file.path),
-    [join(root, "nested", "AGENTS.md")],
+    [join(gitRoot, "AGENTS.md"), join(root, "nested", "AGENTS.md")],
   );
 
   const restoredWorktree = await restoredRegistry.getWorkspace(persistentWorktree.workspace.id);
