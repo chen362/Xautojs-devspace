@@ -114,7 +114,30 @@ async function runPostgresIntegrationTest(
     assert.equal(loaded?.baseSha, "abc123");
     assert.equal(loaded?.managed, true);
 
+    await store.saveLoadedAgentFiles({
+      owner,
+      workspaceSessionId: sessionId,
+      files: [
+        { path: "/tmp/devspace-postgres-integration/AGENTS.md", content: "root instructions
+" },
+        { path: "/tmp/devspace-postgres-integration/nested/AGENTS.md", content: "nested instructions
+" },
+      ],
+    });
+    const loadedAgentFiles = await store.getLoadedAgentFiles(sessionId, owner);
+    assert.deepEqual(
+      loadedAgentFiles.map((file) => ({ path: file.path, content: file.content })),
+      [
+        { path: "/tmp/devspace-postgres-integration/AGENTS.md", content: "root instructions
+" },
+        { path: "/tmp/devspace-postgres-integration/nested/AGENTS.md", content: "nested instructions
+" },
+      ],
+    );
+    assert.match(loadedAgentFiles[0]?.contentHash ?? "", /^[a-f0-9]{64}$/);
+
     assert.equal(await store.getSession(sessionId, otherOwner), undefined);
+    assert.deepEqual(await store.getLoadedAgentFiles(sessionId, otherOwner), []);
 
     await delay(20);
     await store.touchSession(sessionId, owner);
