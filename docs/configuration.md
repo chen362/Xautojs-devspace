@@ -22,10 +22,13 @@ DEVSPACE_CONFIG_DIR=/path/to/config npx @waishnav/devspace serve
 npx @waishnav/devspace init
 npx @waishnav/devspace serve
 npx @waishnav/devspace doctor
+npx @waishnav/devspace doctor --json
 npx @waishnav/devspace config get
 npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
 npx @waishnav/devspace db status
+npx @waishnav/devspace db status --json
 npx @waishnav/devspace db migrate
+npx @waishnav/devspace db migrate --json
 ```
 
 ## Core Environment Variables
@@ -73,8 +76,16 @@ npx @waishnav/devspace db status
 
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+npx @waishnav/devspace db status --json
+
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
 npx @waishnav/devspace db migrate
 ```
+
+`devspace db status --json` returns a stable machine-readable object with
+`state`, `ready`, `tableExists`, migration counts, and the migration list. The
+state is one of `ready`, `missing`, `pending`, or `modified`.
 
 For real Postgres regression coverage in a development checkout, install the
 optional `pg` peer dependency and provide a test database URL:
@@ -91,6 +102,15 @@ migrations there, verifies `PostgresWorkspaceStore` create/read/touch/cleanup
 behavior, and drops the schema before exit. It skips cleanly when
 `DEVSPACE_DATABASE_URL` is not set. CI also runs this test against a temporary
 Postgres service on Ubuntu.
+
+`devspace doctor` reports the Postgres schema state when Postgres mode is active.
+Use JSON output for deployment smoke checks:
+
+```bash
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+npx @waishnav/devspace doctor --json
+```
 
 `devspace serve` checks the Postgres schema before starting and exits with a
 migration hint if the schema version table is missing, a migration is pending,
@@ -117,6 +137,10 @@ DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" 
 DEVSPACE_POSTGRES_SSL_MODE="require" \
 npx @waishnav/devspace serve
 ```
+
+For a full Ubuntu/Linux, macOS, and Windows production smoke flow, see
+[Production Smoke Check](production-smoke.md). `examples/production.env.example`
+contains a copyable environment template.
 
 ## OAuth
 
