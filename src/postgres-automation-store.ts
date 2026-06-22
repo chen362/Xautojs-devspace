@@ -567,20 +567,9 @@ export class PostgresAutomationStore {
   }
 
   private async findExistingEventByDedupKey(
-    input: Pick<RecordAutomationEventInput, "sourceId" | "sourceEventId" | "idempotencyKey">,
+    input: Pick<RecordAutomationEventInput, "owner" | "sourceId" | "sourceEventId" | "idempotencyKey">,
   ): Promise<AutomationEvent | undefined> {
-    const filters: string[] = [];
-    const values: QueryValue[] = [input.sourceId];
-
-    if (input.sourceEventId) {
-      values.push(input.sourceEventId);
-      filters.push(`source_event_id = $${values.length}`);
-    }
-    if (input.idempotencyKey) {
-      values.push(input.idempotencyKey);
-      filters.push(`idempotency_key = $${values.length}`);
-    }
-    if (filters.length === 0) return undefined;
+    if (!input.sourceEventId && !input.idempotencyKey) return undefined;
 
     const result = await this.query<AutomationEventRow>({
       text: `
@@ -601,10 +590,21 @@ export class PostgresAutomationStore {
           received_at
         from automation_events
         where source_id = $1
-          and (${filters.join(" or ")})
+          and tenant_id = $4
+          and user_id = $5
+          and (
+            ($2::text is not null and source_event_id = $2)
+            or ($3::text is not null and idempotency_key = $3)
+          )
         limit 1
       `,
-      values,
+      values: [
+        input.sourceId,
+        input.sourceEventId ?? null,
+        input.idempotencyKey ?? null,
+        input.owner.tenantId,
+        input.owner.userId,
+      ],
     });
 
     const row = result.rows[0];
