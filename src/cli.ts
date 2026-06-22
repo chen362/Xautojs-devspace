@@ -15,7 +15,8 @@ import {
 } from "./user-config.js";
 import { expandHomePath } from "./roots.js";
 
-type Command = "serve" | "init" | "doctor" | "config" | "help";
+type Command = "serve" | "init" | "doctor" | "config" | "db" | "help";
+type DbCommand = "migrate" | "status";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
 
@@ -43,6 +44,9 @@ async function main(argv: string[]): Promise<void> {
     case "config":
       runConfigCommand(args);
       return;
+    case "db":
+      await runDbCommand(args);
+      return;
     case "help":
       printHelp();
       return;
@@ -51,7 +55,7 @@ async function main(argv: string[]): Promise<void> {
 
 function normalizeCommand(command: string | undefined): Command {
   if (!command || command === "serve" || command === "start") return "serve";
-  if (command === "init" || command === "doctor" || command === "config") return command;
+  if (command === "init" || command === "doctor" || command === "config" || command === "db") return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   throw new Error(`Unknown command: ${command}`);
 }
@@ -181,6 +185,9 @@ async function serve(): Promise<void> {
         ].join("\n"),
       );
     }
+  } else {
+    const { assertPostgresSchemaReady } = await import("./db/postgres-migrations.js");
+    await assertPostgresSchemaReady(config.database);
   }
 
   const { createServer } = await import("./server.js");
@@ -238,6 +245,43 @@ async function runDoctor(): Promise<void> {
   console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
 }
 
+async function runDbCommand(args: string[]): Promise<void> {
+  const [rawSubcommand, ...rest] = args;
+  const command = normalizeDbCommand(rawSubcommand);
+  if (rest.length > 0) {
+    throw new Error(`Unexpected devspace db argument: ${rest.join(" ")}`);
+  }
+
+  const config = loadConfig();
+  if (config.database.provider !== "postgres") {
+    throw new Error("`devspace db` commands require DEVSPACE_DATABASE_PROVIDER=postgres.");
+  }
+
+  const {
+    formatPostgresMigrationResult,
+    formatPostgresMigrationStatus,
+    getPostgresMigrationStatus,
+    migratePostgresDatabase,
+  } = await import("./db/postgres-migrations.js");
+
+  if (command === "status") {
+    const status = await getPostgresMigrationStatus(config.database);
+    console.log(formatPostgresMigrationStatus(status));
+    return;
+  }
+
+  const result = await migratePostgresDatabase(config.database);
+  console.log(formatPostgresMigrationResult(result));
+  console.log("");
+  console.log(formatPostgresMigrationStatus(result.status));
+}
+
+function normalizeDbCommand(command: string | undefined): DbCommand {
+  if (!command || command === "status") return "status";
+  if (command === "migrate") return "migrate";
+  throw new Error(`Unknown db command: ${command}`);
+}
+
 function runConfigCommand(args: string[]): void {
   const [subcommand, key, ...rest] = args;
   const files = loadDevspaceFiles();
@@ -278,6 +322,8 @@ function printHelp(): void {
       "  devspace doctor          Show config, runtime, and native dependency status",
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
+      "  devspace db status       Show Postgres migration status",
+      "  devspace db migrate      Apply pending Postgres migrations",
       "",
       "For temporary tunnels:",
       "  DEVSPACE_PUBLIC_BASE_URL=https://example.trycloudflare.com devspace serve",
