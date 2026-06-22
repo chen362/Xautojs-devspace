@@ -21,6 +21,7 @@ interface StoredAutomationSourceRow {
   name: string;
   status: AutomationSourceStatus;
   secret_ref: string | null;
+  token_hash: string | null;
   config: JsonObject;
   created_at: string;
   updated_at: string;
@@ -81,21 +82,29 @@ const runner: PostgresAutomationQueryRunner = async <Row>(
       name: stringValue(query.values[4]),
       status: sourceStatusValue(query.values[5]),
       secret_ref: nullableStringValue(query.values[6]),
-      config: jsonValue(query.values[7]),
-      created_at: stringValue(query.values[8]),
-      updated_at: stringValue(query.values[9]),
+      token_hash: nullableStringValue(query.values[7]),
+      config: jsonValue(query.values[8]),
+      created_at: stringValue(query.values[9]),
+      updated_at: stringValue(query.values[10]),
     };
     sourceRows.push(row);
     return { rows: [row as Row], rowCount: 1 };
   }
 
   if (normalizedSql.startsWith("select") && normalizedSql.includes("from automation_sources")) {
-    const matches = sourceRows.filter(
-      (row) =>
-        row.id === query.values[0] &&
-        row.tenant_id === query.values[1] &&
-        row.user_id === query.values[2],
-    );
+    const matches = normalizedSql.includes("token_hash = $2")
+      ? sourceRows.filter(
+          (row) =>
+            row.id === query.values[0] &&
+            row.token_hash === query.values[1] &&
+            row.kind === "api_trigger",
+        )
+      : sourceRows.filter(
+          (row) =>
+            row.id === query.values[0] &&
+            row.tenant_id === query.values[1] &&
+            row.user_id === query.values[2],
+        );
     return { rows: matches as Row[], rowCount: matches.length };
   }
 
@@ -103,9 +112,13 @@ const runner: PostgresAutomationQueryRunner = async <Row>(
     const sourceId = stringValue(query.values[0]);
     const sourceEventId = nullableStringValue(query.values[1]);
     const idempotencyKey = nullableStringValue(query.values[2]);
+    const tenantId = stringValue(query.values[3]);
+    const userId = stringValue(query.values[4]);
     const matches = eventRows.filter(
       (row) =>
         row.source_id === sourceId &&
+        row.tenant_id === tenantId &&
+        row.user_id === userId &&
         ((sourceEventId !== null && row.source_event_id === sourceEventId) ||
           (idempotencyKey !== null && row.idempotency_key === idempotencyKey)),
     );
@@ -182,12 +195,19 @@ const runner: PostgresAutomationQueryRunner = async <Row>(
   }
 
   if (normalizedSql.startsWith("select") && normalizedSql.includes("from automation_runs")) {
-    const matches = runRows.filter(
-      (row) =>
-        row.id === query.values[0] &&
-        row.tenant_id === query.values[1] &&
-        row.user_id === query.values[2],
-    );
+    const matches = normalizedSql.includes("where event_id")
+      ? runRows.filter(
+          (row) =>
+            row.event_id === query.values[0] &&
+            row.tenant_id === query.values[1] &&
+            row.user_id === query.values[2],
+        )
+      : runRows.filter(
+          (row) =>
+            row.id === query.values[0] &&
+            row.tenant_id === query.values[1] &&
+            row.user_id === query.values[2],
+        );
     return { rows: matches as Row[], rowCount: matches.length };
   }
 
@@ -221,6 +241,7 @@ const source = await store.createSource({
   kind: "api_trigger",
   name: "manual smoke",
   secretRef: "secret:automation/manual-smoke",
+  tokenHash: "sha256:source-token",
   config: { triggerId: "manual-smoke" },
 });
 assert.equal(source.id, "auto_src_1");
@@ -228,6 +249,7 @@ assert.equal(source.tenantId, alice.tenantId);
 assert.equal(source.userId, alice.userId);
 assert.equal(source.kind, "api_trigger");
 assert.equal(source.status, "enabled");
+assert.equal(source.tokenHash, "sha256:source-token");
 assert.deepEqual(source.config, { triggerId: "manual-smoke" });
 assert.match(calls[0]?.text ?? "", /insert into automation_sources/i);
 assert.equal(calls[0]?.text.includes("auto_src_1"), false);
@@ -235,6 +257,20 @@ assert.equal(calls[0]?.text.includes("auto_src_1"), false);
 const loadedSource = await store.getSource("auto_src_1", alice);
 assert.equal(loadedSource?.id, "auto_src_1");
 assert.equal(await store.getSource("auto_src_1", bob), undefined);
+assert.equal(
+  (await store.getApiTriggerSourceForToken({
+    triggerId: "auto_src_1",
+    tokenHash: "sha256:source-token",
+  }))?.id,
+  "auto_src_1",
+);
+assert.equal(
+  await store.getApiTriggerSourceForToken({
+    triggerId: "auto_src_1",
+    tokenHash: "sha256:wrong-token",
+  }),
+  undefined,
+);
 
 const recorded = await store.recordEvent({
   owner: alice,
@@ -301,6 +337,8 @@ assert.deepEqual(run.metadata, { queue: "default" });
 
 assert.equal(await store.getRun("auto_run_1", bob), undefined);
 assert.equal((await store.getRun("auto_run_1", alice))?.id, "auto_run_1");
+assert.equal((await store.getRunForEvent("auto_evt_1", alice))?.id, "auto_run_1");
+assert.equal(await store.getRunForEvent("auto_evt_1", bob), undefined);
 
 await assert.rejects(
   () =>
