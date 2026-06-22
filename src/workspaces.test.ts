@@ -90,20 +90,20 @@ try {
     path: gitRoot,
     mode: "worktree",
   });
-  firstStore.close();
+  await firstStore.close();
 
   const secondStore = new SqliteWorkspaceStore(stateDir);
   const restoredRegistry = new WorkspaceRegistry(config, secondStore);
-  const restoredWorkspace = restoredRegistry.getWorkspace(persistentWorkspace.workspace.id);
+  const restoredWorkspace = await restoredRegistry.getWorkspace(persistentWorkspace.workspace.id);
   assert.equal(restoredWorkspace.root, root);
   assert.equal(restoredWorkspace.mode, "checkout");
 
-  const restoredWorktree = restoredRegistry.getWorkspace(persistentWorktree.workspace.id);
+  const restoredWorktree = await restoredRegistry.getWorkspace(persistentWorktree.workspace.id);
   assert.equal(restoredWorktree.mode, "worktree");
   assert.equal(restoredWorktree.sourceRoot, gitRoot);
   assert.equal(restoredWorktree.root, persistentWorktree.workspace.root);
   assert.equal(restoredWorktree.worktree?.managed, true);
-  secondStore.close();
+  await secondStore.close();
 
   if (platform() !== "win32") {
     const aliasRoot = join(root, "alias-root");
