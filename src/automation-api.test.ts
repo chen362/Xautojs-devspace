@@ -35,6 +35,78 @@ const baseSource: AutomationSource = {
   updatedAt: "2026-06-22T00:00:00.000Z",
 };
 
+class FakeAutomationStore implements AutomationTriggerStore {
+  readonly events = new Map<string, AutomationEvent>();
+  readonly runs = new Map<string, AutomationRun>();
+
+  constructor(private readonly source: AutomationSource) {}
+
+  async getApiTriggerSourceForToken(input: {
+    triggerId: string;
+    tokenHash: string;
+  }): Promise<AutomationSource | undefined> {
+    if (input.triggerId !== this.source.id) return undefined;
+    if (input.tokenHash !== this.source.tokenHash) return undefined;
+    return this.source;
+  }
+
+  async recordEvent(input: RecordAutomationEventInput): Promise<AutomationEventRecordResult> {
+    const existing = Array.from(this.events.values()).find(
+      (event) =>
+        event.sourceId === input.sourceId &&
+        event.tenantId === input.owner.tenantId &&
+        event.userId === input.owner.userId &&
+        ((input.sourceEventId && event.sourceEventId === input.sourceEventId) ||
+          (input.idempotencyKey && event.idempotencyKey === input.idempotencyKey)),
+    );
+    if (existing) {
+      if (existing.requestFingerprint !== input.requestFingerprint) {
+        throw new AutomationIdempotencyConflictError(existing.id);
+      }
+      return { outcome: "duplicate", event: existing };
+    }
+
+    const event: AutomationEvent = {
+      id: input.id,
+      tenantId: input.owner.tenantId,
+      userId: input.owner.userId,
+      sourceId: input.sourceId,
+      ...(input.sourceEventId ? { sourceEventId: input.sourceEventId } : {}),
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+      requestFingerprint: input.requestFingerprint,
+      eventType: input.eventType,
+      payload: input.payload ?? {},
+      metadata: input.metadata ?? {},
+      status: input.status ?? "accepted",
+      receivedAt: "2026-06-22T00:00:00.000Z",
+    };
+    this.events.set(event.id, event);
+    return { outcome: "inserted", event };
+  }
+
+  async getRunForEvent(eventId: string, owner: WorkspaceIdentity): Promise<AutomationRun | undefined> {
+    return Array.from(this.runs.values()).find(
+      (run) => run.eventId === eventId && run.tenantId === owner.tenantId && run.userId === owner.userId,
+    );
+  }
+
+  async createRun(input: CreateAutomationRunInput): Promise<AutomationRun> {
+    const run: AutomationRun = {
+      id: input.id,
+      tenantId: input.owner.tenantId,
+      userId: input.owner.userId,
+      eventId: input.eventId,
+      status: input.status ?? "queued",
+      attempt: input.attempt ?? 1,
+      metadata: input.metadata ?? {},
+      result: input.result ?? {},
+      createdAt: "2026-06-22T00:00:01.000Z",
+    };
+    this.runs.set(run.id, run);
+    return run;
+  }
+}
+
 {
   const result = await fireAutomationTrigger({
     store: undefined,
@@ -196,78 +268,6 @@ const baseSource: AutomationSource = {
   });
   assert.equal(result.statusCode, 401);
   assert.equal(expectError(result.body).error.code, "AUTOMATION_TOKEN_INVALID");
-}
-
-class FakeAutomationStore implements AutomationTriggerStore {
-  readonly events = new Map<string, AutomationEvent>();
-  readonly runs = new Map<string, AutomationRun>();
-
-  constructor(private readonly source: AutomationSource) {}
-
-  async getApiTriggerSourceForToken(input: {
-    triggerId: string;
-    tokenHash: string;
-  }): Promise<AutomationSource | undefined> {
-    if (input.triggerId !== this.source.id) return undefined;
-    if (input.tokenHash !== this.source.tokenHash) return undefined;
-    return this.source;
-  }
-
-  async recordEvent(input: RecordAutomationEventInput): Promise<AutomationEventRecordResult> {
-    const existing = Array.from(this.events.values()).find(
-      (event) =>
-        event.sourceId === input.sourceId &&
-        event.tenantId === input.owner.tenantId &&
-        event.userId === input.owner.userId &&
-        ((input.sourceEventId && event.sourceEventId === input.sourceEventId) ||
-          (input.idempotencyKey && event.idempotencyKey === input.idempotencyKey)),
-    );
-    if (existing) {
-      if (existing.requestFingerprint !== input.requestFingerprint) {
-        throw new AutomationIdempotencyConflictError(existing.id);
-      }
-      return { outcome: "duplicate", event: existing };
-    }
-
-    const event: AutomationEvent = {
-      id: input.id,
-      tenantId: input.owner.tenantId,
-      userId: input.owner.userId,
-      sourceId: input.sourceId,
-      ...(input.sourceEventId ? { sourceEventId: input.sourceEventId } : {}),
-      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
-      requestFingerprint: input.requestFingerprint,
-      eventType: input.eventType,
-      payload: input.payload ?? {},
-      metadata: input.metadata ?? {},
-      status: input.status ?? "accepted",
-      receivedAt: "2026-06-22T00:00:00.000Z",
-    };
-    this.events.set(event.id, event);
-    return { outcome: "inserted", event };
-  }
-
-  async getRunForEvent(eventId: string, owner: WorkspaceIdentity): Promise<AutomationRun | undefined> {
-    return Array.from(this.runs.values()).find(
-      (run) => run.eventId === eventId && run.tenantId === owner.tenantId && run.userId === owner.userId,
-    );
-  }
-
-  async createRun(input: CreateAutomationRunInput): Promise<AutomationRun> {
-    const run: AutomationRun = {
-      id: input.id,
-      tenantId: input.owner.tenantId,
-      userId: input.owner.userId,
-      eventId: input.eventId,
-      status: input.status ?? "queued",
-      attempt: input.attempt ?? 1,
-      metadata: input.metadata ?? {},
-      result: input.result ?? {},
-      createdAt: "2026-06-22T00:00:01.000Z",
-    };
-    this.runs.set(run.id, run);
-    return run;
-  }
 }
 
 function expectAccepted(body: AutomationAcceptedResponse | AutomationErrorResponse): AutomationAcceptedResponse {
