@@ -83,6 +83,8 @@ assert.throws(
   /Invalid DEVSPACE_LOG_FORMAT: color/,
 );
 
+assert.equal(loadConfig(baseEnv).deploymentMode, "local");
+assert.equal(loadConfig(baseEnv).oauth.mode, "owner-token");
 assert.equal(loadConfig(baseEnv).oauth.ownerToken, "test-owner-token-that-is-long-enough");
 assert.deepEqual(loadConfig(baseEnv).oauth.scopes, ["devspace"]);
 assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
@@ -92,6 +94,8 @@ assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
 ]);
 assert.equal(loadConfig(baseEnv).oauth.accessTokenTtlSeconds, 3600);
 assert.equal(loadConfig(baseEnv).oauth.refreshTokenTtlSeconds, 2592000);
+assert.equal(loadConfig(baseEnv).database.provider, "sqlite");
+assert.equal(loadConfig(baseEnv).database.provider === "sqlite" ? loadConfig(baseEnv).database.filePath.endsWith("devspace.sqlite") : false, true);
 
 assert.deepEqual(
   loadConfig({ ...baseEnv, DEVSPACE_OAUTH_SCOPES: "devspace,admin" }).oauth.scopes,
@@ -111,6 +115,93 @@ assert.equal(
   loadConfig({ ...baseEnv, DEVSPACE_OAUTH_REFRESH_TOKEN_TTL_SECONDS: "240" }).oauth
     .refreshTokenTtlSeconds,
   240,
+);
+
+const oidcEnv = {
+  ...baseEnv,
+  DEVSPACE_AUTH_MODE: "oidc",
+  DEVSPACE_OIDC_ISSUER: "https://auth.example.com/",
+  DEVSPACE_OIDC_AUDIENCE: "https://mcp.devspace.example.com",
+  DEVSPACE_OIDC_SCOPES: "devspace:workspace:open,devspace:files:read",
+};
+const oidcConfig = loadConfig(oidcEnv);
+assert.equal(oidcConfig.oauth.mode, "oidc");
+assert.equal(oidcConfig.oauth.ownerToken, undefined);
+assert.equal(oidcConfig.oauth.oidc?.issuer, "https://auth.example.com");
+assert.equal(oidcConfig.oauth.oidc?.audience, "https://mcp.devspace.example.com");
+assert.equal(oidcConfig.oauth.oidc?.jwksUri, "https://auth.example.com/.well-known/jwks.json");
+assert.equal(oidcConfig.oauth.oidc?.userClaim, "sub");
+assert.equal(oidcConfig.oauth.oidc?.clockToleranceSeconds, 30);
+assert.deepEqual(oidcConfig.oauth.scopes, ["devspace:workspace:open", "devspace:files:read"]);
+
+const oidcCustomConfig = loadConfig({
+  ...oidcEnv,
+  DEVSPACE_OIDC_JWKS_URI: "https://keys.example.com/jwks",
+  DEVSPACE_OIDC_USER_CLAIM: "email",
+  DEVSPACE_OIDC_TENANT_CLAIM: "org_id",
+  DEVSPACE_OIDC_CLOCK_TOLERANCE_SECONDS: "45",
+});
+assert.equal(oidcCustomConfig.oauth.oidc?.jwksUri, "https://keys.example.com/jwks");
+assert.equal(oidcCustomConfig.oauth.oidc?.userClaim, "email");
+assert.equal(oidcCustomConfig.oauth.oidc?.tenantClaim, "org_id");
+assert.equal(oidcCustomConfig.oauth.oidc?.clockToleranceSeconds, 45);
+
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_AUTH_MODE: "invalid" }),
+  /Invalid DEVSPACE_AUTH_MODE: invalid/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_AUTH_MODE: "oidc" }),
+  /DEVSPACE_OIDC_ISSUER is required/,
+);
+assert.throws(
+  () => loadConfig({ ...oidcEnv, DEVSPACE_OIDC_AUDIENCE: "" }),
+  /DEVSPACE_OIDC_AUDIENCE is required/,
+);
+
+const postgresConfig = loadConfig({
+  ...baseEnv,
+  DEVSPACE_DATABASE_PROVIDER: "postgres",
+  DEVSPACE_DATABASE_URL: "postgres://devspace:secret@db.example.com:5432/devspace",
+  DEVSPACE_POSTGRES_SSL_MODE: "require",
+});
+assert.equal(postgresConfig.database.provider, "postgres");
+assert.equal(postgresConfig.database.provider === "postgres" ? postgresConfig.database.url : undefined, "postgres://devspace:secret@db.example.com:5432/devspace");
+assert.equal(postgresConfig.database.provider === "postgres" ? postgresConfig.database.sslMode : undefined, "require");
+
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_DATABASE_PROVIDER: "mysql" }),
+  /Invalid DEVSPACE_DATABASE_PROVIDER: mysql/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_DATABASE_PROVIDER: "postgres" }),
+  /DEVSPACE_DATABASE_URL is required/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_DATABASE_PROVIDER: "postgres", DEVSPACE_DATABASE_URL: "postgres://db", DEVSPACE_POSTGRES_SSL_MODE: "always" }),
+  /Invalid DEVSPACE_POSTGRES_SSL_MODE: always/,
+);
+
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_DEPLOYMENT_MODE: "staging" }),
+  /Invalid DEVSPACE_DEPLOYMENT_MODE: staging/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_DEPLOYMENT_MODE: "production" }),
+  /DEVSPACE_DEPLOYMENT_MODE=production requires DEVSPACE_AUTH_MODE=oidc/,
+);
+assert.throws(
+  () => loadConfig({ ...oidcEnv, DEVSPACE_DEPLOYMENT_MODE: "production" }),
+  /DEVSPACE_DEPLOYMENT_MODE=production requires DEVSPACE_DATABASE_PROVIDER=postgres/,
+);
+assert.equal(
+  loadConfig({
+    ...oidcEnv,
+    DEVSPACE_DEPLOYMENT_MODE: "production",
+    DEVSPACE_DATABASE_PROVIDER: "postgres",
+    DEVSPACE_DATABASE_URL: "postgres://devspace:secret@db.example.com:5432/devspace",
+  }).deploymentMode,
+  "production",
 );
 
 assert.throws(
