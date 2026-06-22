@@ -118,20 +118,16 @@ async function runPostgresIntegrationTest(
       owner,
       workspaceSessionId: sessionId,
       files: [
-        { path: "/tmp/devspace-postgres-integration/AGENTS.md", content: "root instructions
-" },
-        { path: "/tmp/devspace-postgres-integration/nested/AGENTS.md", content: "nested instructions
-" },
+        { path: "/tmp/devspace-postgres-integration/AGENTS.md", content: "root instructions\n" },
+        { path: "/tmp/devspace-postgres-integration/nested/AGENTS.md", content: "nested instructions\n" },
       ],
     });
     const loadedAgentFiles = await store.getLoadedAgentFiles(sessionId, owner);
     assert.deepEqual(
       loadedAgentFiles.map((file) => ({ path: file.path, content: file.content })),
       [
-        { path: "/tmp/devspace-postgres-integration/AGENTS.md", content: "root instructions
-" },
-        { path: "/tmp/devspace-postgres-integration/nested/AGENTS.md", content: "nested instructions
-" },
+        { path: "/tmp/devspace-postgres-integration/AGENTS.md", content: "root instructions\n" },
+        { path: "/tmp/devspace-postgres-integration/nested/AGENTS.md", content: "nested instructions\n" },
       ],
     );
     assert.match(loadedAgentFiles[0]?.contentHash ?? "", /^[a-f0-9]{64}$/);
