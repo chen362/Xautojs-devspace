@@ -59,6 +59,22 @@ const runner: PostgresQueryRunner = async <Row>(
     return { rows: [], rowCount: 1 };
   }
 
+  if (normalizedSql.startsWith("delete from workspace_sessions where id")) {
+    const id = stringValue(query.values[0]);
+    if (!sessionMatchesOwner(id, stringValue(query.values[1]), stringValue(query.values[2]))) {
+      return { rows: [], rowCount: 0 };
+    }
+
+    deleteWorkspaceSessionRows((row) => row.id === id);
+    return { rows: [], rowCount: 1 };
+  }
+
+  if (normalizedSql.startsWith("delete from workspace_sessions where last_used_at")) {
+    const cutoff = stringValue(query.values[0]);
+    const rowCount = deleteWorkspaceSessionRows((row) => row.last_used_at < cutoff);
+    return { rows: [], rowCount };
+  }
+
   if (normalizedSql.startsWith("delete from loaded_agent_files")) {
     const ownsSession = sessionMatchesOwner(
       stringValue(query.values[0]),
@@ -223,6 +239,28 @@ const lastTouchValue = calls.at(-1)?.values[3];
 assert.equal(typeof lastTouchValue, "string");
 assert.equal(rows[0]?.last_used_at, lastTouchValue);
 
+await store.createSession({
+  owner: alice,
+  id: "ws_postgres_expired",
+  root: "/expired",
+});
+await store.saveLoadedAgentFiles({
+  owner: alice,
+  workspaceSessionId: "ws_postgres_expired",
+  files: [{ path: "/expired/AGENTS.md", content: "expired instructions\n" }],
+});
+const expiredRow = rows.find((row) => row.id === "ws_postgres_expired");
+if (!expiredRow) throw new Error("Missing expired test session");
+expiredRow.last_used_at = "2000-01-01T00:00:00.000Z";
+assert.equal(await store.deleteExpiredSessions("2001-01-01T00:00:00.000Z"), 1);
+assert.equal(await store.getSession("ws_postgres_expired", alice), undefined);
+assert.deepEqual(await store.getLoadedAgentFiles("ws_postgres_expired", alice), []);
+
+assert.equal(await store.deleteSession("ws_postgres_1", bob), false);
+assert.equal(await store.deleteSession("ws_postgres_1", alice), true);
+assert.equal(await store.getSession("ws_postgres_1", alice), undefined);
+assert.deepEqual(await store.getLoadedAgentFiles("ws_postgres_1", alice), []);
+
 function stringValue(value: unknown): string {
   if (typeof value !== "string") throw new Error(`Expected string value: ${String(value)}`);
   return value;
@@ -235,6 +273,25 @@ function nullableStringValue(value: unknown): string | null {
 
 function sessionMatchesOwner(id: string, tenantId: string, userId: string): boolean {
   return rows.some((row) => row.id === id && row.tenant_id === tenantId && row.user_id === userId);
+}
+
+function deleteWorkspaceSessionRows(predicate: (row: StoredWorkspaceSessionRow) => boolean): number {
+  let rowCount = 0;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (!row || !predicate(row)) continue;
+
+    const sessionId = row.id;
+    rows.splice(index, 1);
+    rowCount += 1;
+    for (let fileIndex = agentFileRows.length - 1; fileIndex >= 0; fileIndex -= 1) {
+      if (agentFileRows[fileIndex]?.workspace_session_id === sessionId) {
+        agentFileRows.splice(fileIndex, 1);
+      }
+    }
+  }
+
+  return rowCount;
 }
 
 function hashContent(content: string): string {

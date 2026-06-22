@@ -191,7 +191,8 @@ async function serve(): Promise<void> {
   }
 
   const { createServer } = await import("./server.js");
-  const { app } = createServer(config);
+  const runningServer = createServer(config);
+  const { app } = runningServer;
   const httpServer = app.listen(config.port, config.host, () => {
     console.log(`devspace listening on http://${config.host}:${config.port}/mcp`);
     console.log(`public base url: ${config.publicBaseUrl}`);
@@ -206,7 +207,9 @@ async function serve(): Promise<void> {
   });
 
   const shutdown = () => {
-    httpServer.close(() => process.exit(0));
+    httpServer.close(() => {
+      void runningServer.close().finally(() => process.exit(0));
+    });
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);

@@ -140,6 +140,30 @@ async function runPostgresIntegrationTest(
     const touched = await store.getSession(sessionId, owner);
     assert.ok(touched);
     assert.notEqual(touched.lastUsedAt, loaded?.lastUsedAt);
+
+    const expiredSessionId = `ws_postgres_it_expired_${randomUUID()}`;
+    await store.createSession({
+      owner,
+      id: expiredSessionId,
+      root: "/tmp/devspace-postgres-expired",
+    });
+    await store.saveLoadedAgentFiles({
+      owner,
+      workspaceSessionId: expiredSessionId,
+      files: [{ path: "/tmp/devspace-postgres-expired/AGENTS.md", content: "expired instructions\n" }],
+    });
+    await adminPool.query(
+      `update ${quoteIdentifier(schemaName)}.workspace_sessions set last_used_at = $1::timestamptz where id = $2`,
+      ["2000-01-01T00:00:00.000Z", expiredSessionId],
+    );
+    assert.equal(await store.deleteExpiredSessions("2001-01-01T00:00:00.000Z"), 1);
+    assert.equal(await store.getSession(expiredSessionId, owner), undefined);
+    assert.deepEqual(await store.getLoadedAgentFiles(expiredSessionId, owner), []);
+
+    assert.equal(await store.deleteSession(sessionId, otherOwner), false);
+    assert.equal(await store.deleteSession(sessionId, owner), true);
+    assert.equal(await store.getSession(sessionId, owner), undefined);
+    assert.deepEqual(await store.getLoadedAgentFiles(sessionId, owner), []);
   } finally {
     await store?.close();
     await adminPool.query(`drop schema if exists ${quoteIdentifier(schemaName)} cascade`);

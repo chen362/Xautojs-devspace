@@ -39,6 +39,8 @@ npx @waishnav/devspace db migrate
 | `DEVSPACE_ALLOWED_HOSTS` | Optional Host header allowlist override. |
 | `DEVSPACE_OAUTH_OWNER_TOKEN` | Owner password for OAuth approval. Must be at least 16 characters. |
 | `DEVSPACE_WORKTREE_ROOT` | Directory for managed Git worktrees. Defaults to `~/.devspace/worktrees`. |
+| `DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS` | Optional age limit for workspace sessions based on `last_used_at`. When unset, sessions are not automatically expired. |
+| `DEVSPACE_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS` | Background cleanup interval when session TTL is enabled. Defaults to `3600`. |
 | `DEVSPACE_STATE_DIR` | Directory for SQLite state. Defaults to `~/.local/share/devspace`. |
 
 ## Database
@@ -85,13 +87,27 @@ npm run test:postgres
 ```
 
 `npm run test:postgres` creates a temporary schema, runs the packaged Postgres
-migrations there, verifies `PostgresWorkspaceStore` create/read/touch behavior,
-and drops the schema before exit. It skips cleanly when `DEVSPACE_DATABASE_URL`
-is not set.
+migrations there, verifies `PostgresWorkspaceStore` create/read/touch/cleanup
+behavior, and drops the schema before exit. It skips cleanly when
+`DEVSPACE_DATABASE_URL` is not set. CI also runs this test against a temporary
+Postgres service on Ubuntu.
 
 `devspace serve` checks the Postgres schema before starting and exits with a
 migration hint if the schema version table is missing, a migration is pending,
 or an applied migration checksum no longer matches the packaged SQL file.
+
+Workspace sessions and loaded AGENTS/CLAUDE file snapshots are stored in the
+database. `loaded_agent_files` rows cascade when their workspace session is
+deleted. To enable automatic session expiry in long-running deployments, set a
+TTL and optionally tune the cleanup interval:
+
+```bash
+DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS="2592000" \
+DEVSPACE_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS="3600" \
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+npx @waishnav/devspace serve
+```
 
 Example:
 

@@ -65,6 +65,8 @@ export interface WorkspaceStore {
     files: LoadedAgentFileInput[];
   }): Promise<void>;
   getLoadedAgentFiles(workspaceSessionId: string, owner: WorkspaceIdentity): Promise<LoadedAgentFile[]>;
+  deleteSession(id: string, owner: WorkspaceIdentity): Promise<boolean>;
+  deleteExpiredSessions(cutoff: string): Promise<number>;
   touchSession(id: string, owner: WorkspaceIdentity): Promise<void>;
   close?(): Promise<void>;
 }
@@ -199,6 +201,27 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return rows.map(rowToLoadedAgentFile);
   }
 
+  async deleteSession(id: string, owner: WorkspaceIdentity): Promise<boolean> {
+    const result = this.database.sqlite
+      .prepare(`
+        delete from workspace_sessions
+        where id = ?
+          and tenant_id = ?
+          and user_id = ?
+      `)
+      .run(id, owner.tenantId, owner.userId);
+
+    return result.changes > 0;
+  }
+
+  async deleteExpiredSessions(cutoff: string): Promise<number> {
+    const result = this.database.sqlite
+      .prepare("delete from workspace_sessions where last_used_at < ?")
+      .run(cutoff);
+
+    return result.changes;
+  }
+
   async touchSession(id: string, owner: WorkspaceIdentity): Promise<void> {
     this.database.db
       .update(workspaceSessions)
@@ -237,6 +260,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       create index if not exists workspace_sessions_owner_status_idx
         on workspace_sessions(tenant_id, user_id, status, last_used_at desc);
 
+      create index if not exists workspace_sessions_last_used_idx
+        on workspace_sessions(last_used_at);
+
       create table if not exists loaded_agent_files (
         workspace_session_id text not null,
         path text not null,
@@ -270,6 +296,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
       create index if not exists workspace_sessions_owner_status_idx
         on workspace_sessions(tenant_id, user_id, status, last_used_at desc);
+
+      create index if not exists workspace_sessions_last_used_idx
+        on workspace_sessions(last_used_at);
     `);
   }
 

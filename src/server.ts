@@ -42,7 +42,7 @@ import {
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { formatPathForPrompt } from "./skills.js";
-import { createWorkspaceStore } from "./workspace-store.js";
+import { createWorkspaceStore, type WorkspaceStore } from "./workspace-store.js";
 import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
 
 type Transport = StreamableHTTPServerTransport;
@@ -70,6 +70,7 @@ const SHELL_TOOL_ANNOTATIONS = {
 interface RunningServer {
   app: ReturnType<typeof createMcpExpressApp>;
   config: ServerConfig;
+  close(): Promise<void>;
 }
 
 interface McpTransportSession {
@@ -1274,6 +1275,50 @@ function createMcpServer(
   return server;
 }
 
+interface WorkspaceSessionCleanup {
+  close(): void;
+}
+
+function startWorkspaceSessionCleanup(
+  config: ServerConfig,
+  store: WorkspaceStore,
+): WorkspaceSessionCleanup | undefined {
+  const ttlSeconds = config.workspaceSessionTtlSeconds;
+  if (ttlSeconds === null) return undefined;
+
+  let running = false;
+  const runCleanup = async () => {
+    if (running) return;
+    running = true;
+    const cutoff = new Date(Date.now() - ttlSeconds * 1000).toISOString();
+
+    try {
+      const deleted = await store.deleteExpiredSessions(cutoff);
+      logEvent(config.logging, deleted > 0 ? "info" : "debug", "workspace_session_cleanup", {
+        cutoff,
+        deleted,
+      });
+    } catch (error) {
+      logEvent(config.logging, "warn", "workspace_session_cleanup_failed", {
+        cutoff,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      running = false;
+    }
+  };
+
+  void runCleanup();
+  const interval = setInterval(() => {
+    void runCleanup();
+  }, config.workspaceSessionCleanupIntervalSeconds * 1000);
+  interval.unref();
+
+  return {
+    close: () => clearInterval(interval),
+  };
+}
+
 export function createServer(config = loadConfig()): RunningServer {
   const allowedHosts = config.allowedHosts.includes("*")
     ? undefined
@@ -1292,6 +1337,7 @@ export function createServer(config = loadConfig()): RunningServer {
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
   const workspaceStore = createWorkspaceStore(config.database);
+  const workspaceSessionCleanup = startWorkspaceSessionCleanup(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
 
   if (config.logging.trustProxy) {
@@ -1478,7 +1524,14 @@ export function createServer(config = loadConfig()): RunningServer {
     }
   });
 
-  return { app, config };
+  return {
+    app,
+    config,
+    close: async () => {
+      workspaceSessionCleanup?.close();
+      await workspaceStore.close?.();
+    },
+  };
 }
 
 async function isMainModule(): Promise<boolean> {
@@ -1490,8 +1543,9 @@ async function isMainModule(): Promise<boolean> {
 }
 
 if (await isMainModule()) {
-  const { app, config } = createServer();
-  app.listen(config.port, config.host, () => {
+  const runningServer = createServer();
+  const { app, config } = runningServer;
+  const httpServer = app.listen(config.port, config.host, () => {
     console.log(
       `devspace listening on http://${config.host}:${config.port}/mcp`,
     );
@@ -1502,4 +1556,12 @@ if (await isMainModule()) {
     console.log(`asset logging: ${config.logging.assets ? "enabled" : "disabled"}`);
     console.log(`trust proxy: ${config.logging.trustProxy ? "enabled" : "disabled"}`);
   });
+
+  const shutdown = () => {
+    httpServer.close(() => {
+      void runningServer.close().finally(() => process.exit(0));
+    });
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 }
