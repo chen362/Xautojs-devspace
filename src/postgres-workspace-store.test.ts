@@ -192,32 +192,26 @@ await store.saveLoadedAgentFiles({
   owner: alice,
   workspaceSessionId: "ws_postgres_1",
   files: [
-    { path: "/repo/AGENTS.md", content: "root instructions
-" },
-    { path: "/repo/nested/AGENTS.md", content: "nested instructions
-" },
+    { path: "/repo/AGENTS.md", content: "root instructions\n" },
+    { path: "/repo/nested/AGENTS.md", content: "nested instructions\n" },
   ],
 });
 const loadedAgentFiles = await store.getLoadedAgentFiles("ws_postgres_1", alice);
 assert.deepEqual(
   loadedAgentFiles.map((file) => ({ path: file.path, content: file.content })),
   [
-    { path: "/repo/AGENTS.md", content: "root instructions
-" },
-    { path: "/repo/nested/AGENTS.md", content: "nested instructions
-" },
+    { path: "/repo/AGENTS.md", content: "root instructions\n" },
+    { path: "/repo/nested/AGENTS.md", content: "nested instructions\n" },
   ],
 );
-assert.equal(loadedAgentFiles[0]?.contentHash, hashContent("root instructions
-"));
+assert.equal(loadedAgentFiles[0]?.contentHash, hashContent("root instructions\n"));
 assert.match(loadedAgentFiles[0]?.loadedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
 assert.deepEqual(await store.getLoadedAgentFiles("ws_postgres_1", bob), []);
 
 await store.saveLoadedAgentFiles({
   owner: bob,
   workspaceSessionId: "ws_postgres_1",
-  files: [{ path: "/repo/BOB.md", content: "bob instructions
-" }],
+  files: [{ path: "/repo/BOB.md", content: "bob instructions\n" }],
 });
 assert.equal(agentFileRows.length, 2);
 
