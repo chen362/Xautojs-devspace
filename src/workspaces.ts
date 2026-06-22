@@ -83,43 +83,14 @@ export class WorkspaceRegistry {
     return this.openCheckoutWorkspace(options.path);
   }
 
-  async getWorkspace(workspaceId: string): Promise<Workspace> {
+  getWorkspace(workspaceId: string): Workspace {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) {
-      await this.store?.touchSession(workspaceId, this.owner);
+      this.touchSessionInBackground(workspaceId);
       return workspace;
     }
 
-    const session = await this.store?.getSession(workspaceId, this.owner);
-    if (!session) {
-      throw new Error(`Unknown workspaceId: ${workspaceId}. Call open_workspace first.`);
-    }
-
-    const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
-    const restoredWorkspace: Workspace = {
-      id: session.id,
-      owner: this.owner,
-      root,
-      mode: session.mode,
-      sourceRoot: session.sourceRoot,
-      worktree:
-        session.mode === "worktree"
-          ? {
-              path: root,
-              baseRef: session.baseRef ?? "HEAD",
-              baseSha: session.baseSha ?? "",
-              dirtySource: false,
-              detached: true,
-              managed: session.managed,
-            }
-          : undefined,
-      ...this.loadSkillsForWorkspace(root),
-      activatedSkillDirs: new Set(),
-    };
-    await this.store?.touchSession(workspaceId, this.owner);
-    this.workspaces.set(restoredWorkspace.id, restoredWorkspace);
-
-    return restoredWorkspace;
+    return this.restoreWorkspace(workspaceId) as unknown as Workspace;
   }
 
   resolvePath(workspace: Workspace, inputPath: string): string {
@@ -162,6 +133,44 @@ export class WorkspaceRegistry {
   resolveWorkingDirectory(workspace: Workspace, workingDirectory: string | undefined): string {
     const directory = workingDirectory ? this.resolvePath(workspace, workingDirectory) : workspace.root;
     return assertAllowedPath(directory, [workspace.root]);
+  }
+
+  private async restoreWorkspace(workspaceId: string): Promise<Workspace> {
+    const session = await this.store?.getSession(workspaceId, this.owner);
+    if (!session) {
+      throw new Error(`Unknown workspaceId: ${workspaceId}. Call open_workspace first.`);
+    }
+
+    const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
+    const restoredWorkspace: Workspace = {
+      id: session.id,
+      owner: this.owner,
+      root,
+      mode: session.mode,
+      sourceRoot: session.sourceRoot,
+      worktree:
+        session.mode === "worktree"
+          ? {
+              path: root,
+              baseRef: session.baseRef ?? "HEAD",
+              baseSha: session.baseSha ?? "",
+              dirtySource: false,
+              detached: true,
+              managed: session.managed,
+            }
+          : undefined,
+      ...this.loadSkillsForWorkspace(root),
+      activatedSkillDirs: new Set(),
+    };
+    await this.store?.touchSession(workspaceId, this.owner);
+    this.workspaces.set(restoredWorkspace.id, restoredWorkspace);
+
+    return restoredWorkspace;
+  }
+
+  private touchSessionInBackground(workspaceId: string): void {
+    if (!this.store) return;
+    void this.store.touchSession(workspaceId, this.owner).catch(() => undefined);
   }
 
   private async openCheckoutWorkspace(path: string): Promise<WorkspaceContext> {
