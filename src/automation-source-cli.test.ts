@@ -13,6 +13,54 @@ import type {
 const localConfig = configFor("local");
 const productionConfig = configFor("production");
 
+class FakeAutomationSourceStore implements AutomationSourceCliStore {
+  readonly sources: AutomationSource[] = [];
+  closed = false;
+
+  async createSource(input: CreateAutomationSourceInput): Promise<AutomationSource> {
+    const source: AutomationSource = {
+      id: input.id,
+      tenantId: input.owner.tenantId,
+      userId: input.owner.userId,
+      kind: input.kind,
+      name: input.name,
+      status: input.status ?? "enabled",
+      ...(input.secretRef ? { secretRef: input.secretRef } : {}),
+      ...(input.tokenHash ? { tokenHash: input.tokenHash } : {}),
+      config: input.config ?? {},
+      createdAt: "2026-06-22T00:00:00.000Z",
+      updatedAt: "2026-06-22T00:00:00.000Z",
+    };
+    this.sources.unshift(source);
+    return source;
+  }
+
+  async listSources(input: ListAutomationSourcesInput): Promise<AutomationSource[]> {
+    return this.sources.filter(
+      (source) =>
+        ownerMatches(source, input.owner) &&
+        (!input.kind || source.kind === input.kind) &&
+        (!input.status || source.status === input.status),
+    );
+  }
+
+  async rotateSourceToken(input: RotateAutomationSourceTokenInput): Promise<AutomationSource | undefined> {
+    const source = this.sources.find((candidate) => candidate.id === input.id && ownerMatches(candidate, input.owner));
+    if (!source) return undefined;
+    source.tokenHash = input.tokenHash;
+    source.updatedAt = "2026-06-22T00:00:01.000Z";
+    return source;
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+}
+
+function ownerMatches(source: AutomationSource, owner: WorkspaceIdentity): boolean {
+  return source.tenantId === owner.tenantId && source.userId === owner.userId;
+}
+
 {
   const store = new FakeAutomationSourceStore();
   const writes: string[] = [];
@@ -175,54 +223,6 @@ await assert.rejects(
 
   assert.equal(store.sources[0]?.tenantId, "https://auth.example.com#tenant-a");
   assert.equal(store.sources[0]?.userId, "https://auth.example.com#tenant-a#alice");
-}
-
-class FakeAutomationSourceStore implements AutomationSourceCliStore {
-  readonly sources: AutomationSource[] = [];
-  closed = false;
-
-  async createSource(input: CreateAutomationSourceInput): Promise<AutomationSource> {
-    const source: AutomationSource = {
-      id: input.id,
-      tenantId: input.owner.tenantId,
-      userId: input.owner.userId,
-      kind: input.kind,
-      name: input.name,
-      status: input.status ?? "enabled",
-      ...(input.secretRef ? { secretRef: input.secretRef } : {}),
-      ...(input.tokenHash ? { tokenHash: input.tokenHash } : {}),
-      config: input.config ?? {},
-      createdAt: "2026-06-22T00:00:00.000Z",
-      updatedAt: "2026-06-22T00:00:00.000Z",
-    };
-    this.sources.unshift(source);
-    return source;
-  }
-
-  async listSources(input: ListAutomationSourcesInput): Promise<AutomationSource[]> {
-    return this.sources.filter(
-      (source) =>
-        ownerMatches(source, input.owner) &&
-        (!input.kind || source.kind === input.kind) &&
-        (!input.status || source.status === input.status),
-    );
-  }
-
-  async rotateSourceToken(input: RotateAutomationSourceTokenInput): Promise<AutomationSource | undefined> {
-    const source = this.sources.find((candidate) => candidate.id === input.id && ownerMatches(candidate, input.owner));
-    if (!source) return undefined;
-    source.tokenHash = input.tokenHash;
-    source.updatedAt = "2026-06-22T00:00:01.000Z";
-    return source;
-  }
-
-  async close(): Promise<void> {
-    this.closed = true;
-  }
-}
-
-function ownerMatches(source: AutomationSource, owner: WorkspaceIdentity): boolean {
-  return source.tenantId === owner.tenantId && source.userId === owner.userId;
 }
 
 function configFor(deploymentMode: ServerConfig["deploymentMode"]): ServerConfig {
