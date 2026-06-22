@@ -1,12 +1,8 @@
-import { spawnSync } from "node:child_process";
 import type { PostgresDatabaseConfig } from "./db/types.js";
 import { LOCAL_WORKSPACE_IDENTITY, type WorkspaceIdentity } from "./identity.js";
 import type { WorkspaceMode, WorkspaceSession, WorkspaceStore } from "./workspace-store.js";
 
 type QueryValue = string | boolean | null;
-type WorkerPayload<Row> =
-  | { ok: true; rows: Row[]; rowCount: number }
-  | { ok: false; error: string };
 
 export interface PostgresQuery {
   text: string;
@@ -19,9 +15,30 @@ export interface PostgresQueryResult<Row = Record<string, unknown>> {
 }
 
 export type PostgresQueryRunner = <Row = Record<string, unknown>>(
-  config: PostgresDatabaseConfig,
   query: PostgresQuery,
-) => PostgresQueryResult<Row>;
+) => Promise<PostgresQueryResult<Row>>;
+
+interface PgPoolResult<Row> {
+  rows: Row[];
+  rowCount: number | null;
+}
+
+interface PgPool {
+  query<Row = Record<string, unknown>>(
+    text: string,
+    values?: QueryValue[],
+  ): Promise<PgPoolResult<Row>>;
+  end(): Promise<void>;
+}
+
+interface PgPoolConstructor {
+  new (config: {
+    connectionString: string;
+    ssl?: boolean | { rejectUnauthorized: boolean };
+    application_name: string;
+    max: number;
+  }): PgPool;
+}
 
 interface PostgresWorkspaceSessionRow {
   id: string;
@@ -46,12 +63,14 @@ export class PostgresWorkspaceStoreQueryError extends Error {
 }
 
 export class PostgresWorkspaceStore implements WorkspaceStore {
+  private poolPromise: Promise<PgPool> | undefined;
+
   constructor(
     readonly config: PostgresDatabaseConfig,
-    private readonly queryRunner: PostgresQueryRunner = runPostgresQuery,
+    private readonly queryRunner?: PostgresQueryRunner,
   ) {}
 
-  createSession(input: {
+  async createSession(input: {
     owner: WorkspaceIdentity;
     id: string;
     root: string;
@@ -60,7 +79,7 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
-  }): WorkspaceSession {
+  }): Promise<WorkspaceSession> {
     const now = new Date().toISOString();
     const session: WorkspaceSession = {
       id: input.id,
@@ -77,7 +96,7 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
       lastUsedAt: now,
     };
 
-    this.queryRunner(this.config, {
+    await this.query({
       text: `
         insert into workspace_sessions (
           id,
@@ -126,8 +145,8 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     return session;
   }
 
-  getSession(id: string, owner: WorkspaceIdentity): WorkspaceSession | undefined {
-    const result = this.queryRunner<PostgresWorkspaceSessionRow>(this.config, {
+  async getSession(id: string, owner: WorkspaceIdentity): Promise<WorkspaceSession | undefined> {
+    const result = await this.query<PostgresWorkspaceSessionRow>({
       text: `
         select
           id,
@@ -155,8 +174,8 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     return row ? rowToWorkspaceSession(row) : undefined;
   }
 
-  touchSession(id: string, owner: WorkspaceIdentity): void {
-    this.queryRunner(this.config, {
+  async touchSession(id: string, owner: WorkspaceIdentity): Promise<void> {
+    await this.query({
       text: `
         update workspace_sessions
         set last_used_at = $4::timestamptz
@@ -168,8 +187,31 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     });
   }
 
-  close(): void {
-    // The default runner opens a short-lived worker process per query.
+  async close(): Promise<void> {
+    const poolPromise = this.poolPromise;
+    this.poolPromise = undefined;
+    if (!poolPromise) return;
+
+    const pool = await poolPromise;
+    await pool.end();
+  }
+
+  private async query<Row = Record<string, unknown>>(
+    query: PostgresQuery,
+  ): Promise<PostgresQueryResult<Row>> {
+    if (this.queryRunner) return this.queryRunner<Row>(query);
+
+    const pool = await this.pool();
+    const result = await pool.query<Row>(query.text, query.values);
+    return {
+      rows: result.rows ?? [],
+      rowCount: result.rowCount ?? 0,
+    };
+  }
+
+  private pool(): Promise<PgPool> {
+    this.poolPromise ??= createPool(this.config);
+    return this.poolPromise;
   }
 }
 
@@ -195,88 +237,48 @@ function toIsoString(value: string | Date): string {
   return value;
 }
 
-function runPostgresQuery<Row>(
-  config: PostgresDatabaseConfig,
-  query: PostgresQuery,
-): PostgresQueryResult<Row> {
-  const child = spawnSync(process.execPath, ["--input-type=module", "--eval", POSTGRES_QUERY_WORKER], {
-    input: JSON.stringify({ config, query }),
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024,
-    env: process.env,
+async function createPool(config: PostgresDatabaseConfig): Promise<PgPool> {
+  const Pool = await importPgPool();
+  return new Pool({
+    connectionString: config.url,
+    ssl: sslFor(config),
+    application_name: "devspace",
+    max: 10,
   });
-
-  if (child.error) {
-    throw new PostgresWorkspaceStoreQueryError(child.error.message);
-  }
-
-  const output = child.stdout.trim();
-  if (!output) {
-    const details = child.stderr.trim() || `worker exited with status ${child.status ?? "unknown"}`;
-    throw new PostgresWorkspaceStoreQueryError(details);
-  }
-
-  let payload: WorkerPayload<Row>;
-  try {
-    payload = JSON.parse(output) as WorkerPayload<Row>;
-  } catch {
-    throw new PostgresWorkspaceStoreQueryError(output);
-  }
-
-  if (!payload.ok) {
-    throw new PostgresWorkspaceStoreQueryError(payload.error);
-  }
-
-  return {
-    rows: payload.rows,
-    rowCount: payload.rowCount,
-  };
 }
 
-const POSTGRES_QUERY_WORKER = `
-const input = await new Promise((resolve, reject) => {
-  let data = "";
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk) => { data += chunk; });
-  process.stdin.on("end", () => resolve(data));
-  process.stdin.on("error", reject);
-});
+async function importPgPool(): Promise<PgPoolConstructor> {
+  const moduleName = "pg";
 
-function sslFor(config) {
+  try {
+    const pg = (await import(moduleName)) as {
+      Pool?: PgPoolConstructor;
+      default?: { Pool?: PgPoolConstructor };
+    };
+    const Pool = pg.Pool ?? pg.default?.Pool;
+    if (!Pool) {
+      throw new Error("The pg module did not export Pool.");
+    }
+
+    return Pool;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isMissingPgDependency(message)) {
+      throw new PostgresWorkspaceStoreQueryError(
+        "Postgres mode requires the optional pg peer dependency. Install it next to DevSpace with: npm install pg",
+      );
+    }
+
+    throw error;
+  }
+}
+
+function isMissingPgDependency(message: string): boolean {
+  return message.includes("Cannot find package 'pg'") || message.includes("Cannot find module 'pg'");
+}
+
+function sslFor(config: PostgresDatabaseConfig): boolean | { rejectUnauthorized: boolean } | undefined {
   if (config.sslMode === "disable") return false;
   if (config.sslMode === "require") return { rejectUnauthorized: false };
   return undefined;
 }
-
-try {
-  const { Pool } = await import("pg");
-  const { config, query } = JSON.parse(input);
-  const pool = new Pool({
-    connectionString: config.url,
-    ssl: sslFor(config),
-    application_name: "devspace",
-    max: 1,
-  });
-
-  try {
-    const result = await pool.query(query.text, query.values);
-    process.stdout.write(JSON.stringify({
-      ok: true,
-      rows: result.rows ?? [],
-      rowCount: result.rowCount ?? 0,
-    }));
-  } finally {
-    await pool.end();
-  }
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  const pgMissing = message.includes("Cannot find package 'pg'") || message.includes('Cannot find module');
-  process.stdout.write(JSON.stringify({
-    ok: false,
-    error: pgMissing
-      ? "Postgres mode requires the optional pg peer dependency. Install it next to DevSpace with: npm install pg"
-      : message,
-  }));
-  process.exitCode = 1;
-}
-`;
