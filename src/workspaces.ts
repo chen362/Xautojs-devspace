@@ -169,6 +169,7 @@ export class WorkspaceRegistry {
       activatedSkillDirs: new Set(),
     };
     await this.store?.touchSession(workspaceId, this.owner);
+    await this.persistLoadedAgentFiles(restoredWorkspace.id, agentsFiles);
     this.workspaces.set(restoredWorkspace.id, restoredWorkspace);
 
     return restoredWorkspace;
@@ -237,14 +238,21 @@ export class WorkspaceRegistry {
       baseSha: workspace.worktree?.baseSha,
       managed: workspace.worktree?.managed,
     });
-    await this.store?.saveLoadedAgentFiles({
-      owner: this.owner,
-      workspaceSessionId: workspace.id,
-      files: agentsFiles,
-    });
+    await this.persistLoadedAgentFiles(workspace.id, agentsFiles);
     this.workspaces.set(workspace.id, workspace);
 
     return { workspace, agentsFiles, availableAgentsFiles };
+  }
+
+  private async persistLoadedAgentFiles(
+    workspaceSessionId: string,
+    files: LoadedAgentsFile[],
+  ): Promise<void> {
+    await this.store?.saveLoadedAgentFiles({
+      owner: this.owner,
+      workspaceSessionId,
+      files,
+    });
   }
 
   private async loadRestoredAgentsFiles(
