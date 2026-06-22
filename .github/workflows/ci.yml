@@ -47,3 +47,47 @@ jobs:
 
       - name: Doctor
         run: node dist/cli.js doctor
+
+  postgres-integration:
+    name: Postgres integration (ubuntu-latest)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: devspace
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: devspace_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devspace -d devspace_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DEVSPACE_ALLOWED_ROOTS: ${{ github.workspace }}
+      DEVSPACE_OAUTH_OWNER_TOKEN: ci-owner-token-that-is-long-enough
+      DEVSPACE_PUBLIC_BASE_URL: http://127.0.0.1:7676
+      DEVSPACE_DATABASE_URL: postgres://devspace:secret@127.0.0.1:5432/devspace_test
+      DEVSPACE_POSTGRES_SSL_MODE: disable
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Postgres peer dependency
+        run: npm install --no-save --no-package-lock pg
+
+      - name: Run Postgres integration tests
+        run: npm run test:postgres

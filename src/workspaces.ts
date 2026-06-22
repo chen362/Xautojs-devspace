@@ -42,6 +42,8 @@ export interface Workspace {
   worktree?: WorkspaceWorktree;
   skills: LoadedSkills["skills"];
   skillDiagnostics: LoadedSkills["diagnostics"];
+  agentsFiles: LoadedAgentsFile[];
+  availableAgentsFiles: AvailableAgentsFile[];
   activatedSkillDirs: Set<string>;
 }
 
@@ -83,43 +85,14 @@ export class WorkspaceRegistry {
     return this.openCheckoutWorkspace(options.path);
   }
 
-  getWorkspace(workspaceId: string): Workspace {
+  async getWorkspace(workspaceId: string): Promise<Workspace> {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) {
-      this.store?.touchSession(workspaceId, this.owner);
+      this.touchSessionInBackground(workspaceId);
       return workspace;
     }
 
-    const session = this.store?.getSession(workspaceId, this.owner);
-    if (!session) {
-      throw new Error(`Unknown workspaceId: ${workspaceId}. Call open_workspace first.`);
-    }
-
-    const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
-    const restoredWorkspace: Workspace = {
-      id: session.id,
-      owner: this.owner,
-      root,
-      mode: session.mode,
-      sourceRoot: session.sourceRoot,
-      worktree:
-        session.mode === "worktree"
-          ? {
-              path: root,
-              baseRef: session.baseRef ?? "HEAD",
-              baseSha: session.baseSha ?? "",
-              dirtySource: false,
-              detached: true,
-              managed: session.managed,
-            }
-          : undefined,
-      ...this.loadSkillsForWorkspace(root),
-      activatedSkillDirs: new Set(),
-    };
-    this.store?.touchSession(workspaceId, this.owner);
-    this.workspaces.set(restoredWorkspace.id, restoredWorkspace);
-
-    return restoredWorkspace;
+    return this.restoreWorkspace(workspaceId);
   }
 
   resolvePath(workspace: Workspace, inputPath: string): string {
@@ -164,6 +137,49 @@ export class WorkspaceRegistry {
     return assertAllowedPath(directory, [workspace.root]);
   }
 
+  private async restoreWorkspace(workspaceId: string): Promise<Workspace> {
+    const session = await this.store?.getSession(workspaceId, this.owner);
+    if (!session) {
+      throw new Error(`Unknown workspaceId: ${workspaceId}. Call open_workspace first.`);
+    }
+
+    const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
+    const agentsFiles = await this.loadRestoredAgentsFiles(session.id, root);
+    const availableAgentsFiles = await this.findAvailableAgentsFiles(root, agentsFiles);
+    const restoredWorkspace: Workspace = {
+      id: session.id,
+      owner: this.owner,
+      root,
+      mode: session.mode,
+      sourceRoot: session.sourceRoot,
+      worktree:
+        session.mode === "worktree"
+          ? {
+              path: root,
+              baseRef: session.baseRef ?? "HEAD",
+              baseSha: session.baseSha ?? "",
+              dirtySource: false,
+              detached: true,
+              managed: session.managed,
+            }
+          : undefined,
+      ...this.loadSkillsForWorkspace(root),
+      agentsFiles,
+      availableAgentsFiles,
+      activatedSkillDirs: new Set(),
+    };
+    await this.store?.touchSession(workspaceId, this.owner);
+    await this.persistLoadedAgentFiles(restoredWorkspace.id, agentsFiles);
+    this.workspaces.set(restoredWorkspace.id, restoredWorkspace);
+
+    return restoredWorkspace;
+  }
+
+  private touchSessionInBackground(workspaceId: string): void {
+    if (!this.store) return;
+    void this.store.touchSession(workspaceId, this.owner).catch(() => undefined);
+  }
+
   private async openCheckoutWorkspace(path: string): Promise<WorkspaceContext> {
     const root = assertAllowedPath(path, this.config.allowedRoots);
     await mkdir(root, { recursive: true });
@@ -197,6 +213,8 @@ export class WorkspaceRegistry {
     sourceRoot?: string;
     worktree?: WorkspaceWorktree;
   }): Promise<WorkspaceContext> {
+    const agentsFiles = this.loadInitialAgentsFiles(input.root);
+    const availableAgentsFiles = await this.findAvailableAgentsFiles(input.root, agentsFiles);
     const workspace: Workspace = {
       id: `ws_${randomUUID()}`,
       owner: this.owner,
@@ -205,10 +223,12 @@ export class WorkspaceRegistry {
       sourceRoot: input.sourceRoot,
       worktree: input.worktree,
       ...this.loadSkillsForWorkspace(input.root),
+      agentsFiles,
+      availableAgentsFiles,
       activatedSkillDirs: new Set(),
     };
 
-    this.store?.createSession({
+    await this.store?.createSession({
       owner: this.owner,
       id: workspace.id,
       root: workspace.root,
@@ -218,11 +238,36 @@ export class WorkspaceRegistry {
       baseSha: workspace.worktree?.baseSha,
       managed: workspace.worktree?.managed,
     });
+    await this.persistLoadedAgentFiles(workspace.id, agentsFiles);
     this.workspaces.set(workspace.id, workspace);
-    const agentsFiles = this.loadInitialAgentsFiles(workspace.root);
-    const availableAgentsFiles = await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
 
     return { workspace, agentsFiles, availableAgentsFiles };
+  }
+
+  private async persistLoadedAgentFiles(
+    workspaceSessionId: string,
+    files: LoadedAgentsFile[],
+  ): Promise<void> {
+    await this.store?.saveLoadedAgentFiles({
+      owner: this.owner,
+      workspaceSessionId,
+      files,
+    });
+  }
+
+  private async loadRestoredAgentsFiles(
+    workspaceSessionId: string,
+    root: string,
+  ): Promise<LoadedAgentsFile[]> {
+    const storedFiles = await this.store?.getLoadedAgentFiles(workspaceSessionId, this.owner);
+    if (storedFiles && storedFiles.length > 0) {
+      return storedFiles.map((file) => ({
+        path: file.path,
+        content: file.content,
+      }));
+    }
+
+    return this.loadInitialAgentsFiles(root);
   }
 
   private loadSkillsForWorkspace(root: string): Pick<Workspace, "skills" | "skillDiagnostics"> {

@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 import {
   workspaceSessions,
   type WorkspaceSessionRow,
 } from "./db/schema.js";
+import type { DatabaseConfig } from "./db/types.js";
 import { LOCAL_WORKSPACE_IDENTITY, type WorkspaceIdentity } from "./identity.js";
+import { PostgresWorkspaceStore } from "./postgres-workspace-store.js";
 
 export type WorkspaceMode = "checkout" | "worktree";
 
@@ -23,6 +26,27 @@ export interface WorkspaceSession {
   lastUsedAt: string;
 }
 
+export interface LoadedAgentFileInput {
+  path: string;
+  content: string;
+}
+
+export interface LoadedAgentFile {
+  path: string;
+  contentHash: string;
+  content: string;
+  loadedAt: string;
+  lastSeenAt: string;
+}
+
+interface StoredLoadedAgentFileRow {
+  path: string;
+  content_hash: string;
+  content: string;
+  loaded_at: string;
+  last_seen_at: string;
+}
+
 export interface WorkspaceStore {
   createSession(input: {
     owner: WorkspaceIdentity;
@@ -33,10 +57,18 @@ export interface WorkspaceStore {
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
-  }): WorkspaceSession;
-  getSession(id: string, owner: WorkspaceIdentity): WorkspaceSession | undefined;
-  touchSession(id: string, owner: WorkspaceIdentity): void;
-  close?(): void;
+  }): Promise<WorkspaceSession>;
+  getSession(id: string, owner: WorkspaceIdentity): Promise<WorkspaceSession | undefined>;
+  saveLoadedAgentFiles(input: {
+    owner: WorkspaceIdentity;
+    workspaceSessionId: string;
+    files: LoadedAgentFileInput[];
+  }): Promise<void>;
+  getLoadedAgentFiles(workspaceSessionId: string, owner: WorkspaceIdentity): Promise<LoadedAgentFile[]>;
+  deleteSession(id: string, owner: WorkspaceIdentity): Promise<boolean>;
+  deleteExpiredSessions(cutoff: string): Promise<number>;
+  touchSession(id: string, owner: WorkspaceIdentity): Promise<void>;
+  close?(): Promise<void>;
 }
 
 export class SqliteWorkspaceStore implements WorkspaceStore {
@@ -47,7 +79,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.migrate();
   }
 
-  createSession(input: {
+  async createSession(input: {
     owner: WorkspaceIdentity;
     id: string;
     root: string;
@@ -56,7 +88,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
-  }): WorkspaceSession {
+  }): Promise<WorkspaceSession> {
     const now = new Date().toISOString();
     const session: WorkspaceSession = {
       id: input.id,
@@ -94,7 +126,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return session;
   }
 
-  getSession(id: string, owner: WorkspaceIdentity): WorkspaceSession | undefined {
+  async getSession(id: string, owner: WorkspaceIdentity): Promise<WorkspaceSession | undefined> {
     const row = this.database.db
       .select()
       .from(workspaceSessions)
@@ -104,7 +136,93 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return row ? rowToWorkspaceSession(row) : undefined;
   }
 
-  touchSession(id: string, owner: WorkspaceIdentity): void {
+  async saveLoadedAgentFiles(input: {
+    owner: WorkspaceIdentity;
+    workspaceSessionId: string;
+    files: LoadedAgentFileInput[];
+  }): Promise<void> {
+    const session = await this.getSession(input.workspaceSessionId, input.owner);
+    if (!session) return;
+
+    const now = new Date().toISOString();
+    const replaceFiles = this.database.sqlite.transaction((files: LoadedAgentFileInput[]) => {
+      this.database.sqlite
+        .prepare("delete from loaded_agent_files where workspace_session_id = ?")
+        .run(input.workspaceSessionId);
+
+      const insert = this.database.sqlite.prepare(`
+        insert into loaded_agent_files (
+          workspace_session_id,
+          path,
+          content_hash,
+          content,
+          loaded_at,
+          last_seen_at
+        ) values (?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const file of files) {
+        insert.run(
+          input.workspaceSessionId,
+          file.path,
+          hashLoadedAgentFileContent(file.content),
+          file.content,
+          now,
+          now,
+        );
+      }
+    });
+
+    replaceFiles(input.files);
+  }
+
+  async getLoadedAgentFiles(
+    workspaceSessionId: string,
+    owner: WorkspaceIdentity,
+  ): Promise<LoadedAgentFile[]> {
+    const rows = this.database.sqlite
+      .prepare(`
+        select
+          files.path,
+          files.content_hash,
+          files.content,
+          files.loaded_at,
+          files.last_seen_at
+        from loaded_agent_files files
+        inner join workspace_sessions sessions
+          on sessions.id = files.workspace_session_id
+        where files.workspace_session_id = ?
+          and sessions.tenant_id = ?
+          and sessions.user_id = ?
+        order by files.path asc
+      `)
+      .all(workspaceSessionId, owner.tenantId, owner.userId) as StoredLoadedAgentFileRow[];
+
+    return rows.map(rowToLoadedAgentFile);
+  }
+
+  async deleteSession(id: string, owner: WorkspaceIdentity): Promise<boolean> {
+    const result = this.database.sqlite
+      .prepare(`
+        delete from workspace_sessions
+        where id = ?
+          and tenant_id = ?
+          and user_id = ?
+      `)
+      .run(id, owner.tenantId, owner.userId);
+
+    return result.changes > 0;
+  }
+
+  async deleteExpiredSessions(cutoff: string): Promise<number> {
+    const result = this.database.sqlite
+      .prepare("delete from workspace_sessions where last_used_at < ?")
+      .run(cutoff);
+
+    return result.changes;
+  }
+
+  async touchSession(id: string, owner: WorkspaceIdentity): Promise<void> {
     this.database.db
       .update(workspaceSessions)
       .set({ lastUsedAt: new Date().toISOString() })
@@ -112,7 +230,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .run();
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.database.close();
   }
 
@@ -141,6 +259,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
       create index if not exists workspace_sessions_owner_status_idx
         on workspace_sessions(tenant_id, user_id, status, last_used_at desc);
+
+      create index if not exists workspace_sessions_last_used_idx
+        on workspace_sessions(last_used_at);
 
       create table if not exists loaded_agent_files (
         workspace_session_id text not null,
@@ -175,6 +296,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
       create index if not exists workspace_sessions_owner_status_idx
         on workspace_sessions(tenant_id, user_id, status, last_used_at desc);
+
+      create index if not exists workspace_sessions_last_used_idx
+        on workspace_sessions(last_used_at);
     `);
   }
 
@@ -188,8 +312,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   }
 }
 
-export function createWorkspaceStore(stateDir: string): WorkspaceStore {
-  return new SqliteWorkspaceStore(stateDir);
+export function createWorkspaceStore(config: string | DatabaseConfig): WorkspaceStore {
+  if (typeof config === "string") return new SqliteWorkspaceStore(config);
+  if (config.provider === "postgres") return new PostgresWorkspaceStore(config);
+  return new SqliteWorkspaceStore(config.stateDir);
 }
 
 function ownerSessionFilter(id: string, owner: WorkspaceIdentity) {
@@ -215,4 +341,18 @@ function rowToWorkspaceSession(row: WorkspaceSessionRow): WorkspaceSession {
     createdAt: row.createdAt,
     lastUsedAt: row.lastUsedAt,
   };
+}
+
+function rowToLoadedAgentFile(row: StoredLoadedAgentFileRow): LoadedAgentFile {
+  return {
+    path: row.path,
+    contentHash: row.content_hash,
+    content: row.content,
+    loadedAt: row.loaded_at,
+    lastSeenAt: row.last_seen_at,
+  };
+}
+
+function hashLoadedAgentFileContent(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }

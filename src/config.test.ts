@@ -26,6 +26,18 @@ assert.equal(loadConfig({ ...baseEnv, DEVSPACE_MINIMAL_TOOLS: "1" }).minimalTool
 assert.equal(loadConfig(baseEnv).skillsEnabled, true);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SKILLS: "0" }).skillsEnabled, false);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SKILLS: "1" }).skillsEnabled, true);
+assert.equal(loadConfig(baseEnv).workspaceSessionTtlSeconds, null);
+assert.equal(loadConfig(baseEnv).workspaceSessionCleanupIntervalSeconds, 3600);
+assert.equal(
+  loadConfig({ ...baseEnv, DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS: "2592000" })
+    .workspaceSessionTtlSeconds,
+  2592000,
+);
+assert.equal(
+  loadConfig({ ...baseEnv, DEVSPACE_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS: "600" })
+    .workspaceSessionCleanupIntervalSeconds,
+  600,
+);
 
 assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_WIDGETS: "invalid" }),
@@ -46,6 +58,14 @@ assert.throws(
 assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_TOOL_NAMING: "invalid" }),
   /Invalid DEVSPACE_TOOL_NAMING: invalid/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS: "0" }),
+  /Invalid DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS: 0/,
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS: "0" }),
+  /Invalid DEVSPACE_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS: 0/,
 );
 
 assert.deepEqual(loadConfig(baseEnv).logging, {
@@ -94,8 +114,9 @@ assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
 ]);
 assert.equal(loadConfig(baseEnv).oauth.accessTokenTtlSeconds, 3600);
 assert.equal(loadConfig(baseEnv).oauth.refreshTokenTtlSeconds, 2592000);
-assert.equal(loadConfig(baseEnv).database.provider, "sqlite");
-assert.equal(loadConfig(baseEnv).database.provider === "sqlite" ? loadConfig(baseEnv).database.filePath.endsWith("devspace.sqlite") : false, true);
+const sqliteDatabase = loadConfig(baseEnv).database;
+assert.equal(sqliteDatabase.provider, "sqlite");
+assert.equal(sqliteDatabase.provider === "sqlite" ? sqliteDatabase.filePath.endsWith("devspace.sqlite") : false, true);
 
 assert.deepEqual(
   loadConfig({ ...baseEnv, DEVSPACE_OAUTH_SCOPES: "devspace,admin" }).oauth.scopes,

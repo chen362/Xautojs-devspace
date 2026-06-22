@@ -11,6 +11,7 @@ export type WidgetMode = "off" | "changes" | "full";
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const DEFAULT_OIDC_CLOCK_TOLERANCE_SECONDS = 30;
+const DEFAULT_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS = 60 * 60;
 
 export interface ServerConfig {
   host: string;
@@ -26,6 +27,8 @@ export interface ServerConfig {
   widgets: WidgetMode;
   stateDir: string;
   worktreeRoot: string;
+  workspaceSessionTtlSeconds: number | null;
+  workspaceSessionCleanupIntervalSeconds: number;
   skillsEnabled: boolean;
   skillPaths: string[];
   agentDir: string;
@@ -128,6 +131,17 @@ function parseStringList(value: string | undefined, fallback: string[]): string[
 
 function parsePositiveInteger(value: string | undefined, fallback: number, name: string): number {
   if (!value) return fallback;
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`Invalid ${name}: ${value}`);
+  }
+
+  return parsed;
+}
+
+function parseOptionalPositiveInteger(value: string | undefined, name: string): number | null {
+  if (!value) return null;
 
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
@@ -345,6 +359,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     widgets: parseWidgetMode(env.DEVSPACE_WIDGETS),
     stateDir,
     worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
+    workspaceSessionTtlSeconds: parseOptionalPositiveInteger(
+      env.DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS,
+      "DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS",
+    ),
+    workspaceSessionCleanupIntervalSeconds: parsePositiveInteger(
+      env.DEVSPACE_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS,
+      DEFAULT_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS,
+      "DEVSPACE_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS",
+    ),
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
     skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),

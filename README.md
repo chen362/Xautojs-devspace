@@ -114,6 +114,28 @@ For a normal ChatGPT coding session:
 4. Approve the connection with the Owner password.
 5. Ask ChatGPT to open a project inside one of your allowed roots.
 
+## Production Postgres
+
+SQLite remains the default for local use. For production deployments, run
+DevSpace with OIDC auth and Postgres-backed workspace state:
+
+```bash
+DEVSPACE_DEPLOYMENT_MODE="production" \
+DEVSPACE_AUTH_MODE="oidc" \
+DEVSPACE_OIDC_ISSUER="https://auth.example.com" \
+DEVSPACE_OIDC_AUDIENCE="https://devspace.example.com/mcp" \
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+DEVSPACE_POSTGRES_SSL_MODE="require" \
+npx @waishnav/devspace db migrate
+```
+
+Then start the server with the same database settings. `devspace serve` checks
+that migrations are current before accepting traffic. Long-running deployments
+can enable session expiry with `DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS`; loaded
+AGENTS/CLAUDE file snapshots are deleted automatically when their workspace
+session is cleaned up.
+
 ## Platform Support
 
 DevSpace supports Linux, macOS, and Windows environments with a Bash-compatible

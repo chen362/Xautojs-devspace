@@ -15,9 +15,14 @@ import {
 } from "./user-config.js";
 import { expandHomePath } from "./roots.js";
 
-type Command = "serve" | "init" | "doctor" | "config" | "help";
+type Command = "serve" | "init" | "doctor" | "config" | "db" | "help";
+type DbCommand = "migrate" | "status";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
+
+interface SqliteMemoryDatabaseConstructor {
+  new (filename: string): { close(): void };
+}
 
 async function main(argv: string[]): Promise<void> {
   assertSupportedNode();
@@ -39,6 +44,9 @@ async function main(argv: string[]): Promise<void> {
     case "config":
       runConfigCommand(args);
       return;
+    case "db":
+      await runDbCommand(args);
+      return;
     case "help":
       printHelp();
       return;
@@ -47,7 +55,7 @@ async function main(argv: string[]): Promise<void> {
 
 function normalizeCommand(command: string | undefined): Command {
   if (!command || command === "serve" || command === "start") return "serve";
-  if (command === "init" || command === "doctor" || command === "config") return command;
+  if (command === "init" || command === "doctor" || command === "config" || command === "db") return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   throw new Error(`Unknown command: ${command}`);
 }
@@ -163,22 +171,28 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
 }
 
 async function serve(): Promise<void> {
-  const sqliteStatus = checkSqliteNative();
-  if (sqliteStatus !== "ok") {
-    throw new Error(
-      [
-        "better-sqlite3 could not load for this Node runtime.",
-        sqliteStatus,
-        "",
-        "Try reinstalling or rebuilding dependencies under the active Node version:",
-        "  npm rebuild better-sqlite3",
-      ].join("\n"),
-    );
+  const config = loadConfig();
+  if (config.database.provider === "sqlite") {
+    const sqliteStatus = checkSqliteNative();
+    if (sqliteStatus !== "ok") {
+      throw new Error(
+        [
+          "better-sqlite3 could not load for this Node runtime.",
+          sqliteStatus,
+          "",
+          "Try reinstalling or rebuilding dependencies under the active Node version:",
+          "  npm rebuild better-sqlite3",
+        ].join("\n"),
+      );
+    }
+  } else {
+    const { assertPostgresSchemaReady } = await import("./db/postgres-migrations.js");
+    await assertPostgresSchemaReady(config.database);
   }
 
   const { createServer } = await import("./server.js");
-  const config = loadConfig();
-  const { app } = createServer(config);
+  const runningServer = createServer(config);
+  const { app } = runningServer;
   const httpServer = app.listen(config.port, config.host, () => {
     console.log(`devspace listening on http://${config.host}:${config.port}/mcp`);
     console.log(`public base url: ${config.publicBaseUrl}`);
@@ -187,12 +201,15 @@ async function serve(): Promise<void> {
     if (config.allowedHosts.includes("*")) {
       console.warn("warning: Host header allowlist is disabled because DEVSPACE_ALLOWED_HOSTS=*");
     }
-    console.log("auth: Owner password approval required");
+    console.log(`auth: ${config.oauth.mode}`);
+    console.log(`database: ${config.database.provider}`);
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
   });
 
   const shutdown = () => {
-    httpServer.close(() => process.exit(0));
+    httpServer.close(() => {
+      void runningServer.close().finally(() => process.exit(0));
+    });
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
@@ -200,6 +217,15 @@ async function serve(): Promise<void> {
 
 async function runDoctor(): Promise<void> {
   const files = loadDevspaceFiles();
+  let config: ReturnType<typeof loadConfig> | undefined;
+  let configError: unknown;
+
+  try {
+    config = loadConfig();
+  } catch (error) {
+    configError = error;
+  }
+
   console.log(`Config dir: ${files.dir}`);
   console.log(`Config file: ${files.configExists ? files.configPath : "missing"}`);
   console.log(`Auth file: ${files.authExists ? files.authPath : "missing"}`);
@@ -208,17 +234,55 @@ async function runDoctor(): Promise<void> {
   console.log(`Platform: ${process.platform} ${process.arch}`);
   console.log(`Git: ${checkGitAvailable()}`);
   console.log(`Bash shell: ${checkBashShell()}`);
-  console.log(`SQLite native dependency: ${checkSqliteNative()}`);
+  console.log(`SQLite native dependency: ${sqliteNativeStatus(config)}`);
 
-  try {
-    const config = loadConfig();
-    console.log(`Local MCP URL: http://${config.host}:${config.port}/mcp`);
-    console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
-    console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
-    console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
-  } catch (error) {
-    console.log(`Config status: ${error instanceof Error ? error.message : String(error)}`);
+  if (!config) {
+    console.log(`Config status: ${configError instanceof Error ? configError.message : String(configError)}`);
+    return;
   }
+
+  console.log(`Database provider: ${config.database.provider}`);
+  console.log(`Local MCP URL: http://${config.host}:${config.port}/mcp`);
+  console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
+  console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
+  console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
+}
+
+async function runDbCommand(args: string[]): Promise<void> {
+  const [rawSubcommand, ...rest] = args;
+  const command = normalizeDbCommand(rawSubcommand);
+  if (rest.length > 0) {
+    throw new Error(`Unexpected devspace db argument: ${rest.join(" ")}`);
+  }
+
+  const config = loadConfig();
+  if (config.database.provider !== "postgres") {
+    throw new Error("`devspace db` commands require DEVSPACE_DATABASE_PROVIDER=postgres.");
+  }
+
+  const {
+    formatPostgresMigrationResult,
+    formatPostgresMigrationStatus,
+    getPostgresMigrationStatus,
+    migratePostgresDatabase,
+  } = await import("./db/postgres-migrations.js");
+
+  if (command === "status") {
+    const status = await getPostgresMigrationStatus(config.database);
+    console.log(formatPostgresMigrationStatus(status));
+    return;
+  }
+
+  const result = await migratePostgresDatabase(config.database);
+  console.log(formatPostgresMigrationResult(result));
+  console.log("");
+  console.log(formatPostgresMigrationStatus(result.status));
+}
+
+function normalizeDbCommand(command: string | undefined): DbCommand {
+  if (!command || command === "status") return "status";
+  if (command === "migrate") return "migrate";
+  throw new Error(`Unknown db command: ${command}`);
 }
 
 function runConfigCommand(args: string[]): void {
@@ -261,6 +325,8 @@ function printHelp(): void {
       "  devspace doctor          Show config, runtime, and native dependency status",
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
+      "  devspace db status       Show Postgres migration status",
+      "  devspace db migrate      Apply pending Postgres migrations",
       "",
       "For temporary tunnels:",
       "  DEVSPACE_PUBLIC_BASE_URL=https://example.trycloudflare.com devspace serve",
@@ -345,9 +411,14 @@ function nodeVersionStatus(): string {
 
 class SetupCancelledError extends Error {}
 
+function sqliteNativeStatus(config: ReturnType<typeof loadConfig> | undefined): string {
+  if (config?.database.provider === "postgres") return "skipped (postgres mode)";
+  return checkSqliteNative();
+}
+
 function checkSqliteNative(): string {
   try {
-    const Database = require("better-sqlite3") as typeof import("better-sqlite3");
+    const Database = require("better-sqlite3") as SqliteMemoryDatabaseConstructor;
     const db = new Database(":memory:");
     db.close();
     return "ok";

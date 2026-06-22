@@ -34,10 +34,15 @@ import {
   runShellTool,
   writeFileTool,
 } from "./pi-tools.js";
+import { identityFromAuthInfo, identityLogFields, type DevSpaceIdentity } from "./identity.js";
+import {
+  assertMcpSessionIdentity,
+  McpSessionIdentityMismatchError,
+} from "./mcp-session-identity.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { formatPathForPrompt } from "./skills.js";
-import { createWorkspaceStore } from "./workspace-store.js";
+import { createWorkspaceStore, type WorkspaceStore } from "./workspace-store.js";
 import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
 
 type Transport = StreamableHTTPServerTransport;
@@ -65,6 +70,12 @@ const SHELL_TOOL_ANNOTATIONS = {
 interface RunningServer {
   app: ReturnType<typeof createMcpExpressApp>;
   config: ServerConfig;
+  close(): Promise<void>;
+}
+
+interface McpTransportSession {
+  transport: Transport;
+  identity: DevSpaceIdentity;
 }
 
 type ToolContent =
@@ -680,7 +691,7 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.getWorkspace(workspaceId);
       const readPath = workspaces.resolveReadPath(workspace, input.path);
       const response = await readFileTool(
         { ...input, path: readPath.absolutePath },
@@ -754,7 +765,7 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.getWorkspace(workspaceId);
       workspaces.resolvePath(workspace, input.path);
       const response = await writeFileTool(input, {
         cwd: workspace.root,
@@ -841,7 +852,7 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.getWorkspace(workspaceId);
       workspaces.resolvePath(workspace, input.path);
       const response = await editFileTool(input, {
         cwd: workspace.root,
@@ -923,7 +934,7 @@ function createMcpServer(
       },
       async ({ workspaceId, since, markReviewed }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.getWorkspace(workspaceId);
         const review = await reviewCheckpoints.reviewChanges({
           workspaceId,
           root: workspace.root,
@@ -987,7 +998,7 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.getWorkspace(workspaceId);
         if (input.path) workspaces.resolvePath(workspace, input.path);
         const response = await grepFilesTool(input, {
           cwd: workspace.root,
@@ -1057,7 +1068,7 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.getWorkspace(workspaceId);
         if (input.path) workspaces.resolvePath(workspace, input.path);
         const response = await findFilesTool(input, {
           cwd: workspace.root,
@@ -1127,7 +1138,7 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.getWorkspace(workspaceId);
         workspaces.resolvePath(workspace, input.path);
         const response = await listDirectoryTool(input, {
           cwd: workspace.root,
@@ -1207,7 +1218,7 @@ function createMcpServer(
     },
     async ({ workspaceId, workingDirectory, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.getWorkspace(workspaceId);
       const cwd = workspaces.resolveWorkingDirectory(
         workspace,
         workingDirectory,
@@ -1264,6 +1275,50 @@ function createMcpServer(
   return server;
 }
 
+interface WorkspaceSessionCleanup {
+  close(): void;
+}
+
+function startWorkspaceSessionCleanup(
+  config: ServerConfig,
+  store: WorkspaceStore,
+): WorkspaceSessionCleanup | undefined {
+  const ttlSeconds = config.workspaceSessionTtlSeconds;
+  if (ttlSeconds === null) return undefined;
+
+  let running = false;
+  const runCleanup = async () => {
+    if (running) return;
+    running = true;
+    const cutoff = new Date(Date.now() - ttlSeconds * 1000).toISOString();
+
+    try {
+      const deleted = await store.deleteExpiredSessions(cutoff);
+      logEvent(config.logging, deleted > 0 ? "info" : "debug", "workspace_session_cleanup", {
+        cutoff,
+        deleted,
+      });
+    } catch (error) {
+      logEvent(config.logging, "warn", "workspace_session_cleanup_failed", {
+        cutoff,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      running = false;
+    }
+  };
+
+  void runCleanup();
+  const interval = setInterval(() => {
+    void runCleanup();
+  }, config.workspaceSessionCleanupIntervalSeconds * 1000);
+  interval.unref();
+
+  return {
+    close: () => clearInterval(interval),
+  };
+}
+
 export function createServer(config = loadConfig()): RunningServer {
   const allowedHosts = config.allowedHosts.includes("*")
     ? undefined
@@ -1272,7 +1327,7 @@ export function createServer(config = loadConfig()): RunningServer {
     host: config.host,
     ...(allowedHosts ? { allowedHosts } : {}),
   });
-  const transports = new Map<string, Transport>();
+  const transports = new Map<string, McpTransportSession>();
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl);
@@ -1281,8 +1336,8 @@ export function createServer(config = loadConfig()): RunningServer {
     requiredScopes: [config.oauth.scopes[0] ?? "devspace"],
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
-  const workspaceStore = createWorkspaceStore(config.stateDir);
-  const workspaces = new WorkspaceRegistry(config, workspaceStore);
+  const workspaceStore = createWorkspaceStore(config.database);
+  const workspaceSessionCleanup = startWorkspaceSessionCleanup(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
 
   if (config.logging.trustProxy) {
@@ -1367,31 +1422,73 @@ export function createServer(config = loadConfig()): RunningServer {
       return;
     }
 
+    let identity: DevSpaceIdentity;
+    try {
+      identity = identityFromAuthInfo(config, req.auth);
+    } catch (error) {
+      logEvent(config.logging, "warn", "auth_denied", {
+        requestId,
+        method: req.method,
+        path: requestPath(req),
+        reason: "missing_identity_context",
+        error: error instanceof Error ? error.message : String(error),
+        ...requestLogFields(req, config),
+      });
+      sendJsonRpcError(res, 401, -32001, "Unauthorized");
+      return;
+    }
+
     logEvent(config.logging, "debug", "mcp_request", {
       requestId,
       method: req.method,
       sessionIdPresent: Boolean(sessionId),
       sessionIdPrefix: sessionIdPrefix(sessionId),
       isInitialize: initializeRequest,
+      ...identityLogFields(identity),
     });
 
     try {
       let transport: Transport | undefined;
 
       if (sessionId) {
-        transport = transports.get(sessionId);
-        if (!transport) {
+        const session = transports.get(sessionId);
+        if (!session) {
           sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
           return;
         }
+        try {
+          assertMcpSessionIdentity({
+            sessionId,
+            sessionOwner: session.identity,
+            requestOwner: identity,
+          });
+        } catch (error) {
+          if (error instanceof McpSessionIdentityMismatchError) {
+            logEvent(config.logging, "warn", "auth_denied", {
+              requestId,
+              method: req.method,
+              path: requestPath(req),
+              reason: "mcp_session_identity_mismatch",
+              sessionIdPrefix: sessionIdPrefix(sessionId),
+              ...identityLogFields(identity),
+              ...requestLogFields(req, config),
+            });
+            sendJsonRpcError(res, 401, -32001, "Unauthorized");
+            return;
+          }
+          throw error;
+        }
+        transport = session.transport;
       } else if (initializeRequest) {
+        const workspaces = new WorkspaceRegistry(config, workspaceStore, identity);
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
-            if (transport) transports.set(newSessionId, transport);
+            if (transport) transports.set(newSessionId, { transport, identity });
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
               sessionIdPrefix: sessionIdPrefix(newSessionId),
+              ...identityLogFields(identity),
               ...requestLogFields(req, config),
             });
           },
@@ -1403,6 +1500,7 @@ export function createServer(config = loadConfig()): RunningServer {
             transports.delete(closedSessionId);
             logEvent(config.logging, "info", "mcp_session_closed", {
               sessionIdPrefix: sessionIdPrefix(closedSessionId),
+              ...identityLogFields(identity),
             });
           }
         };
@@ -1426,7 +1524,14 @@ export function createServer(config = loadConfig()): RunningServer {
     }
   });
 
-  return { app, config };
+  return {
+    app,
+    config,
+    close: async () => {
+      workspaceSessionCleanup?.close();
+      await workspaceStore.close?.();
+    },
+  };
 }
 
 async function isMainModule(): Promise<boolean> {
@@ -1438,16 +1543,25 @@ async function isMainModule(): Promise<boolean> {
 }
 
 if (await isMainModule()) {
-  const { app, config } = createServer();
-  app.listen(config.port, config.host, () => {
+  const runningServer = createServer();
+  const { app, config } = runningServer;
+  const httpServer = app.listen(config.port, config.host, () => {
     console.log(
       `devspace listening on http://${config.host}:${config.port}/mcp`,
     );
     console.log(`allowed roots: ${config.allowedRoots.join(", ")}`);
-    console.log("auth: oauth owner-token flow required");
+    console.log(`auth: ${config.oauth.mode}`);
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
     console.log(`request logging: ${config.logging.requests ? "enabled" : "disabled"}`);
     console.log(`asset logging: ${config.logging.assets ? "enabled" : "disabled"}`);
     console.log(`trust proxy: ${config.logging.trustProxy ? "enabled" : "disabled"}`);
   });
+
+  const shutdown = () => {
+    httpServer.close(() => {
+      void runningServer.close().finally(() => process.exit(0));
+    });
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 }
