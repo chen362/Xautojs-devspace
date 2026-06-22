@@ -192,7 +192,7 @@ async function runPostgresIntegrationTest(
           requestFingerprint: "sha256:changed",
           eventType: "automation.trigger.fire",
         }),
-      /IDEMPOTENCY_CONFLICT/,
+      /conflicts with existing event/,
     );
 
     assert.equal(await automationStore.getEvent(eventId, otherOwner), undefined);
