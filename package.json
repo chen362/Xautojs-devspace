@@ -27,7 +27,7 @@
     "build:app": "vite build",
     "dev": "node scripts/dev-server.mjs",
     "start": "node dist/cli.js serve",
-    "test": "tsx src/identity.test.ts && tsx src/mcp-session-identity.test.ts && tsx src/postgres-workspace-store.test.ts && tsx src/db/postgres-migrations.test.ts && tsx src/config.test.ts && tsx src/roots.test.ts && tsx src/skills.test.ts && tsx src/workspaces.test.ts && tsx src/workspace-identity.test.ts && tsx src/review-checkpoints.test.ts",
+    "test": "tsx src/identity.test.ts && tsx src/mcp-session-identity.test.ts && tsx src/postgres-workspace-store.test.ts && tsx src/db/postgres-migrations.test.ts && tsx src/readiness.test.ts && tsx src/config.test.ts && tsx src/roots.test.ts && tsx src/skills.test.ts && tsx src/workspaces.test.ts && tsx src/workspace-identity.test.ts && tsx src/review-checkpoints.test.ts",
     "test:postgres": "tsx src/postgres.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
