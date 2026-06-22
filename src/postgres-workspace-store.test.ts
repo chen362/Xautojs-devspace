@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { PostgresDatabaseConfig } from "./db/types.js";
 import { createOidcIdentity } from "./identity.js";
 import {
   PostgresWorkspaceStore,
@@ -24,7 +25,10 @@ interface StoredWorkspaceSessionRow {
 
 const rows: StoredWorkspaceSessionRow[] = [];
 const calls: PostgresQuery[] = [];
-const runner: PostgresQueryRunner = <Row>(_config, query): PostgresQueryResult<Row> => {
+const runner: PostgresQueryRunner = <Row>(
+  _config: PostgresDatabaseConfig,
+  query: PostgresQuery,
+): PostgresQueryResult<Row> => {
   calls.push(query);
   const normalizedSql = query.text.replace(/\s+/g, " ").trim().toLowerCase();
 
@@ -128,10 +132,12 @@ store.touchSession("ws_postgres_1", bob);
 assert.equal(rows[0]?.last_used_at, created.lastUsedAt);
 
 store.touchSession("ws_postgres_1", alice);
-assert.equal(rows[0]?.last_used_at, calls.at(-1)?.values[3]);
+const lastTouchValue = calls.at(-1)?.values[3];
+assert.equal(typeof lastTouchValue, "string");
+assert.equal(rows[0]?.last_used_at, lastTouchValue);
 
 function stringValue(value: unknown): string {
-  assert.equal(typeof value, "string");
+  if (typeof value !== "string") throw new Error(`Expected string value: ${String(value)}`);
   return value;
 }
 
