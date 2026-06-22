@@ -118,7 +118,14 @@ npx @waishnav/devspace doctor
 ```
 
 The doctor command reports the resolved config, Node version, Node ABI, platform,
-Git, Bash, public URL, allowed hosts, and SQLite native dependency status.
+Git, Bash, public URL, allowed hosts, and SQLite native dependency status. In
+Postgres mode, it also reports schema migration readiness.
+
+For automation and deployment smoke checks, use JSON output:
+
+```bash
+npx @waishnav/devspace doctor --json
+```
 
 ## Running From A Local Checkout
 

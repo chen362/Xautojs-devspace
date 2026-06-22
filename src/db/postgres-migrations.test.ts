@@ -10,6 +10,8 @@ import {
   formatPostgresMigrationStatus,
   getPostgresMigrationStatus,
   migratePostgresDatabase,
+  postgresSchemaState,
+  toPostgresMigrationStatusJson,
   type AppliedPostgresMigration,
   type PostgresMigrationClient,
   type PostgresMigrationPool,
@@ -99,6 +101,18 @@ try {
   const initialStatus = await getPostgresMigrationStatus(config, { migrationsDir, pool });
   assert.equal(initialStatus.tableExists, false);
   assert.equal(initialStatus.pendingCount, 2);
+  assert.equal(postgresSchemaState(initialStatus), "missing");
+  assert.deepEqual(toPostgresMigrationStatusJson(initialStatus), {
+    state: "missing",
+    ready: false,
+    migrationsDir,
+    tableName: POSTGRES_SCHEMA_MIGRATIONS_TABLE,
+    tableExists: false,
+    appliedCount: 0,
+    pendingCount: 2,
+    modifiedCount: 0,
+    migrations: initialStatus.migrations,
+  });
   assert.match(formatPostgresMigrationStatus(initialStatus), /Schema migrations table: missing/);
 
   await assert.rejects(
@@ -121,6 +135,8 @@ try {
   assert.equal(readyStatus.appliedCount, 2);
   assert.equal(readyStatus.pendingCount, 0);
   assert.equal(readyStatus.modifiedCount, 0);
+  assert.equal(postgresSchemaState(readyStatus), "ready");
+  assert.equal(toPostgresMigrationStatusJson(readyStatus).ready, true);
   assert.match(formatPostgresMigrationStatus(readyStatus), /Database schema is up to date/);
   await assertPostgresSchemaReady(config, { migrationsDir, pool });
 
@@ -132,6 +148,8 @@ try {
   const driftStatus = await getPostgresMigrationStatus(config, { migrationsDir, pool });
   assert.equal(driftStatus.modifiedCount, 1);
   assert.equal(driftStatus.migrations.find((migration) => migration.name === "0002_loaded_agent_files.sql")?.state, "modified");
+  assert.equal(postgresSchemaState(driftStatus), "modified");
+  assert.equal(toPostgresMigrationStatusJson(driftStatus).state, "modified");
   await assert.rejects(
     () => migratePostgresDatabase(config, { migrationsDir, pool }),
     /checksum mismatch/,
