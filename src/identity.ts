@@ -56,8 +56,8 @@ export function createOidcIdentity(input: {
 }): DevSpaceIdentity {
   const issuer = normalizeRequiredIdentityValue(input.issuer, "issuer");
   const subject = normalizeRequiredIdentityValue(input.subject, "subject");
-  const tenantExternalId = normalizeIdentityValue(input.tenantExternalId) ?? issuer;
-  const tenantId = `${issuer}#${tenantExternalId}`;
+  const tenantExternalId = normalizeIdentityValue(input.tenantExternalId);
+  const tenantId = tenantExternalId ? `${issuer}#${tenantExternalId}` : issuer;
   const userId = `${tenantId}#${subject}`;
 
   return {
