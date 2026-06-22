@@ -4,7 +4,9 @@ import {
   workspaceSessions,
   type WorkspaceSessionRow,
 } from "./db/schema.js";
+import type { DatabaseConfig } from "./db/types.js";
 import { LOCAL_WORKSPACE_IDENTITY, type WorkspaceIdentity } from "./identity.js";
+import { PostgresWorkspaceStore } from "./postgres-workspace-store.js";
 
 export type WorkspaceMode = "checkout" | "worktree";
 
@@ -188,8 +190,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   }
 }
 
-export function createWorkspaceStore(stateDir: string): WorkspaceStore {
-  return new SqliteWorkspaceStore(stateDir);
+export function createWorkspaceStore(config: string | DatabaseConfig): WorkspaceStore {
+  if (typeof config === "string") return new SqliteWorkspaceStore(config);
+  if (config.provider === "postgres") return new PostgresWorkspaceStore(config);
+  return new SqliteWorkspaceStore(config.stateDir);
 }
 
 function ownerSessionFilter(id: string, owner: WorkspaceIdentity) {
