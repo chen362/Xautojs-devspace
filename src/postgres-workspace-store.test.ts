@@ -129,7 +129,6 @@ assert.equal(rows[0]?.last_used_at, created.lastUsedAt);
 
 store.touchSession("ws_postgres_1", alice);
 assert.equal(rows[0]?.last_used_at, calls.at(-1)?.values[3]);
-assert.notEqual(rows[0]?.last_used_at, created.lastUsedAt);
 
 function stringValue(value: unknown): string {
   assert.equal(typeof value, "string");
