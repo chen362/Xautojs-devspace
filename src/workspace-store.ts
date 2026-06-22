@@ -1,14 +1,17 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 import {
   workspaceSessions,
   type WorkspaceSessionRow,
 } from "./db/schema.js";
+import { LOCAL_WORKSPACE_IDENTITY, type WorkspaceIdentity } from "./identity.js";
 
 export type WorkspaceMode = "checkout" | "worktree";
 
 export interface WorkspaceSession {
   id: string;
+  tenantId: string;
+  userId: string;
   root: string;
   status: string;
   mode: WorkspaceMode;
@@ -22,6 +25,7 @@ export interface WorkspaceSession {
 
 export interface WorkspaceStore {
   createSession(input: {
+    owner: WorkspaceIdentity;
     id: string;
     root: string;
     mode?: WorkspaceMode;
@@ -30,8 +34,8 @@ export interface WorkspaceStore {
     baseSha?: string;
     managed?: boolean;
   }): WorkspaceSession;
-  getSession(id: string): WorkspaceSession | undefined;
-  touchSession(id: string): void;
+  getSession(id: string, owner: WorkspaceIdentity): WorkspaceSession | undefined;
+  touchSession(id: string, owner: WorkspaceIdentity): void;
   close?(): void;
 }
 
@@ -44,6 +48,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   }
 
   createSession(input: {
+    owner: WorkspaceIdentity;
     id: string;
     root: string;
     mode?: WorkspaceMode;
@@ -55,6 +60,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const now = new Date().toISOString();
     const session: WorkspaceSession = {
       id: input.id,
+      tenantId: input.owner.tenantId,
+      userId: input.owner.userId,
       root: input.root,
       status: "active",
       mode: input.mode ?? "checkout",
@@ -70,6 +77,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .insert(workspaceSessions)
       .values({
         id: session.id,
+        tenantId: session.tenantId,
+        userId: session.userId,
         root: session.root,
         status: session.status,
         mode: session.mode,
@@ -85,21 +94,21 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return session;
   }
 
-  getSession(id: string): WorkspaceSession | undefined {
+  getSession(id: string, owner: WorkspaceIdentity): WorkspaceSession | undefined {
     const row = this.database.db
       .select()
       .from(workspaceSessions)
-      .where(eq(workspaceSessions.id, id))
+      .where(ownerSessionFilter(id, owner))
       .get();
 
     return row ? rowToWorkspaceSession(row) : undefined;
   }
 
-  touchSession(id: string): void {
+  touchSession(id: string, owner: WorkspaceIdentity): void {
     this.database.db
       .update(workspaceSessions)
       .set({ lastUsedAt: new Date().toISOString() })
-      .where(eq(workspaceSessions.id, id))
+      .where(ownerSessionFilter(id, owner))
       .run();
   }
 
@@ -111,6 +120,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.database.sqlite.exec(`
       create table if not exists workspace_sessions (
         id text primary key,
+        tenant_id text not null default 'local',
+        user_id text not null default 'owner',
         root text not null,
         status text not null default 'active',
         mode text not null default 'checkout',
@@ -122,11 +133,14 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         last_used_at text not null
       );
 
-      create index if not exists workspace_sessions_root_idx
-        on workspace_sessions(root, last_used_at desc);
+      create index if not exists workspace_sessions_owner_idx
+        on workspace_sessions(tenant_id, user_id, last_used_at desc);
 
-      create index if not exists workspace_sessions_status_idx
-        on workspace_sessions(status, last_used_at desc);
+      create index if not exists workspace_sessions_owner_root_idx
+        on workspace_sessions(tenant_id, user_id, root, last_used_at desc);
+
+      create index if not exists workspace_sessions_owner_status_idx
+        on workspace_sessions(tenant_id, user_id, status, last_used_at desc);
 
       create table if not exists loaded_agent_files (
         workspace_session_id text not null,
@@ -145,11 +159,23 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         on loaded_agent_files(path);
     `);
 
+    this.addColumnIfMissing("workspace_sessions", "tenant_id", "text not null default 'local'");
+    this.addColumnIfMissing("workspace_sessions", "user_id", "text not null default 'owner'");
     this.addColumnIfMissing("workspace_sessions", "mode", "text not null default 'checkout'");
     this.addColumnIfMissing("workspace_sessions", "source_root", "text");
     this.addColumnIfMissing("workspace_sessions", "base_ref", "text");
     this.addColumnIfMissing("workspace_sessions", "base_sha", "text");
     this.addColumnIfMissing("workspace_sessions", "managed", "text not null default 'false'");
+    this.database.sqlite.exec(`
+      create index if not exists workspace_sessions_owner_idx
+        on workspace_sessions(tenant_id, user_id, last_used_at desc);
+
+      create index if not exists workspace_sessions_owner_root_idx
+        on workspace_sessions(tenant_id, user_id, root, last_used_at desc);
+
+      create index if not exists workspace_sessions_owner_status_idx
+        on workspace_sessions(tenant_id, user_id, status, last_used_at desc);
+    `);
   }
 
   private addColumnIfMissing(table: string, column: string, definition: string): void {
@@ -166,9 +192,19 @@ export function createWorkspaceStore(stateDir: string): WorkspaceStore {
   return new SqliteWorkspaceStore(stateDir);
 }
 
+function ownerSessionFilter(id: string, owner: WorkspaceIdentity) {
+  return and(
+    eq(workspaceSessions.id, id),
+    eq(workspaceSessions.tenantId, owner.tenantId),
+    eq(workspaceSessions.userId, owner.userId),
+  );
+}
+
 function rowToWorkspaceSession(row: WorkspaceSessionRow): WorkspaceSession {
   return {
     id: row.id,
+    tenantId: row.tenantId ?? LOCAL_WORKSPACE_IDENTITY.tenantId,
+    userId: row.userId ?? LOCAL_WORKSPACE_IDENTITY.userId,
     root: row.root,
     status: row.status,
     mode: row.mode === "worktree" ? "worktree" : "checkout",

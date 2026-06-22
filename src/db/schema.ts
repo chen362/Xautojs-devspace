@@ -4,6 +4,8 @@ export const workspaceSessions = sqliteTable(
   "workspace_sessions",
   {
     id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull().default("local"),
+    userId: text("user_id").notNull().default("owner"),
     root: text("root").notNull(),
     status: text("status").notNull().default("active"),
     mode: text("mode").notNull().default("checkout"),
@@ -15,8 +17,9 @@ export const workspaceSessions = sqliteTable(
     lastUsedAt: text("last_used_at").notNull(),
   },
   (table) => [
-    index("workspace_sessions_root_idx").on(table.root, table.lastUsedAt),
-    index("workspace_sessions_status_idx").on(table.status, table.lastUsedAt),
+    index("workspace_sessions_owner_idx").on(table.tenantId, table.userId, table.lastUsedAt),
+    index("workspace_sessions_owner_root_idx").on(table.tenantId, table.userId, table.root, table.lastUsedAt),
+    index("workspace_sessions_owner_status_idx").on(table.tenantId, table.userId, table.status, table.lastUsedAt),
   ],
 );
 
