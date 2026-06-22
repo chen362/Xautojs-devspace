@@ -12,6 +12,12 @@ import type {
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { createLocalIdentity, createOidcIdentity, type DevSpaceAuthInfo } from "./identity.js";
+import {
+  SqliteOAuthClientsStore,
+  SqliteOAuthStore,
+  type PersistedAccessTokenRecord,
+  type PersistedRefreshTokenRecord,
+} from "./oauth-store.js";
 
 export interface OidcOAuthConfig {
   issuer: string;
@@ -24,6 +30,7 @@ export interface OidcOAuthConfig {
 
 export interface OAuthConfig {
   mode: "owner-token" | "oidc";
+  stateDir?: string;
   ownerToken?: string;
   accessTokenTtlSeconds: number;
   refreshTokenTtlSeconds: number;
@@ -39,7 +46,6 @@ interface AuthorizationCodeRecord {
 }
 
 interface AccessTokenRecord {
-  token: string;
   clientId: string;
   scopes: string[];
   expiresAt: number;
@@ -47,7 +53,6 @@ interface AccessTokenRecord {
 }
 
 interface RefreshTokenRecord {
-  token: string;
   clientId: string;
   scopes: string[];
   expiresAt: number;
@@ -188,13 +193,21 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   private readonly refreshTokens = new Map<string, RefreshTokenRecord>();
   private readonly resourceServerUrl: URL;
   private readonly oidcJwks?: ReturnType<typeof createRemoteJWKSet>;
+  private readonly oauthStore?: SqliteOAuthStore;
 
   constructor(
     private readonly config: OAuthConfig,
     resourceServerUrl: URL,
+    stateDir?: string,
   ) {
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
-    this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts);
+    const oauthStateDir = stateDir ?? config.stateDir;
+    if (config.mode === "owner-token" && oauthStateDir) {
+      this.oauthStore = new SqliteOAuthStore(oauthStateDir);
+      this.clientsStore = new SqliteOAuthClientsStore(this.oauthStore, config.allowedRedirectHosts);
+    } else {
+      this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts);
+    }
     this.oidcJwks = config.mode === "oidc" && config.oidc
       ? createRemoteJWKSet(new URL(config.oidc.jwksUri))
       : undefined;
@@ -290,7 +303,8 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     resource?: URL,
   ): Promise<OAuthTokens> {
     this.assertOwnerTokenMode();
-    const record = this.refreshTokens.get(hashToken(refreshToken));
+    const refreshTokenHash = hashToken(refreshToken);
+    const record = this.refreshTokenRecord(refreshTokenHash);
     if (!record || record.clientId !== client.client_id || record.expiresAt < Math.floor(Date.now() / 1000)) {
       throw new InvalidGrantError("Invalid refresh token");
     }
@@ -303,8 +317,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       throw new AccessDeniedError("Refresh token cannot grant requested scopes");
     }
 
-    this.refreshTokens.delete(hashToken(refreshToken));
-    return this.issueTokens(client.client_id, requestedScopes, resource ?? record.resource);
+    return this.issueTokens(client.client_id, requestedScopes, resource ?? record.resource, refreshTokenHash);
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
@@ -312,7 +325,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       return this.verifyOidcAccessToken(token);
     }
 
-    const record = this.accessTokens.get(hashToken(token));
+    const record = this.accessTokenRecord(hashToken(token));
     if (!record || record.expiresAt < Math.floor(Date.now() / 1000)) {
       throw new InvalidTokenError("Invalid or expired access token");
     }
@@ -331,8 +344,32 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   async revokeToken(_client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest): Promise<void> {
     this.assertOwnerTokenMode();
     const hashed = hashToken(request.token);
+    if (this.oauthStore) {
+      this.oauthStore.deleteAccessToken(hashed);
+      this.oauthStore.deleteRefreshToken(hashed);
+      return;
+    }
+
     this.accessTokens.delete(hashed);
     this.refreshTokens.delete(hashed);
+  }
+
+  close(): void {
+    this.oauthStore?.close();
+  }
+
+  private accessTokenRecord(tokenHash: string): AccessTokenRecord | undefined {
+    if (!this.oauthStore) return this.accessTokens.get(tokenHash);
+
+    const record = this.oauthStore.getAccessToken(tokenHash);
+    return record ? persistedAccessTokenRecord(record) : undefined;
+  }
+
+  private refreshTokenRecord(tokenHash: string): RefreshTokenRecord | undefined {
+    if (!this.oauthStore) return this.refreshTokens.get(tokenHash);
+
+    const record = this.oauthStore.getRefreshToken(tokenHash);
+    return record ? persistedRefreshTokenRecord(record) : undefined;
   }
 
   private async verifyOidcAccessToken(token: string): Promise<AuthInfo> {
@@ -395,28 +432,60 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     return record;
   }
 
-  private issueTokens(clientId: string, scopes: string[], resource?: URL): OAuthTokens {
+  private issueTokens(
+    clientId: string,
+    scopes: string[],
+    resource?: URL,
+    consumedRefreshTokenHash?: string,
+  ): OAuthTokens {
     this.assertOwnerTokenMode();
     const now = Math.floor(Date.now() / 1000);
     const accessToken = randomToken();
     const refreshToken = randomToken();
     const accessExpiresAt = now + this.config.accessTokenTtlSeconds;
     const refreshExpiresAt = now + this.config.refreshTokenTtlSeconds;
+    const accessTokenHash = hashToken(accessToken);
+    const refreshTokenHash = hashToken(refreshToken);
 
-    this.accessTokens.set(hashToken(accessToken), {
-      token: accessToken,
-      clientId,
-      scopes,
-      expiresAt: accessExpiresAt,
-      resource,
-    });
-    this.refreshTokens.set(hashToken(refreshToken), {
-      token: refreshToken,
-      clientId,
-      scopes,
-      expiresAt: refreshExpiresAt,
-      resource,
-    });
+    if (this.oauthStore) {
+      const saved = this.oauthStore.saveTokenPair(
+        {
+          accessTokenHash,
+          accessToken: {
+            clientId,
+            scopes,
+            expiresAt: accessExpiresAt,
+            resource: resource?.href,
+          },
+          refreshTokenHash,
+          refreshToken: {
+            clientId,
+            scopes,
+            expiresAt: refreshExpiresAt,
+            resource: resource?.href,
+          },
+        },
+        consumedRefreshTokenHash,
+      );
+      if (!saved) throw new InvalidGrantError("Invalid refresh token");
+    } else {
+      if (consumedRefreshTokenHash && !this.refreshTokens.delete(consumedRefreshTokenHash)) {
+        throw new InvalidGrantError("Invalid refresh token");
+      }
+
+      this.accessTokens.set(accessTokenHash, {
+        clientId,
+        scopes,
+        expiresAt: accessExpiresAt,
+        resource,
+      });
+      this.refreshTokens.set(refreshTokenHash, {
+        clientId,
+        scopes,
+        expiresAt: refreshExpiresAt,
+        resource,
+      });
+    }
 
     return {
       access_token: accessToken,
@@ -495,4 +564,27 @@ function claimAsString(payload: JWTPayload, claim: string): string | undefined {
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("base64url");
+}
+
+function persistedAccessTokenRecord(record: PersistedAccessTokenRecord): AccessTokenRecord {
+  return {
+    clientId: record.clientId,
+    scopes: record.scopes,
+    expiresAt: record.expiresAt,
+    resource: urlFromStoredResource(record.resource),
+  };
+}
+
+function persistedRefreshTokenRecord(record: PersistedRefreshTokenRecord): RefreshTokenRecord {
+  return {
+    clientId: record.clientId,
+    scopes: record.scopes,
+    expiresAt: record.expiresAt,
+    resource: urlFromStoredResource(record.resource),
+  };
+}
+
+function urlFromStoredResource(resource: string | undefined): URL | undefined {
+  if (!resource) return undefined;
+  return new URL(resource);
 }

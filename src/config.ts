@@ -238,11 +238,12 @@ function defaultJwksUri(issuer: string): string {
   return new URL(".well-known/jwks.json", `${issuer}/`).toString();
 }
 
-function parseOAuthConfig(env: NodeJS.ProcessEnv, ownerToken: string | undefined): OAuthConfig {
+function parseOAuthConfig(env: NodeJS.ProcessEnv, ownerToken: string | undefined, stateDir: string): OAuthConfig {
   const mode = parseAuthMode(env.DEVSPACE_AUTH_MODE);
   const scopes = parseStringList(env.DEVSPACE_OAUTH_SCOPES ?? env.DEVSPACE_OIDC_SCOPES, ["devspace"]);
   const common = {
     mode,
+    stateDir,
     accessTokenTtlSeconds: parsePositiveInteger(
       env.DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS,
       DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS,
@@ -349,7 +350,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     host,
     port,
     deploymentMode: parseDeploymentMode(env.DEVSPACE_DEPLOYMENT_MODE),
-    oauth: parseOAuthConfig(env, files.auth.ownerToken),
+    oauth: parseOAuthConfig(env, files.auth.ownerToken, stateDir),
     database: parseDatabaseConfig(env, stateDir),
     allowedRoots: parseAllowedRoots(env.DEVSPACE_ALLOWED_ROOTS ?? files.config.allowedRoots),
     allowedHosts: parseAllowedHosts(env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
