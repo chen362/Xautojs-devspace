@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createOidcIdentity } from "./identity.js";
+import { PostgresAutomationStore } from "./postgres-automation-store.js";
 import { PostgresWorkspaceStore } from "./postgres-workspace-store.js";
 import {
   assertPostgresSchemaReady,
@@ -52,6 +53,7 @@ async function runPostgresIntegrationTest(
     sslMode,
   });
   let store: PostgresWorkspaceStore | undefined;
+  let automationStore: PostgresAutomationStore | undefined;
 
   try {
     await adminPool.query(`create schema ${quoteIdentifier(schemaName)}`);
@@ -76,6 +78,7 @@ async function runPostgresIntegrationTest(
     await assertPostgresSchemaReady(config);
 
     store = new PostgresWorkspaceStore(config);
+    automationStore = new PostgresAutomationStore(config);
     const owner = createOidcIdentity({
       issuer: "https://auth.example.com",
       tenantExternalId: "tenant-postgres-it",
@@ -132,6 +135,87 @@ async function runPostgresIntegrationTest(
     );
     assert.match(loadedAgentFiles[0]?.contentHash ?? "", /^[a-f0-9]{64}$/);
 
+    const sourceId = `auto_src_it_${randomUUID()}`;
+    const source = await automationStore.createSource({
+      owner,
+      id: sourceId,
+      kind: "api_trigger",
+      name: "integration trigger",
+      secretRef: "secret:automation/integration",
+      config: { triggerId: "integration" },
+    });
+    assert.equal(source.id, sourceId);
+    assert.equal(source.tenantId, owner.tenantId);
+    assert.equal(source.userId, owner.userId);
+    assert.equal(source.kind, "api_trigger");
+    assert.deepEqual(source.config, { triggerId: "integration" });
+    assert.equal(await automationStore.getSource(sourceId, otherOwner), undefined);
+
+    const eventId = `auto_evt_it_${randomUUID()}`;
+    const recorded = await automationStore.recordEvent({
+      owner,
+      id: eventId,
+      sourceId,
+      sourceEventId: "provider-event-1",
+      idempotencyKey: "idem-event-1",
+      requestFingerprint: "sha256:event-1",
+      eventType: "automation.trigger.fire",
+      payload: { text: "run integration smoke" },
+      metadata: { method: "POST" },
+      workspaceSessionId: sessionId,
+      devspaceConversationId: "conv_postgres_it_1",
+    });
+    assert.equal(recorded.outcome, "inserted");
+    assert.equal(recorded.event.id, eventId);
+    assert.deepEqual(recorded.event.payload, { text: "run integration smoke" });
+
+    const duplicate = await automationStore.recordEvent({
+      owner,
+      id: `auto_evt_it_duplicate_${randomUUID()}`,
+      sourceId,
+      sourceEventId: "provider-event-1",
+      idempotencyKey: "idem-event-1",
+      requestFingerprint: "sha256:event-1",
+      eventType: "automation.trigger.fire",
+    });
+    assert.equal(duplicate.outcome, "duplicate");
+    assert.equal(duplicate.event.id, eventId);
+
+    await assert.rejects(
+      () =>
+        automationStore.recordEvent({
+          owner,
+          id: `auto_evt_it_conflict_${randomUUID()}`,
+          sourceId,
+          sourceEventId: "provider-event-1",
+          idempotencyKey: "idem-event-1",
+          requestFingerprint: "sha256:changed",
+          eventType: "automation.trigger.fire",
+        }),
+      /IDEMPOTENCY_CONFLICT/,
+    );
+
+    assert.equal(await automationStore.getEvent(eventId, otherOwner), undefined);
+    assert.equal((await automationStore.getEvent(eventId, owner))?.id, eventId);
+
+    const runId = `auto_run_it_${randomUUID()}`;
+    const run = await automationStore.createRun({
+      owner,
+      id: runId,
+      eventId,
+      status: "queued",
+      workspaceSessionId: sessionId,
+      devspaceConversationId: "conv_postgres_it_1",
+      metadata: { queue: "default" },
+    });
+    assert.equal(run.id, runId);
+    assert.equal(run.eventId, eventId);
+    assert.equal(run.status, "queued");
+    assert.equal(run.attempt, 1);
+    assert.deepEqual(run.metadata, { queue: "default" });
+    assert.equal(await automationStore.getRun(runId, otherOwner), undefined);
+    assert.equal((await automationStore.getRun(runId, owner))?.id, runId);
+
     assert.equal(await store.getSession(sessionId, otherOwner), undefined);
     assert.deepEqual(await store.getLoadedAgentFiles(sessionId, otherOwner), []);
 
@@ -165,6 +249,7 @@ async function runPostgresIntegrationTest(
     assert.equal(await store.getSession(sessionId, owner), undefined);
     assert.deepEqual(await store.getLoadedAgentFiles(sessionId, owner), []);
   } finally {
+    await automationStore?.close();
     await store?.close();
     await adminPool.query(`drop schema if exists ${quoteIdentifier(schemaName)} cascade`);
     await adminPool.end();
