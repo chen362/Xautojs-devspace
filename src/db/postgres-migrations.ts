@@ -51,6 +51,7 @@ export interface AppliedPostgresMigration {
 }
 
 export type PostgresMigrationState = "applied" | "pending" | "modified";
+export type PostgresSchemaState = "ready" | "missing" | "pending" | "modified";
 
 export interface PostgresMigrationStatusEntry {
   version: string;
@@ -68,6 +69,18 @@ export interface PostgresMigrationStatus {
   appliedCount: number;
   pendingCount: number;
   modifiedCount: number;
+}
+
+export interface PostgresMigrationStatusJson {
+  state: PostgresSchemaState;
+  ready: boolean;
+  migrationsDir: string;
+  tableName: string;
+  tableExists: boolean;
+  appliedCount: number;
+  pendingCount: number;
+  modifiedCount: number;
+  migrations: PostgresMigrationStatusEntry[];
 }
 
 export interface PostgresMigrationResult {
@@ -197,7 +210,7 @@ export async function assertPostgresSchemaReady(
   options: PostgresMigrationOptions = {},
 ): Promise<void> {
   const status = await getPostgresMigrationStatus(config, options);
-  if (status.tableExists && status.pendingCount === 0 && status.modifiedCount === 0) return;
+  if (postgresSchemaState(status) === "ready") return;
 
   throw new Error(
     [
@@ -240,6 +253,30 @@ export function formatPostgresMigrationResult(result: PostgresMigrationResult): 
     `Applied ${result.applied.length} migration${result.applied.length === 1 ? "" : "s"}:`,
     ...result.applied.map((migration) => `  ${migration.name}`),
   ].join("\n");
+}
+
+export function postgresSchemaState(status: PostgresMigrationStatus): PostgresSchemaState {
+  if (!status.tableExists) return "missing";
+  if (status.modifiedCount > 0) return "modified";
+  if (status.pendingCount > 0) return "pending";
+  return "ready";
+}
+
+export function toPostgresMigrationStatusJson(
+  status: PostgresMigrationStatus,
+): PostgresMigrationStatusJson {
+  const state = postgresSchemaState(status);
+  return {
+    state,
+    ready: state === "ready",
+    migrationsDir: status.migrationsDir,
+    tableName: status.tableName,
+    tableExists: status.tableExists,
+    appliedCount: status.appliedCount,
+    pendingCount: status.pendingCount,
+    modifiedCount: status.modifiedCount,
+    migrations: status.migrations,
+  };
 }
 
 function buildMigrationStatus(input: {
