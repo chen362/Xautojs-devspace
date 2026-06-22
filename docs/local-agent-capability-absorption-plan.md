@@ -4,1472 +4,2435 @@ Branch: `plan/local-agent-capability-absorption`
 
 Target repository: `chen362/devspace`
 
-Reference repositories:
+Primary reference repository: `chen362/codex`
 
-- Primary: `chen362/codex`
-- Secondary, only where public material is useful: `chen362/claude-code`
+Secondary reference repository, only where public workflow material is useful: `chen362/claude-code`
 
-## 1. Executive Decision
+Last updated: 2026-06-22
 
-DevSpace should be evolved into a Codex-style local capability and context-memory layer for ChatGPT web. The priority is not only tools. The highest-value feature to absorb from Codex is its treatment of conversation/work history as a managed context ledger that can be persisted, summarized, compacted, replayed, and safely re-injected.
+## 0. Executive Decision
 
-The intended product boundary is:
+DevSpace should become a Codex-style local capability, memory, safety, and UI gateway for ChatGPT Web.
+
+The recommended product architecture is:
 
 ```text
-ChatGPT Web / Workspace Agent
-  = reasoning, conversation, planning, code judgment
-
-DevSpace fork
-  = local MCP server, workspace capability layer, context memory, file/git/shell/safety/runtime tools
-
-Local repositories
-  = real project files, git worktree, test commands, build commands
+One shared GPT in ChatGPT Web
+  -> one public remote MCP domain
+  -> multi-tenant OAuth
+  -> cloud relay / API gateway
+  -> each user's own local DevSpace Agent
+  -> that user's local project files
 ```
 
-The intended non-goal is:
+The core principle is:
+
+```text
+The GPT can be shared.
+The MCP domain can be shared.
+But user identity, workspace sessions, context memory, approvals, file permissions, local agents, and audit trails must be isolated per user and per workspace.
+```
+
+The target is not to call Codex CLI or Claude Code CLI as another agent. The target is to absorb the best local-agent runtime capabilities from Codex, implement them inside DevSpace, and then exceed Codex for web-driven multi-user local workspaces.
+
+## 1. Product Boundary
+
+### 1.1 What ChatGPT Web owns
+
+```text
+reasoning
+conversation with the user
+planning
+code judgment
+context summarization when requested by DevSpace
+calling MCP tools
+```
+
+### 1.2 What DevSpace owns
+
+```text
+remote MCP server
+multi-tenant OAuth verification
+cloud relay to local agents
+workspace routing
+local filesystem tools
+local git tools
+local command tools
+context memory ledger
+context compaction store
+approval and policy engine
+patch-first editing runtime
+diff and rollback runtime
+multimodal local asset gateway
+local graphical workbench / widgets
+runtime event log
+```
+
+### 1.3 What the user's local DevSpace Agent owns
+
+```text
+allowed local roots
+actual local file reads
+actual local file modifications
+actual local command execution
+local asset inspection / extraction
+local git state
+local process lifecycle
+local approval UI when configured
+```
+
+### 1.4 Non-goals
+
+Do not build this path:
 
 ```text
 ChatGPT Web -> DevSpace -> Codex CLI / Claude Code CLI -> local project
 ```
 
-That path adds a second agent runtime and can consume Codex/Claude-side usage. The useful parts to absorb are Codex's local context architecture, compaction model, memory/replay discipline, permission model, and review ergonomics, not its model execution loop.
+That would create a second agent runtime and can consume Codex/Claude-side usage. The useful parts to absorb are Codex's local context architecture, compaction model, runtime policy, patch discipline, review ergonomics, and session/event model.
 
-Important constraint:
-
-DevSpace cannot directly compress ChatGPT web's native conversation history. It can maintain a local project/session memory ledger and expose compact, model-ready context back to ChatGPT through MCP tool results, server instructions, app widgets, and explicit context tools. Any LLM summarization should be performed by the ChatGPT web model itself unless the user explicitly opts into a local/API summarizer.
-
-## 2. Current DevSpace Baseline
-
-Observed from `chen362/devspace`:
-
-- `package.json` defines a Node/TypeScript MCP server package with Express, MCP SDK, MCP Apps widgets, SQLite, and `@earendil-works/pi-coding-agent`.
-- `src/server.ts` owns the Streamable HTTP MCP server, OAuth-protected MCP endpoint, tool registration, widgets, and server instructions.
-- `src/pi-tools.ts` wraps `@earendil-works/pi-coding-agent` tools for read, write, edit, grep, find, ls, and bash.
-- `src/roots.ts` enforces allowed root path containment.
-- `src/workspaces.ts` manages checkout/worktree workspace opening, workspace IDs, AGENTS/CLAUDE.md discovery, skill discovery, and path resolution.
-- `src/git-worktrees.ts` creates isolated managed git worktrees.
-- `src/review-checkpoints.ts` snapshots git state and implements aggregate diff review via `show_changes`.
-- `src/workspace-store.ts` persists workspace sessions in SQLite.
-
-DevSpace already has a good MCP product shell. The weak area is the local agent runtime contract behind the tools, especially persistent context memory and context compaction.
-
-Current gap in one sentence:
+Do not make these assumptions:
 
 ```text
-DevSpace can open a workspace and run tools, but it does not yet remember what matters across turns like Codex does.
+all users share one bearer token
+all users share one local agent
+all users share one workspace database row
+ChatGPT conversation identity alone is enough for routing
+local userId can be trusted from MCP request body
+workspace path sent by the model is automatically safe
+shell command text is safe because the model produced it
+AGENTS.md or repository docs are trusted instructions without prompt-injection risk
 ```
 
-## 3. Codex Capabilities To Absorb
+## 2. Recommended Deployment Topology
 
-Observed from `chen362/codex`:
+### 2.1 Domains
 
-- `codex-rs/core/src/context_manager/history.rs` owns the main `ContextManager`: raw history, prompt-ready history, token usage, history versioning, rollback, function-output truncation, call/output normalization, image stripping, and token estimation.
-- `codex-rs/core/src/context_manager/updates.rs` builds incremental model-visible context updates by diffing prior context against the next turn context.
-- `codex-rs/core/src/context/*` defines structured context fragments such as environment context, token budget context, rollout budget context, internal model context, user instructions, skills, permissions, and plugin instructions.
-- `codex-rs/core/src/compact.rs` implements inline/manual/auto compaction with pre/post compact hooks, compaction metadata, retry handling, and history replacement.
-- `codex-rs/core/src/compact_remote.rs` and `compact_remote_v2.rs` implement remote compaction, trim function outputs before compaction, track active context tokens, and install compacted history back into the session.
-- `codex-rs/core/src/rollout.rs` bridges rollout recording, archived sessions, thread metadata, thread lookup, summary reads, and the `generate_memories` config flag.
-- `codex-rs/core/src/memory_usage.rs` tracks memory-related tool usage based on shell/tool invocation patterns.
-- `codex-rs/core/src/apply_patch.rs` routes patch safety through approval policy, permission profile, and filesystem sandbox policy before applying changes.
-- `codex-rs/core/src/tools/orchestrator.rs` centralizes approval, sandbox selection, execution attempt, sandbox/network denial handling, and retry/escalation semantics.
-- `codex-rs/core/src/tools/sandboxing.rs` defines reusable approval primitives such as `ApprovalStore`, `ExecApprovalRequirement`, `ApprovalCtx`, and `ToolRuntime` abstractions.
-- `codex-rs/core/src/exec_policy.rs` evaluates shell commands against policy rules, known-safe heuristics, dangerous-command heuristics, and approval requirements.
-- `docs/config.md` points to Codex configuration and lifecycle-hook support.
-
-Absorb these as TypeScript concepts, not by invoking Codex:
+Minimum viable production topology:
 
 ```text
-context ledger with raw events and model-ready projections
-history versioning and checkpointing
-reference context diffing
-project memory summaries
-manual and automatic context compaction
-recent tail + compacted summary strategy
-token/size budget accounting
-context fragments with explicit source markers
-function/tool output truncation before replay
-call/output pair normalization for model-visible history
-rollback-aware context trimming
-pre/post compact hooks
-rollout/session metadata and archived session lookup
-apply_patch-first editing
-command policy engine
-approval queue and approval cache
-sandbox/permission profile vocabulary
-safe/risky/forbidden command classification
-network access classification
-structured tool run result model
-diff-first review loop
-lifecycle hooks around tool calls
+https://mcp.devspace.example.com/mcp
+https://mcp.devspace.example.com/.well-known/oauth-protected-resource
+https://mcp.devspace.example.com/.well-known/oauth-authorization-server
+https://mcp.devspace.example.com/agent/connect
+https://mcp.devspace.example.com/api/*
 ```
 
-Do not absorb these for the first implementation:
+A larger deployment can split domains:
 
 ```text
-Codex model provider
-Codex SDK/app-server thread execution
-codex exec/run as a subprocess
-Codex cloud/remote task behavior
-subagents as model workers
+mcp.devspace.example.com      remote MCP endpoint for ChatGPT
+relay.devspace.example.com    local agent WebSocket / relay traffic
+app.devspace.example.com      user dashboard and local-agent management
+auth.devspace.example.com     OAuth/OIDC provider or auth proxy
 ```
 
-## 4. Claude Code Capabilities To Absorb
+For the first implementation, one domain with path-based routing is enough.
 
-Claude Code is not the primary implementation sample here. If its internals are not open or are bundled in a way that makes exact behavior hard to inspect, do not force a clone.
+### 2.2 Public MCP endpoint
 
-Observed from `chen362/claude-code` public materials:
-
-- Repository README describes Claude Code as a terminal-native agentic coding tool.
-- `plugins/README.md` documents plugin components: slash commands, agents, hooks, skills, and MCP servers.
-- `.claude-plugin/marketplace.json` models plugin marketplace metadata and plugin discovery.
-- `plugins/feature-dev/README.md` documents a structured feature workflow with discovery, codebase exploration, clarification, architecture design, implementation, quality review, and summary.
-- `plugins/commit-commands/README.md` documents git workflow automation: commit, push, PR creation, branch cleanup.
-- `plugins/security-guidance/README.md` documents hooks for pre-tool pattern warnings, stop-hook diff review, and agentic commit review.
-- `plugins/plugin-dev/README.md` documents plugin development practices for hooks, MCP integration, plugin structure, settings, commands, agents, and skills.
-
-Absorb these only as public workflow/plugin patterns:
+ChatGPT connects to one remote MCP URL:
 
 ```text
-plugin manifest and marketplace model
-slash-command-like workflow templates
-project/user settings files
-hook lifecycle: SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd
-security guidance hooks around writes and diffs
-feature workflow templates
-commit/PR workflow templates
-specialized guidance packs, not model subagents in v1
+https://mcp.devspace.example.com/mcp
 ```
 
-Do not absorb these for the first implementation:
+The endpoint must support remote MCP transport supported by ChatGPT Apps, currently Streamable HTTP/SSE-style remote MCP behavior depending on the configured host surface.
+
+The endpoint should be stateless at the HTTP process level. All tenant state should live in durable storage and the relay connection registry.
+
+### 2.3 OAuth requirement
+
+Use OAuth for multi-user mode.
+
+Official OpenAI MCP/App behavior to align with:
 
 ```text
-Claude Code model runtime
-Claude Code CLI subprocess execution
-Claude subagents as independent model calls
-provider-specific Claude settings or costs
-private or non-inspectable Claude Code internals
+ChatGPT queries protected resource metadata.
+ChatGPT performs authorization-code flow with PKCE when the user authorizes.
+ChatGPT sends Authorization: Bearer <token> to the MCP server.
+The MCP server validates issuer, audience/resource, expiration, scopes, and subject.
 ```
 
-## 5. Target Architecture Sketch
+The MCP server must not accept `userId`, `tenantId`, or `accountId` from the tool input as the trusted caller identity.
+
+Trusted identity source:
 
 ```text
-+---------------------------------------------------------------+
-| ChatGPT Web / Workspace Agent                                 |
-| - owns reasoning and conversation                             |
-| - calls MCP tools exposed by DevSpace                         |
-| - summarizes context when DevSpace asks it to compact          |
-+-------------------------------+-------------------------------+
-                                |
-                                | Streamable HTTP MCP / OAuth
-                                v
-+---------------------------------------------------------------+
-| DevSpace Local MCP Server                                     |
-|                                                               |
-|  Transport/Auth Layer                                         |
-|  - Express + MCP SDK + OAuth                                  |
-|  - tunnel/public URL                                          |
-|  - app widgets for diffs, approvals, and context memory        |
-|                                                               |
-|  Workspace Layer                                              |
-|  - allowed roots                                              |
-|  - checkout/worktree sessions                                 |
-|  - AGENTS.md / CLAUDE.md hierarchy                            |
-|  - skills/workflow packs                                      |
-|                                                               |
-|  Context Memory Layer                                         |
-|  - raw context events                                         |
-|  - model-ready context fragments                              |
-|  - project summary, task summary, decisions, assumptions       |
-|  - file touch graph and symbol/file relevance memory           |
-|  - tool-result summaries                                      |
-|  - compaction checkpoints                                     |
-|  - token/size budget accounting                               |
-|                                                               |
-|  Capability Runtime Layer                                     |
-|  - tool registry                                              |
-|  - policy evaluator                                           |
-|  - approval queue/cache                                       |
-|  - denylist and sensitive-path guard                          |
-|  - command classifier                                         |
-|  - patch validator                                            |
-|  - hooks lifecycle                                            |
-|                                                               |
-|  Local Tool Layer                                             |
-|  - read/search/list                                           |
-|  - apply_patch                                                |
-|  - git diff/status/worktree/rollback                          |
-|  - run_check whitelist                                        |
-|  - optional approved run_shell                                |
-+-------------------------------+-------------------------------+
-                                |
-                                v
-+---------------------------------------------------------------+
-| Local Project                                                  |
-| - source files                                                 |
-| - git checkout or isolated worktree                            |
-| - package manager/test/build commands                          |
-+---------------------------------------------------------------+
+OAuth access token claims
+  sub       -> userId
+  org/team  -> tenantId or teamId when supported
+  aud       -> this MCP protected resource
+  scope     -> allowed tools and data access
 ```
 
-## 6. Context Memory Design
+### 2.4 Cloud relay
 
-This is the most important part of the fork.
-
-Codex owns the whole agent conversation, so it can rewrite its internal model history directly. DevSpace cannot rewrite ChatGPT web history. Therefore DevSpace should implement a local context ledger and expose compressed project context through explicit MCP tools.
-
-### 6.1 Context goals
-
-DevSpace should remember:
+The relay is the bridge between ChatGPT's remote MCP calls and a user's private local machine.
 
 ```text
-which workspace is open
-which task is active
-what the user asked for
-what files were inspected
-why particular files matter
-what commands were run
-what outputs mattered
-what code was changed
-what tests passed/failed
-what decisions and assumptions were made
-what AGENTS.md / CLAUDE.md instructions apply
-what risks or TODOs remain
-what summary replaced older detailed context
+ChatGPT Web
+  -> HTTPS MCP request
+  -> MCP Gateway authenticates user
+  -> Gateway resolves workspaceSessionId/localAgentId
+  -> Cloud Relay sends request over user's existing local-agent connection
+  -> Local Agent performs local operation
+  -> Local Agent returns structured result
+  -> MCP Gateway returns model-ready response to ChatGPT
 ```
 
-DevSpace should not remember:
+The local agent should initiate an outbound connection to the relay:
 
 ```text
-secrets
-full .env files
-full command outputs by default
-raw huge logs after they are summarized
-private credentials
-irrelevant file contents that were only transiently inspected
+devspace-agent login
+devspace-agent connect
 ```
 
-### 6.2 Context ledger model
+Do not require users to expose localhost or open inbound firewall ports.
 
-Add a persistent context ledger on top of `workspace_sessions`.
+### 2.5 Secure tunnel option
 
-Suggested tables:
+For private/on-prem deployments, support an outbound-only secure tunnel mode. This maps to the same design principle as OpenAI Secure MCP Tunnel: local/private MCP remains private, while supported OpenAI surfaces reach it through an outbound tunnel client.
+
+DevSpace should support both:
 
 ```text
-workspace_sessions
-  existing table, extended with current_context_window_id and active_task_id
+cloud relay mode:
+  DevSpace cloud receives MCP and routes to local agents
 
-context_windows
-  id
-  workspace_session_id
-  status: active | compacted | archived
-  started_at
-  closed_at
-  token_budget_estimate
-  token_estimate
-  summary_id
-
-context_events
-  id
-  workspace_session_id
-  context_window_id
-  task_id
-  type
-  source
-  path
-  content
-  metadata_json
-  token_estimate
-  importance
-  created_at
-
-context_summaries
-  id
-  workspace_session_id
-  context_window_id
-  parent_summary_id
-  summary_kind: project | task | window | file | command | diff | decision
-  content
-  source_event_ids_json
-  token_estimate
-  created_at
-
-context_pins
-  id
-  workspace_session_id
-  scope: project | task | file
-  key
-  content
-  reason
-  created_at
-  updated_at
-
-context_file_facts
-  id
-  workspace_session_id
-  path
-  symbols_json
-  relevance_notes
-  last_read_hash
-  last_changed_hash
-  last_seen_at
+self-hosted tunnel mode:
+  user/team runs MCP server privately and connects through an outbound tunnel
 ```
 
-Initial event types:
+## 3. Multi-User Routing Model
+
+### 3.1 Routing key
+
+Every MCP request must resolve to this routing tuple:
+
+```text
+tenantId
+userId
+localAgentId
+workspaceId
+workspaceSessionId
+contextWindowId
+requestId
+```
+
+Minimum key for safe routing:
+
+```text
+userId + localAgentId + workspaceSessionId
+```
+
+### 3.2 Why conversation auto-detection is not enough
+
+A shared GPT does not provide a reliable local project identity by itself. The model may be used in multiple chats, by multiple users, with multiple machines and workspaces.
+
+Therefore routing should be explicit:
+
+```text
+1. ChatGPT calls list_local_agents if needed.
+2. ChatGPT calls open_workspace.
+3. DevSpace returns workspaceSessionId and contextWindowId.
+4. All later tools must pass workspaceSessionId.
+```
+
+If the user has exactly one online agent and one default workspace, DevSpace may choose it automatically. If there are multiple online agents or ambiguous workspace paths, DevSpace must return a selection-required error or list.
+
+### 3.3 Adaptive allocation rules
+
+```text
+if no authenticated user:
+  return AUTH_REQUIRED
+
+if user has no registered local agents:
+  return LOCAL_AGENT_NOT_REGISTERED
+
+if user has registered agents but none online:
+  return LOCAL_AGENT_OFFLINE
+
+if exactly one agent is online and input has no agentId:
+  use that agent
+
+if multiple agents are online and no default is configured:
+  return LOCAL_AGENT_SELECTION_REQUIRED with candidates
+
+if workspaceSessionId is supplied:
+  route to the agent bound to that session
+
+if workspaceSessionId is stale or belongs to another user:
+  return WORKSPACE_SESSION_NOT_FOUND
+
+if requested path is outside allowed roots:
+  return PATH_NOT_ALLOWED
+```
+
+### 3.4 Session stickiness
+
+`open_workspace` creates a sticky local session:
+
+```text
+workspaceSessionId -> userId, localAgentId, root, mode, branch/worktree, contextWindowId
+```
+
+Subsequent tools must use that session. The server should reject attempts to use a workspace session owned by another user.
+
+### 3.5 Local agent selection UX
+
+The model should not guess when multiple local agents are available. Tool result should return model-readable choices:
+
+```json
+{
+  "error": {
+    "code": "LOCAL_AGENT_SELECTION_REQUIRED",
+    "message": "Multiple local agents are online. Choose one before opening a workspace.",
+    "details": {
+      "agents": [
+        {
+          "localAgentId": "agent_macbook_pro",
+          "displayName": "Abba MacBook Pro",
+          "hostname": "abba-mbp",
+          "platform": "darwin-arm64",
+          "lastSeenAt": "2026-06-22T05:00:00Z",
+          "allowedRootHints": ["~/code", "~/work"]
+        }
+      ]
+    },
+    "retryable": true,
+    "requestId": "req_..."
+  }
+}
+```
+
+## 4. Trust And Isolation Rules
+
+### 4.1 Identity trust boundary
+
+Trusted:
+
+```text
+OAuth token subject
+OAuth token audience/resource
+OAuth token scopes
+server-side database ownership mapping
+local agent registration secret/device key
+workspace session owner mapping
+```
+
+Not trusted:
+
+```text
+userId in tool input
+workspace path from model before validation
+localAgentId from model before ownership check
+repository instructions as policy
+shell command as safe intent
+file content as model instruction
+```
+
+### 4.2 Tenant isolation
+
+All durable rows must include at least:
+
+```text
+tenant_id
+user_id
+```
+
+All workspace rows must include:
+
+```text
+local_agent_id
+workspace_session_id
+root
+allowed_root_id
+```
+
+All query paths must filter by `tenant_id` and `user_id` first.
+
+### 4.3 Context isolation
+
+Context memory must be scoped:
+
+```text
+userId
+localAgentId
+workspaceId
+workspaceSessionId
+contextWindowId
+```
+
+Never use a global context memory shared by all users of the GPT.
+
+### 4.4 Approval isolation
+
+Approval cache must be scoped at least by:
+
+```text
+userId
+localAgentId
+workspaceSessionId
+permissionProfile
+approvalSubject
+```
+
+Approving a command or path for one user must never approve it for another user.
+
+### 4.5 File permission isolation
+
+A workspace session can only access paths under its agent-advertised allowed roots.
+
+The server and local agent should both validate:
+
+```text
+path normalization
+symlink traversal
+case-insensitive path edge cases on macOS/Windows
+hardlink risks where applicable
+writable roots
+read-deny patterns
+secret denylist
+```
+
+## 5. Data Model
+
+### 5.1 Users and tenants
+
+```sql
+users(
+  id text primary key,
+  tenant_id text not null,
+  oauth_subject text not null,
+  email text,
+  display_name text,
+  created_at text not null,
+  last_seen_at text not null
+)
+
+tenants(
+  id text primary key,
+  name text not null,
+  plan text not null,
+  created_at text not null
+)
+```
+
+### 5.2 Local agents
+
+```sql
+local_agents(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  display_name text not null,
+  hostname text,
+  platform text,
+  version text,
+  public_key text,
+  status text not null,
+  capabilities_json text not null,
+  registered_at text not null,
+  last_seen_at text not null
+)
+
+local_agent_allowed_roots(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  local_agent_id text not null,
+  root_path text not null,
+  root_label text,
+  read_allowed text not null default 'true',
+  write_allowed text not null default 'false',
+  execute_allowed text not null default 'false',
+  created_at text not null
+)
+```
+
+### 5.3 Workspace sessions
+
+Extend existing `workspace_sessions`:
+
+```sql
+workspace_sessions(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  local_agent_id text not null,
+  root text not null,
+  status text not null default 'active',
+  mode text not null default 'checkout',
+  source_root text,
+  base_ref text,
+  base_sha text,
+  managed text not null default 'false',
+  current_context_window_id text,
+  active_task_id text,
+  created_at text not null,
+  last_used_at text not null
+)
+```
+
+### 5.4 Context memory
+
+```sql
+context_windows(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  workspace_session_id text not null,
+  status text not null,
+  token_budget integer,
+  estimated_tokens integer,
+  summary_id text,
+  created_at text not null,
+  updated_at text not null
+)
+
+context_events(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  workspace_session_id text not null,
+  context_window_id text not null,
+  event_type text not null,
+  source text not null,
+  payload_json text not null,
+  created_at text not null
+)
+
+context_summaries(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  workspace_session_id text not null,
+  context_window_id text not null,
+  summary_type text not null,
+  content text not null,
+  source_event_start_id text,
+  source_event_end_id text,
+  validation_status text not null,
+  created_at text not null
+)
+
+context_pins(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  workspace_session_id text not null,
+  label text not null,
+  content text not null,
+  source_event_id text,
+  created_at text not null
+)
+```
+
+### 5.5 Runtime events and tool runs
+
+```sql
+runtime_events(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  local_agent_id text,
+  workspace_session_id text,
+  request_id text not null,
+  event_type text not null,
+  payload_json text not null,
+  created_at text not null
+)
+
+tool_runs(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  local_agent_id text not null,
+  workspace_session_id text not null,
+  tool_name text not null,
+  operation_id text not null,
+  status text not null,
+  risk_level text not null,
+  approval_id text,
+  started_at text not null,
+  finished_at text,
+  input_fingerprint text not null,
+  result_summary text
+)
+```
+
+### 5.6 Approvals
+
+```sql
+approvals(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  local_agent_id text not null,
+  workspace_session_id text not null,
+  subject_type text not null,
+  subject_fingerprint text not null,
+  status text not null,
+  decision text,
+  scope text not null,
+  reason text,
+  created_at text not null,
+  resolved_at text
+)
+```
+
+### 5.7 Relay messages
+
+```sql
+relay_requests(
+  id text primary key,
+  tenant_id text not null,
+  user_id text not null,
+  local_agent_id text not null,
+  workspace_session_id text,
+  operation_id text not null,
+  method text not null,
+  payload_json text not null,
+  status text not null,
+  deadline_at text not null,
+  created_at text not null,
+  completed_at text
+)
+```
+
+## 6. API Contract: Remote MCP Tools
+
+All tools below are called by ChatGPT through the shared remote MCP server.
+
+Common rules:
+
+```text
+Authentication:
+  required OAuth bearer token in multi-user mode
+
+Identity:
+  derived from token, never from body
+
+Idempotency:
+  mutation tools require operationId or derive one from MCP tool call id + input fingerprint
+
+Workspace:
+  all workspace tools require workspaceSessionId after open_workspace
+
+Errors:
+  use stable machine-readable error codes
+```
+
+### 6.1 Unified tool response envelope
+
+Internally every tool should produce:
+
+```ts
+interface ToolResponse<T = unknown> {
+  result: string;
+  data?: T;
+  meta: {
+    requestId: string;
+    workspaceSessionId?: string;
+    contextWindowId?: string;
+    operationId?: string;
+    estimatedTokens?: number;
+    eventsRecorded?: number;
+    compactionRecommended?: boolean;
+  };
+}
+```
+
+MCP may return simpler text/structured content, but internal shape should remain stable.
+
+### 6.2 Unified error model
+
+```ts
+interface DevSpaceError {
+  error: {
+    code: string;
+    message: string;
+    details?: Record<string, unknown>;
+    requestId: string;
+    retryable: boolean;
+  };
+}
+```
+
+Required error codes:
+
+```text
+AUTH_REQUIRED
+TOKEN_INVALID
+TOKEN_SCOPE_MISSING
+TENANT_DISABLED
+LOCAL_AGENT_NOT_REGISTERED
+LOCAL_AGENT_OFFLINE
+LOCAL_AGENT_SELECTION_REQUIRED
+LOCAL_AGENT_VERSION_UNSUPPORTED
+WORKSPACE_SESSION_NOT_FOUND
+WORKSPACE_NOT_OPEN
+PATH_NOT_ALLOWED
+PATH_OUTSIDE_WORKSPACE
+PATH_DENIED_SECRET
+CONTEXT_WINDOW_NOT_FOUND
+CONTEXT_BUDGET_EXCEEDED
+CONTEXT_SUMMARY_REQUIRED
+CONTEXT_SUMMARY_INVALID
+APPROVAL_REQUIRED
+APPROVAL_DENIED
+COMMAND_FORBIDDEN
+COMMAND_TIMEOUT
+COMMAND_OUTPUT_TRUNCATED
+NETWORK_FORBIDDEN
+PATCH_INVALID
+PATCH_REJECTED
+PATCH_CONFLICT
+ROLLBACK_NOT_AVAILABLE
+ASSET_UNSUPPORTED
+ASSET_EXTRACTION_FAILED
+RELAY_TIMEOUT
+RELAY_DELIVERY_FAILED
+IDEMPOTENCY_CONFLICT
+INTERNAL_ERROR
+```
+
+### 6.3 `list_local_agents`
+
+Purpose:
+
+```text
+Return local agents owned by the authenticated user.
+```
+
+Request:
+
+```ts
+interface ListLocalAgentsRequest {
+  includeOffline?: boolean;
+  capability?: "files" | "git" | "shell" | "assets" | "ui";
+}
+```
+
+Response:
+
+```ts
+interface ListLocalAgentsResponse {
+  agents: Array<{
+    localAgentId: string;
+    displayName: string;
+    hostname?: string;
+    platform?: string;
+    version?: string;
+    status: "online" | "offline" | "degraded";
+    lastSeenAt: string;
+    capabilities: string[];
+    allowedRootHints: string[];
+  }>;
+}
+```
+
+### 6.4 `open_workspace`
+
+Purpose:
+
+```text
+Bind this conversation/task to a local agent and workspace root.
+```
+
+Request:
+
+```ts
+interface OpenWorkspaceRequest {
+  localAgentId?: string;
+  path: string;
+  mode?: "checkout" | "worktree";
+  baseRef?: string;
+  taskGoal?: string;
+  operationId?: string;
+}
+```
+
+Validation:
+
+```text
+path is required
+path must resolve under one allowed root
+localAgentId must belong to authenticated user
+mode defaults to checkout
+worktree mode requires git eligibility
+operationId is recommended for retry safety
+```
+
+Response:
+
+```ts
+interface OpenWorkspaceResponse {
+  workspaceSessionId: string;
+  workspaceId: string;
+  localAgentId: string;
+  root: string;
+  mode: "checkout" | "worktree";
+  branch?: string;
+  baseRef?: string;
+  baseSha?: string;
+  contextWindowId: string;
+  availableAgentsFiles: Array<{ path: string }>;
+  loadedAgentsFiles: Array<{ path: string; content: string }>;
+  availableSkills: Array<{ name: string; description: string; path: string }>;
+  context: {
+    estimatedTokens: number;
+    compactionRecommended: boolean;
+    latestSummary?: string;
+    pinnedFacts: string[];
+  };
+}
+```
+
+Idempotency:
+
+```text
+Same user + localAgentId + canonical path + mode + operationId returns same workspaceSessionId when still active.
+Different canonical path under same operationId returns IDEMPOTENCY_CONFLICT.
+```
+
+### 6.5 `get_workspace_context`
+
+Purpose:
+
+```text
+Return compact, source-labeled, model-ready local project context.
+```
+
+Request:
+
+```ts
+interface GetWorkspaceContextRequest {
+  workspaceSessionId: string;
+  mode?: "brief" | "coding" | "review" | "resume" | "asset";
+  tokenBudget?: number;
+  includePins?: boolean;
+  includeRecentEvents?: boolean;
+}
+```
+
+Response includes:
+
+```text
+goal
+current task summary
+latest compacted summary
+pinned facts
+decisions
+assumptions
+open questions
+touched files
+changed files
+last test/build results
+open risks
+next steps
+source labels
+context budget status
+```
+
+### 6.6 `prepare_context_compaction`
+
+Purpose:
+
+```text
+Ask DevSpace to prepare a compaction packet for ChatGPT Web to summarize.
+```
+
+Request:
+
+```ts
+interface PrepareContextCompactionRequest {
+  workspaceSessionId: string;
+  contextWindowId?: string;
+  targetMode?: "brief" | "coding" | "review" | "resume";
+  maxSourceEvents?: number;
+}
+```
+
+Response:
+
+```ts
+interface PrepareContextCompactionResponse {
+  compactionRequestId: string;
+  instructions: string;
+  requiredFields: string[];
+  sourceEventsDigest: string;
+  recentTail: string;
+  pins: string[];
+  validationRules: string[];
+}
+```
+
+Required summary fields:
+
+```text
+goal
+current state
+important decisions
+assumptions
+files read
+files changed
+tests/build results
+open risks
+next steps
+what not to forget
+```
+
+### 6.7 `save_context_summary`
+
+Purpose:
+
+```text
+Persist a ChatGPT-produced summary back into DevSpace context memory.
+```
+
+Request:
+
+```ts
+interface SaveContextSummaryRequest {
+  workspaceSessionId: string;
+  compactionRequestId: string;
+  summary: string;
+  fields: {
+    goal: string;
+    currentState: string;
+    importantDecisions: string[];
+    assumptions: string[];
+    filesRead: string[];
+    filesChanged: string[];
+    testsAndBuilds: string[];
+    openRisks: string[];
+    nextSteps: string[];
+    doNotForget: string[];
+  };
+}
+```
+
+Validation:
+
+```text
+compactionRequestId must exist and belong to same user/session
+summary must include all required fields
+filesChanged cannot omit known changed files unless explicitly marked irrelevant
+nextSteps cannot be empty when task remains open
+```
+
+### 6.8 File tools
+
+```text
+read_file
+list_directory
+search_workspace
+find_files
+```
+
+Rules:
+
+```text
+read tools are read-only but still path-validated
+large files return bounded excerpts or chunk references
+binary files return metadata and suggest inspect_asset
+all reads record context events
+```
+
+### 6.9 `apply_patch`
+
+Purpose:
+
+```text
+Patch-first workspace editing. This should become the preferred write path.
+```
+
+Request:
+
+```ts
+interface ApplyPatchRequest {
+  workspaceSessionId: string;
+  patch: string;
+  operationId?: string;
+  reason?: string;
+}
+```
+
+Runtime:
+
+```text
+parse patch
+validate paths
+classify changes
+check writable roots
+check sensitive path denylist
+preview diff
+request approval if policy requires
+apply patch locally
+record exact delta
+update diff tracker
+record context event
+emit UI event
+```
+
+Idempotency:
+
+```text
+Same operationId + same patch fingerprint returns same result.
+Same operationId + different patch fingerprint returns IDEMPOTENCY_CONFLICT.
+```
+
+### 6.10 Command tools
+
+Recommended split:
+
+```text
+run_check       tests/build/lint/typecheck, approval-light
+run_command     policy-gated command with explicit purpose
+run_shell       advanced escape hatch, strict/off by default
+start_server    long-running dev server process
+stop_server     stop managed process
+```
+
+`run_check` request:
+
+```ts
+interface RunCheckRequest {
+  workspaceSessionId: string;
+  command: string[];
+  cwd?: string;
+  timeoutMs?: number;
+  operationId?: string;
+  purpose?: string;
+}
+```
+
+Rules:
+
+```text
+command is array form where possible
+cwd must be inside workspace
+output is capped
+stdout/stderr deltas are streamed to UI
+final result is summarized for model
+network commands require approval
+write/destructive commands require approval or are forbidden
+```
+
+### 6.11 Git and review tools
+
+```text
+git_status
+git_diff
+git_log
+show_changes
+list_changed_files
+show_file_diff
+rollback_changes
+mark_reviewed
+```
+
+Rules:
+
+```text
+show_changes is safe/read-only
+rollback requires approval
+rollback can target file, patch operation, session, or managed worktree
+all diff/rollback events become context memory
+```
+
+### 6.12 Asset tools
+
+```text
+inspect_asset
+extract_text
+render_asset_preview
+compare_assets
+index_workspace_assets
+```
+
+Rules:
+
+```text
+asset path must be allowed
+binary contents are not dumped to the model
+extractors return bounded source-labeled facts
+OCR or document conversion warnings must be visible
+large extracted text uses chunks and summaries
+```
+
+## 7. Local Agent Relay Contract
+
+### 7.1 Agent registration
+
+The local agent must be registered to a user account.
+
+```text
+User signs in through browser.
+Server issues local-agent registration token.
+Local agent stores device identity securely.
+Server binds localAgentId to userId and tenantId.
+```
+
+### 7.2 Agent connection
+
+Local agent opens outbound WebSocket:
+
+```text
+GET /agent/connect
+Authorization: Bearer <agent-token>
+```
+
+Connection hello:
+
+```ts
+interface AgentHello {
+  type: "agent.hello";
+  localAgentId: string;
+  version: string;
+  hostname: string;
+  platform: string;
+  capabilities: string[];
+  allowedRoots: Array<{
+    rootId: string;
+    path: string;
+    label?: string;
+    read: boolean;
+    write: boolean;
+    execute: boolean;
+  }>;
+}
+```
+
+### 7.3 Relay request envelope
+
+```ts
+interface RelayRequest {
+  type: "relay.request";
+  requestId: string;
+  operationId: string;
+  tenantId: string;
+  userId: string;
+  workspaceSessionId?: string;
+  method: string;
+  params: Record<string, unknown>;
+  deadlineMs: number;
+  trace: {
+    mcpRequestId: string;
+    toolName: string;
+  };
+}
+```
+
+### 7.4 Relay response envelope
+
+```ts
+interface RelayResponse {
+  type: "relay.response";
+  requestId: string;
+  operationId: string;
+  status: "ok" | "error";
+  result?: unknown;
+  error?: DevSpaceError["error"];
+  events?: RuntimeEvent[];
+}
+```
+
+### 7.5 Delivery semantics
+
+```text
+Relay delivery is at-least-once under reconnect/timeouts.
+Local agent must dedupe by operationId + input fingerprint for mutations.
+Read tools may be retried freely.
+Write tools must be idempotent or return conflict.
+Long-running commands must expose status and cancellation.
+```
+
+## 8. Context Memory And Compaction Design
+
+This remains the highest-value capability to absorb from Codex.
+
+### 8.1 Codex behavior to absorb
+
+Codex has:
+
+```text
+raw history
+prompt-ready history
+history versioning
+token usage tracking
+function/tool output truncation
+call/output pair normalization
+rollback-aware trimming
+source-labeled context fragments
+manual compaction
+auto compaction
+remote compaction
+pre/post compaction hooks
+rollout/session metadata
+archived session lookup
+memory generation flag
+```
+
+DevSpace translation:
+
+```text
+raw event ledger
+model-ready context projection
+UI-ready context projection
+context versioning
+context windows
+pinned facts
+compaction requests
+summary validation
+resume summaries
+project/task memory
+```
+
+### 8.2 Context event types
+
+Required event types:
 
 ```text
 workspace_opened
 user_task
 agents_instructions_loaded
+skill_loaded
 file_read
 search_performed
+asset_inspected
+asset_text_extracted
 file_relevance_note
 command_run
-command_result_summary
+command_output_summary
+test_result
+patch_previewed
 patch_applied
 diff_summary
-test_result
-approval_decision
+approval_requested
+approval_resolved
 assumption
 decision
 risk
 next_step
 manual_note
+context_projection_requested
 context_compaction_requested
 context_compaction_saved
+rollback_applied
 ```
 
-### 6.3 Raw vs projected context
+### 8.3 Context facets
 
-Borrow Codex's distinction between raw history and prompt-ready history.
-
-DevSpace equivalent:
-
-```text
-raw ledger
-  all stored events after privacy/policy filtering
-
-projected context
-  compact, model-visible context returned to ChatGPT
+```ts
+interface ContextMemoryFacets {
+  project: ProjectSummary;
+  task: TaskSummary;
+  decisions: DecisionMemory[];
+  assumptions: AssumptionMemory[];
+  openQuestions: OpenQuestionMemory[];
+  fileFacts: FileFactMemory[];
+  symbolFacts: SymbolFactMemory[];
+  apiContracts: ApiContractMemory[];
+  commands: CommandMemory[];
+  diffs: DiffMemory[];
+  risks: RiskMemory[];
+  assets: AssetMemory[];
+  pins: ContextPin[];
+}
 ```
 
-Projected context should be built from:
+### 8.4 Projection modes
 
 ```text
-active workspace facts
-active task summary
-root/nested instructions
-recent important events
-recent changed files
-recent failed checks
-pinned decisions
-latest compaction summary
-remaining TODOs
+brief:
+  goal, latest summary, next steps, top touched files
+
+coding:
+  goal, constraints, relevant file facts, decisions, current diff, last tests
+
+review:
+  changed files, risks, test results, unresolved approvals, rollback points
+
+resume:
+  project summary, active task, decisions, open questions, next steps
+
+asset:
+  asset summaries, extracted text, relevant files, user notes
 ```
 
-### 6.4 Context fragment format
+### 8.5 Source-labeled fragment format
 
-Borrow Codex-style explicit markers and source labels so the model can distinguish runtime context from user text.
-
-Example projected context:
-
-```text
-<devspace_context source="workspace_summary">
-Workspace: /Users/abba/code/my-api
-Task: improve API error handling
-Current branch/worktree: devspace-abc123
-Relevant files:
-- src/server.ts: Express MCP server and tool registration
-- src/pi-tools.ts: local tool wrappers
-Recent decisions:
-- Keep ChatGPT web as the only model executor.
-- Add apply_patch before raw write rewrites.
-Open risks:
-- run_shell still needs approval policy.
+```xml
+<devspace_context source="workspace" workspaceSessionId="ws_...">
+  <goal>...</goal>
+  <summary>...</summary>
+  <decisions>...</decisions>
+  <filesRead>...</filesRead>
+  <filesChanged>...</filesChanged>
+  <tests>...</tests>
+  <risks>...</risks>
+  <nextSteps>...</nextSteps>
 </devspace_context>
 ```
 
-Rules:
+### 8.6 Compaction invariants
 
-- Every generated context block has a source.
-- Context blocks are short by default.
-- Long context is exposed through explicit tools, not shoved into every `open_workspace` output.
-- Sensitive event types are never projected.
-
-### 6.5 Context budget
-
-Codex tracks token usage and context budget. DevSpace should start with approximate budgeting.
-
-Initial strategy:
+A compacted summary must not lose:
 
 ```text
-approx 4 chars = 1 token
-track event token_estimate
-track summary token_estimate
-projected_context_budget default: 6k tokens
-recent_tail_budget default: 3k tokens
-summary_budget default: 2k tokens
-instructions_budget default: 1k tokens
+user goal
+current task state
+important constraints
+important decisions
+assumptions
+files read
+files changed
+test/build results
+open risks
+next steps
+pinned facts
+approval decisions still in force
 ```
 
-`open_workspace` should return a short budget state:
+### 8.7 What DevSpace cannot do
 
-```json
-{
-  "context": {
-    "windowId": "ctxw_...",
-    "estimatedTokens": 1840,
-    "budgetTokens": 6000,
-    "compactionRecommended": false
-  }
-}
-```
+DevSpace cannot rewrite ChatGPT Web's native conversation history. It can only maintain local project/session context and expose compact model-ready projections through MCP tools, server instructions, and widgets.
 
-### 6.6 Context compaction model
-
-DevSpace should support two compaction modes.
-
-#### Mode A: deterministic local compaction
-
-No model call. Safe and free.
-
-It summarizes by structure:
+Therefore:
 
 ```text
-keep all pinned decisions
-keep latest task summary
-keep last N file reads as file facts, not full content
-keep last N command summaries, not full output
-keep latest diff summary
-drop raw large outputs after summary exists
-archive old context window
+ChatGPT Web summarizes.
+DevSpace validates and stores.
+Future ChatGPT turns retrieve context through get_workspace_context.
 ```
 
-Use for automatic compaction when no model summary is available.
+## 9. Codex Deep Capability Absorption
 
-#### Mode B: ChatGPT-assisted compaction
+### 9.1 Tool runtime bus
 
-Uses the web model already driving the conversation.
-
-Flow:
+Absorb Codex `tools/orchestrator.rs` behavior:
 
 ```text
-DevSpace notices context budget pressure
-  -> model calls prepare_context_compaction
-  -> DevSpace returns compactable events and requested summary schema
-  -> ChatGPT writes a concise summary
-  -> model calls save_context_summary
-  -> DevSpace archives old events behind that summary
+approval
+sandbox/profile selection
+first attempt
+network approval handling
+sandbox denial handling
+retry/escalation logic
+telemetry/event recording
+final structured result
 ```
 
-This keeps summarization inside ChatGPT web and avoids local Codex/Claude usage.
+DevSpace implementation:
 
-### 6.7 Compaction invariants
+```ts
+interface ToolRuntimeBus {
+  run<TInput, TOutput>(input: {
+    workspaceSessionId: string;
+    toolName: string;
+    operationId: string;
+    params: TInput;
+    risk: RuntimeRisk;
+  }): Promise<RuntimeResult<TOutput>>;
+}
+```
 
-Borrow these from Codex's compaction discipline:
+No local capability should bypass this bus.
+
+### 9.2 Approval store
+
+Absorb Codex approval caching:
 
 ```text
-preserve latest user task
-preserve AGENTS.md/CLAUDE.md instruction sources
-preserve approvals and safety decisions
-preserve file change summaries
-preserve failing test details
-preserve unresolved TODOs and risks
-preserve recent tail after the last summary
-replace large raw outputs with summaries
-record a compaction event and checkpoint
-increment context history version
+approve once
+approve for session
+approve matching command prefix
+approve matching path set
+approve network host
+reject and remember
 ```
 
-Do not compact away:
+Approval keys must include user/session scope:
 
 ```text
-active task objective
-explicit user constraints
-security constraints
-approval decisions
-file paths needed to continue
-current diff checkpoint
+userId + localAgentId + workspaceSessionId + permissionProfile + approvalSubjectFingerprint
 ```
 
-### 6.8 Context rollback
+### 9.3 Command policy engine
 
-Borrow Codex's user-turn rollback idea, but adapt it to workspace events.
-
-Add operations:
+Absorb Codex `exec_policy.rs` concepts:
 
 ```text
-rollback_context_to_checkpoint
-archive_context_window
-restore_context_summary
-list_context_checkpoints
+rule files
+allow/prompt/forbid decisions
+safe command heuristics
+dangerous command heuristics
+prefix rule amendments
+network rule amendments
+policy parse warnings
+approval policy conflict handling
 ```
 
-Rollback should affect local memory/projection only. It should not silently revert files; file rollback remains a separate git/review tool.
-
-### 6.9 Why this comes before patch/shell work
-
-Patch/shell safety matters, but context memory determines whether the web agent can behave like a local coding agent across multiple turns. Without this layer, every new web turn must rediscover files, decisions, and prior test outputs. That makes DevSpace feel like a remote file tool, not a Codex-like local workspace.
-
-## 7. Context MCP Tool Contract V1
-
-These tools should be added before or alongside the policy/patch tools.
-
-### 7.1 `get_workspace_context`
-
-Purpose: return compact model-ready project/session context.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "scope": "project | task | recent",
-  "budgetTokens": 4000
-}
-```
-
-Output:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "contextWindowId": "ctxw_...",
-  "historyVersion": 7,
-  "estimatedTokens": 2100,
-  "compactionRecommended": false,
-  "context": "<devspace_context source=\"workspace_summary\">..."
-}
-```
-
-Rules:
-
-- Never include denied/sensitive raw content.
-- Keep output under requested budget.
-- Include enough state for the next model turn to continue without rediscovery.
-
-### 7.2 `record_context_note`
-
-Purpose: let ChatGPT save decisions, assumptions, risks, or next steps into local memory.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "type": "decision | assumption | risk | next_step | file_relevance_note",
-  "content": "Keep ChatGPT web as the only model executor.",
-  "path": "docs/local-agent-capability-absorption-plan.md",
-  "importance": "low | normal | high | pinned"
-}
-```
-
-Rules:
-
-- `pinned` notes survive compaction.
-- Notes touching sensitive data are rejected.
-- Notes are scoped to workspace and optional task.
-
-### 7.3 `list_context_events`
-
-Purpose: inspect local memory events for debugging/resume.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "type": "decision",
-  "limit": 50,
-  "cursor": null
-}
-```
-
-Rules:
-
-- Paginated.
-- Defaults to summaries, not raw large payloads.
-
-### 7.4 `prepare_context_compaction`
-
-Purpose: provide compactable history and a strict summary schema to ChatGPT.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "reason": "manual | budget_pressure | workspace_resume",
-  "budgetTokens": 8000
-}
-```
-
-Output:
-
-```json
-{
-  "contextWindowId": "ctxw_...",
-  "summarySchema": {
-    "task": "string",
-    "stableFacts": ["string"],
-    "decisions": ["string"],
-    "files": [{ "path": "string", "whyItMatters": "string" }],
-    "changes": ["string"],
-    "checks": ["string"],
-    "openRisks": ["string"],
-    "nextSteps": ["string"]
-  },
-  "events": []
-}
-```
-
-Rules:
-
-- Exclude sensitive payloads.
-- Include event IDs so the saved summary can reference what it replaced.
-- Return concise event summaries, not unbounded logs.
-
-### 7.5 `save_context_summary`
-
-Purpose: persist a ChatGPT-authored compact summary.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "contextWindowId": "ctxw_...",
-  "summaryKind": "window | task | project",
-  "summary": {
-    "task": "Improve DevSpace into a Codex-style local context layer.",
-    "stableFacts": [],
-    "decisions": [],
-    "files": [],
-    "changes": [],
-    "checks": [],
-    "openRisks": [],
-    "nextSteps": []
-  },
-  "sourceEventIds": ["ce_..."]
-}
-```
-
-Rules:
-
-- Saves summary.
-- Archives or marks replaced events.
-- Opens a new context window.
-- Increments historyVersion.
-
-### 7.6 `pin_context` / `unpin_context`
-
-Purpose: keep critical memory from being compacted away.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "key": "executor_boundary",
-  "content": "Do not invoke Codex CLI or Claude Code CLI as local model executors.",
-  "reason": "cost and product boundary"
-}
-```
-
-Rules:
-
-- Pins are short.
-- Pins are shown in `get_workspace_context` unless explicitly hidden.
-- Pins can be updated or removed by key.
-
-## 8. Capability Gap Matrix
-
-| Capability | DevSpace Today | Target Borrowed From | Required Work |
-| --- | --- | --- | --- |
-| MCP transport/OAuth | Strong | DevSpace | Keep and harden |
-| Workspace IDs | Present | DevSpace/Codex sessions | Extend with task/session/context state |
-| Context ledger | Missing | Codex `ContextManager` | Add persistent context events, summaries, windows |
-| Context projection | Missing | Codex prompt-ready history | Add `get_workspace_context` model-ready summaries |
-| Context compaction | Missing | Codex `compact*` | Add deterministic and ChatGPT-assisted compaction |
-| Token/size budget | Missing | Codex token budget context | Add approximate budgets and compaction triggers |
-| Reference context diffs | Missing | Codex `updates.rs` | Track previous projected context and emit deltas |
-| Rollout/session archive | Basic SQLite session only | Codex rollout | Add task/session metadata, archive, resume summaries |
-| Allowed roots | Present | DevSpace | Add sensitive-path denylist |
-| Read/search/list | Present | DevSpace | Keep, add output caps and context-event summaries |
-| Write/edit | Present via write/edit | Codex apply_patch | Add `apply_patch`, deprecate broad overwrite for normal flow |
-| Shell | Present as `run_shell`/`bash` | Codex exec policy | Split into `run_check` and approval-gated `run_shell` |
-| Approval | OAuth connection only | Codex approval store, Claude hooks | Add per-tool approval queue and cache |
-| Sandbox | Path containment only | Codex sandbox vocabulary | Start with policy sandbox, later OS sandbox optional |
-| Diff review | `show_changes` | Codex diff loop, Claude Stop hook | Add file-level diff, rollback, accept/review checkpoints |
-| Worktree | Present | DevSpace/Codex | Keep; add cleanup/list/rollback tools |
-| AGENTS/CLAUDE.md | Present | Codex/Claude | Make hierarchical and budgeted |
-| Hooks | Not a first-class runtime | Codex compact hooks, Claude Code hooks | Add lifecycle hook runner including pre/post compact |
-| Plugins/skills | Skills present | Claude Code plugin model | Add workflow packs and manifest model |
-| Git workflow | Shell-based only | Claude commit commands | Add safe git tool wrappers |
-| Security review | Not built in | Claude security-guidance | Add deterministic pattern hooks first |
-| Model execution | None | ChatGPT Web | Keep none locally |
-
-## 9. MCP Tool Contract V1
-
-The V1 contract should keep ChatGPT as the only reasoning agent and expose deterministic local tools.
-
-### 9.1 `open_workspace`
-
-Purpose: create or resume a workspace session and context window.
-
-Input:
-
-```json
-{
-  "path": "~/code/project",
-  "mode": "checkout | worktree",
-  "baseRef": "HEAD"
-}
-```
-
-Stable output:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "root": "/abs/path",
-  "mode": "checkout",
-  "sourceRoot": null,
-  "worktree": null,
-  "agentsFiles": [],
-  "availableAgentsFiles": [],
-  "skills": [],
-  "context": {
-    "contextWindowId": "ctxw_...",
-    "historyVersion": 1,
-    "estimatedTokens": 0,
-    "budgetTokens": 6000,
-    "compactionRecommended": false
-  },
-  "policy": {
-    "writeMode": "patch_first",
-    "shellMode": "checks_only_by_default"
-  }
-}
-```
-
-Rules:
-
-- `path` must resolve inside `allowedRoots`.
-- `mode=worktree` must create a managed worktree under `worktreeRoot`.
-- Response must include loaded root instructions and nested instruction candidates.
-- Opening a workspace records a `workspace_opened` context event.
-- Reopening an existing workspace should return the latest context summary and active context window.
-
-### 9.2 `read_file`
-
-Purpose: read project or activated skill files.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "path": "src/server.ts",
-  "offset": 1,
-  "limit": 200
-}
-```
-
-Rules:
-
-- Path must be inside workspace root or an activated skill directory.
-- Denied files return a typed policy error, not raw filesystem errors.
-- Large files must be windowed with `offset` and `limit`.
-- Each successful read records a small `file_read` event, including path, range, hash, and optional relevance note, not necessarily full content.
-
-### 9.3 `search_files`
-
-Purpose: find symbols, text, files, and instructions.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "query": "apply_patch",
-  "path": "src",
-  "kind": "text | file"
-}
-```
-
-Rules:
-
-- Must respect denylist and ignored heavy directories.
-- Must cap output and ask model to narrow when too broad.
-- Search results should be summarized into context events when useful.
-
-### 9.4 `apply_patch`
-
-Purpose: apply targeted changes with Codex-style patch discipline.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "patch": "*** Begin Patch\n...\n*** End Patch",
-  "baseVersion": {
-    "files": {
-      "src/server.ts": "sha256:..."
-    }
-  }
-}
-```
-
-Stable output:
-
-```json
-{
-  "status": "applied",
-  "changedFiles": ["src/server.ts"],
-  "summary": { "files": 1, "additions": 12, "removals": 4 },
-  "diff": "diff --git ..."
-}
-```
-
-Rules:
-
-- Patch paths must stay inside workspace root.
-- Sensitive paths are rejected even if inside root.
-- If `baseVersion` mismatches, return `409 PATCH_BASE_MISMATCH` and do not write.
-- If the patch touches risky paths or many files, require approval.
-- The tool is idempotent only for identical patch + identical baseVersion + unchanged files.
-- A successful patch records `patch_applied` and `diff_summary` context events.
-
-### 9.5 `run_check`
-
-Purpose: run approved project checks without exposing arbitrary shell.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "name": "test",
-  "timeoutSeconds": 120
-}
-```
-
-Config-backed command examples:
-
-```json
-{
-  "test": "npm test",
-  "lint": "npm run lint",
-  "build": "npm run build",
-  "pytest": "pytest"
-}
-```
-
-Rules:
-
-- Only configured names are accepted.
-- Command runs in workspace root unless a configured working directory is present.
-- Output is capped and summarized.
-- Full raw output is stored only when below size caps; otherwise store a summary and pointer.
-
-### 9.6 `run_shell`
-
-Purpose: optional escape hatch for commands not represented by `run_check`.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "command": "git status --short",
-  "workingDirectory": ".",
-  "timeoutSeconds": 30,
-  "reason": "inspect current changes"
-}
-```
-
-Rules:
-
-- Default mode should be disabled or approval-gated.
-- Command policy returns one of `allow`, `ask`, `deny` before execution.
-- Shell write patterns are denied unless explicitly approved:
-  - heredocs
-  - redirection to files
-  - `tee`
-  - `sed -i`
-  - inline node/python/perl/ruby scripts that write files
-- Dangerous commands are denied by default:
-  - `rm -rf`
-  - `sudo`
-  - `curl | sh`
-  - credential exfiltration patterns
-  - direct reads of `.env`, `.ssh`, cloud credential folders
-- Shell output should always be converted into a bounded context event summary.
-
-### 9.7 `show_changes`
-
-Purpose: aggregate review of changes since a checkpoint.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "since": "last_shown | workspace_open | last_review",
-  "markReviewed": true
-}
-```
-
-Output:
-
-```json
-{
-  "summary": { "files": 2, "additions": 24, "removals": 8 },
-  "files": [],
-  "patch": "diff --git ..."
-}
-```
-
-Rules:
-
-- Must not mutate project files.
-- `markReviewed=true` advances the review checkpoint.
-- The review summary is recorded in the context ledger.
-
-### 9.8 `rollback_changes`
-
-Purpose: restore one file or the entire current session to a checkpoint.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_...",
-  "scope": "file | session",
-  "path": "src/server.ts",
-  "checkpoint": "workspace_open | last_review"
-}
-```
-
-Rules:
-
-- Rollback requires approval when it discards user-visible changes.
-- Must return diff summary after rollback.
-- File rollback and context rollback are separate operations.
-
-### 9.9 `list_approvals` / `resolve_approval`
-
-Purpose: let the local owner review pending risky actions.
-
-Input:
-
-```json
-{
-  "workspaceId": "ws_..."
-}
-```
-
-Resolution input:
-
-```json
-{
-  "approvalId": "ap_...",
-  "decision": "approve_once | approve_for_session | deny",
-  "comment": "optional reason"
-}
-```
-
-Rules:
-
-- Approval records must include tool, normalized action, paths, command preview, risk level, and createdAt.
-- `approve_for_session` must cache only equivalent action keys, not broad arbitrary future actions.
-- Approval decisions are pinned or high-importance context events.
-
-## 10. Error Model
-
-Use a stable error shape for tool failures:
-
-```json
-{
-  "error": {
-    "code": "PATH_DENIED",
-    "message": "Path is outside the opened workspace.",
-    "details": {
-      "path": "../secret.txt",
-      "workspaceId": "ws_..."
-    },
-    "retryable": false
-  }
-}
-```
-
-Initial codes:
+DevSpace command classes:
 
 ```text
-WORKSPACE_NOT_FOUND
-CONTEXT_WINDOW_NOT_FOUND
-CONTEXT_BUDGET_EXCEEDED
-CONTEXT_SUMMARY_REQUIRED
-CONTEXT_SUMMARY_INVALID
-PATH_DENIED
-SENSITIVE_PATH_DENIED
-PATCH_PARSE_FAILED
-PATCH_BASE_MISMATCH
-PATCH_POLICY_REQUIRES_APPROVAL
-COMMAND_DENIED
-COMMAND_REQUIRES_APPROVAL
-COMMAND_TIMEOUT
-CHECK_NOT_CONFIGURED
-GIT_REQUIRED
-GIT_DIRTY_SOURCE
-ROLLBACK_REQUIRES_APPROVAL
-INTERNAL_TOOL_ERROR
+read_only
+check
+build
+network
+write
+destructive
+forbidden_by_default
 ```
 
-## 11. Safety Model
-
-### 11.1 Path policy
-
-Keep allowed roots, then add deny rules inside roots.
-
-Default deny examples:
+Forbidden by default:
 
 ```text
-.env
-.env.*
-**/.env
-**/.env.*
-**/.ssh/**
-**/.aws/**
-**/.config/**
-**/credentials.json
-**/*secret*
-**/*token*
-**/.git/** for normal file reads/writes
+credential reads
+SSH key reads
+cloud secret commands
+rm -rf broad paths
+git reset --hard
+git clean -fdx
+chmod/chown broad paths
+unknown shell scripts that hide writes
+commands outside workspace
 ```
 
-Allow `.git` only through explicit git tools, not generic read/write.
+### 9.4 Patch-first editing
 
-### 11.2 Context privacy policy
-
-Context memory must never become a secret warehouse.
-
-Rules:
+Absorb Codex `apply_patch`, `safety.rs`, and `apply-patch` crate behavior:
 
 ```text
-never store denied file contents
-never store full .env contents
-never store private keys or cloud credentials
-store command outputs with caps
-summarize large outputs before persistence
-redact obvious tokens before storing context events
-allow user to clear workspace memory
-allow user to export/inspect memory ledger
+explicit patch invocation
+parse patch
+validate patch grammar
+resolve paths
+reject empty patches
+reject writes outside workspace
+ask approval for risky writes
+auto-approve constrained workspace writes when policy allows
+record exact applied delta
+handle partial failure with committed delta information
+convert patch to protocol-level file changes
 ```
 
-### 11.3 Command policy
-
-Classify commands before running:
+DevSpace should prefer:
 
 ```text
-allow: read-only git, rg, ls, find, npm test/build/lint from configured checks
-ask: package install, migration generation, git commit, git checkout, network access
-deny: destructive filesystem commands, privilege escalation, credential reads, pipe-to-shell installers
+apply_patch > edit_file > write_file > shell writes
 ```
 
-### 11.4 Approval cache
+Shell redirection, heredocs, `sed -i`, ad-hoc Python/Node file writers should be discouraged or blocked for normal edits.
 
-Cache only normalized action keys:
+### 9.5 Turn diff tracker
+
+Absorb Codex `turn_diff_tracker.rs` behavior:
 
 ```text
-tool + workspaceId + path set + command prefix + policy version
+track exact patch deltas during a turn
+render current diff without rereading everything
+handle adds/deletes/updates/renames
+cache rendered diffs
+invalidate when exactness is lost
 ```
 
-Do not cache raw free-form `run_shell` approval as broad shell access.
+DevSpace should maintain:
 
-### 11.5 Hook lifecycle
+```text
+per-tool diff
+per-task diff
+since-workspace-open diff
+since-last-review diff
+rollback checkpoint diff
+```
 
-Borrow Codex and Claude Code hook vocabulary:
+### 9.6 Bounded command execution
+
+Absorb Codex `exec.rs` behavior:
+
+```text
+default timeout
+explicit timeout
+cancellation token
+stdout/stderr streaming deltas
+output byte caps
+I/O drain timeout
+process group termination
+structured exit status
+timeout exit classification
+```
+
+DevSpace command result should include:
+
+```ts
+interface CommandResult {
+  exitCode: number | null;
+  signal?: string;
+  timedOut: boolean;
+  cancelled: boolean;
+  durationMs: number;
+  stdoutTail: string;
+  stderrTail: string;
+  outputTruncated: boolean;
+  summary: string;
+}
+```
+
+### 9.7 Session and rollout archive
+
+Absorb Codex rollout/session ideas:
+
+```text
+thread/session metadata
+archived sessions
+summary reads
+session lookup
+memory generation option
+resume hints
+```
+
+DevSpace should support:
+
+```text
+resume by project
+resume by workspace session
+resume by branch
+resume by task goal
+resume by changed files
+resume by failed check
+resume by pending approval
+```
+
+### 9.8 Context update diffing
+
+Absorb Codex context updates:
+
+```text
+only send changed model-visible context when possible
+version context projections
+avoid replaying unchanged instructions unnecessarily
+separate environment, permissions, instructions, token budget, and internal context fragments
+```
+
+DevSpace should maintain:
+
+```text
+contextProjectionVersion
+lastSentProjectionHash
+changedFragments
+stable fragments
+```
+
+### 9.9 Config layers and trust
+
+Absorb Codex config-layer thinking:
+
+```text
+user config
+team config
+project config
+trusted vs untrusted project rules
+permission profile constraints
+warnings when policy files fail to parse
+```
+
+DevSpace config precedence:
+
+```text
+server defaults
+team policy
+user policy
+local agent policy
+workspace policy
+project instructions
+runtime override
+```
+
+Project instructions can guide behavior but must not override safety policy.
+
+### 9.10 Hooks and workflow packs
+
+Absorb public Claude Code plugin workflow ideas and Codex hook lifecycle:
 
 ```text
 SessionStart
 PreToolUse
 PostToolUse
+PermissionRequest
 PreCompact
 PostCompact
 Stop
 SessionEnd
 ```
 
-Initial hook types:
+Workflow packs:
 
 ```text
-policy hook: deterministic deny/ask/allow
-security hook: pattern warnings on patch/write
-context hook: record/summarize relevant events after tool use
-compaction hook: prepare/save/validate summaries
-review hook: after changes, prompt model to call show_changes
+feature-dev
+code-review
+security-guidance
+commit-workflow
+api-contract-first
+minimal-patch-first
 ```
 
-V1 hooks should be deterministic local scripts or config rules. LLM-backed hooks are out of scope because they introduce extra model cost unless the model is ChatGPT web performing an explicit compaction workflow.
+Hooks must be deterministic by default. LLM-backed hooks should be opt-in.
+
+### 9.11 TUI/app-server UI ideas
+
+Absorb Codex TUI/app-server product ideas:
+
+```text
+live task thread
+active tool group
+approval overlays
+diff viewer
+token/context usage status
+MCP server status
+skills/plugins list
+thread/session state
+queued message editing concept
+resume picker
+runtime metrics
+```
+
+DevSpace should implement a graphical workbench around the same event source used by MCP.
+
+### 9.12 Multimodal local gateway beyond Codex
+
+This is where DevSpace can exceed Codex for ChatGPT Web:
+
+```text
+code + PDFs + images + screenshots + spreadsheets + Office docs + generated artifacts
+```
+
+Local deterministic asset tools:
+
+```text
+metadata inspection
+PDF text extraction
+PDF page rendering
+DOCX/PPTX text extraction
+XLSX/CSV schema extraction
+image metadata and OCR when configured
+asset diff and preview generation
+```
+
+Return compact facts to ChatGPT, not unbounded raw binary data.
+
+## 10. UI / Workbench Design Integrated Into Main Plan
+
+### 10.1 UI role
+
+The UI is not the model. It is the local command center for:
+
+```text
+connection status
+workspace state
+context memory
+approvals
+tool runs
+diffs
+rollback
+asset previews
+settings
+```
+
+### 10.2 Default layout
+
+```text
++--------------------------------------------------------------------------------+
+| Top Bar: Workspace / Branch / MCP Status / Context Budget / Safety Mode         |
++-------------+----------------------------+-------------------------------+-----+
+| Left Rail   | Session + Task Sidebar     | Main Task Thread              |Right|
+| - Workspace | - Active task              | - ChatGPT actions             |Pane |
+| - Context   | - Recent sessions          | - Tool cards                  |     |
+| - Changes   | - Pending approvals        | - Output streams              |     |
+| - Runs      | - Failed checks            | - Assistant notes             |     |
+| - Assets    | - Pinned memories          | - User interventions          |     |
+| - Settings  |                            |                               |     |
++-------------+----------------------------+-------------------------------+-----+
+| Composer / Command Bar / Attachments / Mode Switch / Send                       |
++--------------------------------------------------------------------------------+
+```
+
+### 10.3 Required panels
+
+```text
+Workspace panel
+Context memory panel
+Change review panel
+Approval queue panel
+Run output panel
+Asset preview panel
+Settings panel
+```
+
+### 10.4 Event card types
+
+```text
+UserRequestCard
+AssistantPlanCard
+WorkspaceOpenCard
+ContextProjectionCard
+FileReadCard
+SearchCard
+AssetInspectCard
+PatchPreviewCard
+PatchAppliedCard
+CommandRunCard
+ApprovalRequestCard
+DiffReviewCard
+TestResultCard
+CompactionCard
+RollbackCard
+ErrorCard
+```
+
+### 10.5 UI event protocol
+
+```ts
+type UiEvent =
+  | { type: "workspace.state"; workspaceSessionId: string; state: unknown }
+  | { type: "context.updated"; workspaceSessionId: string; contextWindowId: string }
+  | { type: "context.budget"; workspaceSessionId: string; budget: unknown }
+  | { type: "tool.started"; runId: string; toolName: string }
+  | { type: "tool.output_delta"; runId: string; stream: "stdout" | "stderr"; text: string }
+  | { type: "tool.finished"; runId: string; result: unknown }
+  | { type: "approval.requested"; approvalId: string; request: unknown }
+  | { type: "approval.resolved"; approvalId: string; decision: string }
+  | { type: "patch.preview"; operationId: string; preview: unknown }
+  | { type: "diff.updated"; workspaceSessionId: string; summary: unknown }
+  | { type: "asset.preview"; assetId: string; preview: unknown };
+```
+
+## 11. Security Model
+
+### 11.1 Main risks
+
+```text
+cross-user data leak
+wrong local agent routing
+workspace path escape
+symlink/hardlink escape
+secret file read
+prompt injection from repository content
+malicious AGENTS.md
+unsafe shell command
+network exfiltration
+unbounded output or file read
+stale approval reuse
+compaction summary losing critical safety facts
+local agent token theft
+relay replay attack
+```
+
+### 11.2 Required mitigations
+
+```text
+OAuth token validation on every MCP request
+resource/audience validation
+scope validation
+per-user local agent ownership checks
+workspaceSessionId ownership checks
+allowed root validation in cloud and local agent
+path normalization before access
+sensitive path denylist
+patch safety before writes
+command policy before execution
+approval isolation per user/session
+operationId dedupe for mutations
+short-lived relay request deadlines
+agent heartbeat and version checks
+audit log for all writes/commands/approvals
+context summary validation
+output caps and file-size caps
+```
+
+### 11.3 Scopes
+
+Recommended OAuth scopes:
+
+```text
+devspace:agents:read
+devspace:workspace:open
+devspace:files:read
+devspace:files:write
+devspace:commands:run
+devspace:git:read
+devspace:git:write
+devspace:context:read
+devspace:context:write
+devspace:assets:read
+devspace:approvals:write
+```
+
+Default user install should start with conservative scopes. Higher-risk scopes can be requested only when needed.
 
 ## 12. Implementation Roadmap
 
-### Phase 0: Planning branch
+### Phase 0: Consolidate planning
 
-Deliverable:
-
-- This document.
-
-Exit criteria:
-
-- Branch exists.
-- Plan file is readable in `chen362/devspace`.
-
-### Phase 1: Context ledger core
-
-Files likely to add/change:
+Files:
 
 ```text
-src/context/context-store.ts
-src/context/context-types.ts
-src/context/context-projection.ts
-src/context/context-budget.ts
-src/context/redaction.ts
-src/db/schema.ts
-src/workspace-store.ts
-src/server.ts
+docs/local-agent-capability-absorption-plan.md
 ```
 
-Work:
-
-- Extend SQLite schema for context windows, events, summaries, pins, and file facts.
-- Create a `ContextStore` API.
-- Record `workspace_opened`, `file_read`, `search_performed`, `command_result_summary`, `patch_applied`, and `diff_summary` events.
-- Add redaction and size caps before persistence.
-- Add `get_workspace_context`, `record_context_note`, and `list_context_events` tools.
-
 Exit criteria:
 
-- Opening a workspace creates or resumes a context window.
-- Tool calls write bounded context events.
-- `get_workspace_context` returns a compact model-ready context block.
-- Tests cover persistence, redaction, event ordering, and budget caps.
-
-### Phase 2: Context compaction
-
-Files likely to add/change:
-
 ```text
-src/context/compaction.ts
-src/context/summary-schema.ts
-src/context/context-projection.ts
-src/server.ts
-src/ui/*
+single source-of-truth plan exists
+companion docs removed or merged
+multi-user relay architecture is defined
+Codex absorption scope is defined
 ```
 
-Work:
+### Phase 1: Multi-tenant auth and protected MCP resource
 
-- Add deterministic local compaction.
-- Add ChatGPT-assisted compaction tools: `prepare_context_compaction`, `save_context_summary`.
-- Add `pin_context` and `unpin_context`.
-- Add `PreCompact` and `PostCompact` hook points.
-- Track `historyVersion` and `contextWindowId`.
-- Mark old events as replaced/archived after summary save.
-
-Exit criteria:
-
-- Context can be compacted without model calls.
-- ChatGPT can save a structured summary through MCP.
-- Pinned memories survive compaction.
-- `get_workspace_context` uses latest summary plus recent tail.
-- Tests cover summary validation and compaction invariants.
-
-### Phase 3: Policy core
-
-Files likely to add:
+Files likely:
 
 ```text
-src/policy/path-policy.ts
-src/policy/command-policy.ts
-src/policy/approval-store.ts
-src/policy/errors.ts
-src/policy/types.ts
-```
-
-Work:
-
-- Add stable error codes.
-- Add path denylist.
-- Add command classifier.
-- Add approval data model and SQLite migration.
-- Add tests for path/command policy.
-
-Exit criteria:
-
-- Existing tests pass.
-- New tests cover allow/ask/deny command decisions.
-- No MCP tool behavior changes yet except internal policy utilities.
-
-### Phase 4: `apply_patch` tool
-
-Files likely to add/change:
-
-```text
-src/patch/apply-patch.ts
-src/patch/parse-patch.ts
-src/pi-tools.ts
+src/auth/*
 src/server.ts
-src/review-checkpoints.ts
-```
-
-Work:
-
-- Add patch parser or integrate a proven patch library.
-- Enforce workspace root and denylist.
-- Add optional base file hash validation.
-- Return changed files, stats, and unified diff.
-- Update server instructions to prefer `apply_patch`.
-- Keep existing `edit` for compatibility, but mark `apply_patch` as preferred.
-- Record context events after successful patch.
-
-Exit criteria:
-
-- Patch add/update/delete tests.
-- Base mismatch test.
-- Sensitive path rejection test.
-- Diff returned after patch.
-- Context ledger records the change summary.
-
-### Phase 5: Command runtime split
-
-Files likely to add/change:
-
-```text
-src/checks.ts
-src/policy/command-policy.ts
-src/server.ts
-src/pi-tools.ts
 src/config.ts
-```
-
-Work:
-
-- Add `run_check` tool using config-defined check names.
-- Put `run_shell` behind command policy.
-- Deny shell file mutation patterns by default.
-- Add optional approval-gated shell execution.
-- Add output caps and timeout consistency.
-- Summarize command output into context memory.
-
-Exit criteria:
-
-- `run_check` works for configured commands.
-- Unconfigured checks fail with `CHECK_NOT_CONFIGURED`.
-- Dangerous shell commands are denied.
-- Risky commands create approval records instead of running.
-- Command outputs are summarized safely.
-
-### Phase 6: Approval queue and local UI
-
-Files likely to add/change:
-
-```text
-src/approvals.ts
 src/db/schema.ts
-src/server.ts
-src/ui/*
 ```
 
 Work:
-
-- Persist pending approvals.
-- Expose `list_approvals` and `resolve_approval` tools.
-- Add browser/local owner approval page or reuse MCP app widget.
-- Add session-scoped approval cache.
-- Record approval decisions as context events.
-
-Exit criteria:
-
-- Risky command can be approved once.
-- Same normalized action can be approved for session.
-- Denied action returns stable error.
-
-### Phase 7: Diff review and rollback
-
-Files likely to add/change:
 
 ```text
-src/review-checkpoints.ts
-src/git.ts
-src/server.ts
-src/context/*
-src/ui/*
+OAuth protected resource metadata
+authorization server metadata integration
+token verification middleware
+user/tenant mapping
+scope checks
+requestId generation
+unified error model
+```
+
+Exit criteria:
+
+```text
+unauthenticated MCP call is rejected
+invalid audience is rejected
+missing scope is rejected
+valid token maps to userId/tenantId
+no tool trusts userId from body
+```
+
+### Phase 2: Local agent registration and relay
+
+Files likely:
+
+```text
+src/relay/*
+src/agent/*
+src/db/schema.ts
 ```
 
 Work:
 
-- Add `list_changed_files`.
-- Add `show_file_diff`.
-- Add `rollback_changes`.
-- Add context-only rollback/checkpoint tools.
-- Add `accept_changes` or `mark_reviewed` if useful.
+```text
+local agent registration
+agent token/device key
+outbound WebSocket connection
+heartbeat
+capability advertisement
+allowed root advertisement
+relay request/response envelope
+operationId dedupe foundation
+```
 
 Exit criteria:
 
-- File rollback works.
-- Session rollback works in managed worktree mode.
-- Review checkpoints remain stable after rollback.
-- Context rollback does not silently revert files.
+```text
+user can register local agent
+server sees online/offline status
+server can relay a ping to the correct agent
+requests cannot route to another user's agent
+```
 
-### Phase 8: Hierarchical instructions and workflow packs
+### Phase 3: Workspace routing
 
-Files likely to add/change:
+Files likely:
 
 ```text
 src/workspaces.ts
-src/skills.ts
-src/workflows/*
-docs/workflow-packs.md
+src/workspace-store.ts
+src/relay/workspace-router.ts
+src/server.ts
 ```
 
 Work:
 
-- Load AGENTS.md/CLAUDE.md by path hierarchy, not just root plus discovered files.
-- Add token/size budgets and source labels.
-- Add workflow pack manifest inspired by Claude Code plugins.
-- Start with built-in packs:
-  - feature-dev
-  - code-review
-  - security-guidance
-  - commit-workflow
-- Store instruction applicability in context memory.
+```text
+open_workspace with localAgentId
+canonical path validation
+allowed root binding
+workspaceSessionId generation
+contextWindowId generation
+sticky routing
+multi-agent selection errors
+```
 
 Exit criteria:
 
-- Nested instruction files are surfaced before working in that subtree.
-- Workflow pack metadata is discoverable by ChatGPT via `open_workspace`.
+```text
+open_workspace returns stable session
+ambiguous agent selection returns candidates
+offline agent returns LOCAL_AGENT_OFFLINE
+all later tools require workspaceSessionId
+```
 
-### Phase 9: Git workflow wrappers
+### Phase 4: Context ledger core
 
-Files likely to add/change:
+Files likely:
 
 ```text
-src/git-tools.ts
+src/context/events.ts
+src/context/store.ts
+src/context/projection.ts
+src/db/schema.ts
 src/server.ts
+```
+
+Work:
+
+```text
+context_windows
+context_events
+context_pins
+record_context_note
+get_workspace_context
+projection modes
+source-labeled output
+```
+
+Exit criteria:
+
+```text
+workspace actions record context events
+resume mode returns useful project/task summary
+context is isolated per user/session
+```
+
+### Phase 5: Context compaction
+
+Files likely:
+
+```text
+src/context/compaction.ts
+src/context/summary-validation.ts
+src/server.ts
+```
+
+Work:
+
+```text
+prepare_context_compaction
+save_context_summary
+required field validation
+summary source range tracking
+pinned fact preservation
+compaction recommendation
+```
+
+Exit criteria:
+
+```text
+ChatGPT can compact local context through MCP
+summary cannot omit changed files silently
+future turn can resume from summary
+```
+
+### Phase 6: Runtime event store and UI protocol
+
+Files likely:
+
+```text
+src/runtime/events.ts
+src/runtime/event-store.ts
+src/ui/events.ts
+src/server.ts
+```
+
+Work:
+
+```text
+runtime_events table
+appendRuntimeEvent
+listRuntimeEvents
+UI event envelope
+WebSocket or SSE stream for local UI
+MCP widget payload alignment
+```
+
+Exit criteria:
+
+```text
+tool runs emit structured events
+UI can replay recent session state
+MCP and UI share same event source
+```
+
+### Phase 7: Tool runtime bus
+
+Files likely:
+
+```text
+src/runtime/tool-runtime-bus.ts
+src/runtime/result.ts
+src/policy/tool-policy.ts
+src/server.ts
+```
+
+Work:
+
+```text
+wrap all tools in common lifecycle
+classify risk
+record operationId
+record tool run
+record context events
+emit UI events
+normalize errors
+```
+
+Exit criteria:
+
+```text
+read/search/write/shell/git tools all pass through runtime bus
+no direct risky action bypasses policy hooks
+```
+
+### Phase 8: Policy and approvals
+
+Files likely:
+
+```text
+src/policy/command-policy.ts
+src/policy/path-policy.ts
+src/policy/approval-store.ts
+src/policy/rules.ts
+src/server.ts
+```
+
+Work:
+
+```text
+command classification
+safe/danger heuristics
+path denylist
+network command detection
+approval request model
+approval cache
+approve once/session
+policy rule amendments
+```
+
+Exit criteria:
+
+```text
+dangerous commands blocked or require approval
+network commands require approval
+sensitive paths denied
+approval cache scoped per user/session
+```
+
+### Phase 9: Patch-first editing
+
+Files likely:
+
+```text
+src/patch/parser.ts
+src/patch/apply-patch.ts
+src/patch/safety.ts
+src/patch/delta.ts
+src/server.ts
+```
+
+Work:
+
+```text
+apply_patch tool
+patch parser/validator
+path safety
+approval integration
+exact delta tracking
+context events
+show_changes integration
+```
+
+Exit criteria:
+
+```text
+normal edits use apply_patch
+patches outside workspace rejected
+diff appears after patch
+rollback metadata is available
+```
+
+### Phase 10: Command execution profiles
+
+Files likely:
+
+```text
+src/commands/run-check.ts
+src/commands/run-command.ts
+src/commands/process-manager.ts
 src/policy/command-policy.ts
 ```
 
 Work:
 
-- Add `git_status`.
-- Add `git_diff`.
-- Add `git_log` with caps.
-- Add approval-gated `git_commit`.
-- Add optional `git_create_branch`.
+```text
+run_check
+run_command
+start_server
+stop_server
+timeouts
+cancellation
+output caps
+stdout/stderr stream events
+exit classification
+```
 
 Exit criteria:
 
-- Common git workflows no longer need raw shell.
-- Commit refuses sensitive files by default.
-- Git summaries are recorded into context memory.
-
-## 13. Recommended First PR Slice
-
-First implementation PR should be context-first:
-
 ```text
-PR 1: context ledger core + model-ready workspace context + tests
+tests/builds can run safely
+long output is capped and summarized
+commands can be cancelled
+policy decisions are visible
 ```
 
-Why:
+### Phase 11: Diff and rollback
 
-- It is the feature that makes DevSpace feel Codex-like across multiple turns.
-- It is mostly additive and low-risk.
-- It does not require changing shell or write behavior first.
-- It creates the data model needed for compaction, review, rollback, and future UI.
-
-Second PR:
+Files likely:
 
 ```text
-PR 2: context compaction tools + pins + summary validation
+src/review-checkpoints.ts
+src/diff/*
+src/rollback/*
+src/git.ts
 ```
 
-Third PR:
+Work:
 
 ```text
-PR 3: policy core + sensitive path denylist + tests
+per-task diff
+since-open diff
+file diff
+rollback file
+rollback patch operation
+rollback managed worktree
+mark reviewed
 ```
 
-Fourth PR:
+Exit criteria:
 
 ```text
-PR 4: apply_patch tool + tests + server instruction update
+every write has reviewable diff
+every patch has rollback point when possible
+rollback records context event
 ```
 
-Fifth PR:
+### Phase 12: Multimodal local asset gateway
+
+Files likely:
 
 ```text
-PR 5: run_check + command policy gate for run_shell
+src/assets/inspect.ts
+src/assets/extract-text.ts
+src/assets/preview.ts
+src/assets/index.ts
+src/server.ts
 ```
 
-This order prioritizes the user's main requirement: local memory and context compaction before broader tool hardening.
-
-## 14. Explicit Non-Goals
-
-Do not implement in this branch family until the local context/tool layer is stable:
+Work:
 
 ```text
-Running Codex CLI as a subprocess
-Running Claude Code CLI as a subprocess
-Calling Codex SDK/app-server for agent execution
-Calling Anthropic Agent SDK for agent execution
-LLM-backed local security review hooks
-Local model summarization by default
-Cloud task synchronization
-Multi-agent local orchestration
-Unrestricted shell access
-Full OS sandbox parity with Codex
+inspect_asset
+extract_text
+render_asset_preview
+compare_assets
+index_workspace_assets
+bounded extraction
+source-labeled asset facts
 ```
 
-## 15. Acceptance Criteria For The Overall Project
-
-The fork is successful when a user can say in ChatGPT web:
+Exit criteria:
 
 ```text
-Open ~/code/my-api, remember the goal, read AGENTS.md,
-inspect the error handling path, make the smallest patch,
-run tests, show me the diff, and keep enough context so we can continue later.
+images/PDFs/docs/spreadsheets can be inspected safely
+model receives compact facts, not raw unbounded binary
+asset facts can be pinned into context
 ```
 
-And DevSpace can safely perform:
+### Phase 13: Graphical workbench
+
+Files likely:
 
 ```text
+src/ui/*
+widgets/*
+app/*
+```
+
+Work:
+
+```text
+workbench shell
+task thread
+context panel
+diff panel
+approval queue
+run output panel
+asset preview panel
+settings panel
+```
+
+Exit criteria:
+
+```text
+user can see what ChatGPT is doing locally
+user can approve/deny risky actions
+user can inspect memory/diff/runs/assets
+```
+
+### Phase 14: Workflow packs and hooks
+
+Files likely:
+
+```text
+src/hooks/*
+src/workflows/*
+src/skills.ts
+src/workspaces.ts
+```
+
+Work:
+
+```text
+hook lifecycle
+workflow pack manifest
+feature-dev pack
+code-review pack
+security-guidance pack
+commit-workflow pack
+hierarchical AGENTS.md loading
+```
+
+Exit criteria:
+
+```text
+project instructions are loaded by hierarchy
+workflow packs are discoverable
+hooks can warn/block/record around tools
+```
+
+### Phase 15: Evaluation and hardening
+
+Files likely:
+
+```text
+test/evals/*
+test/fixtures/*
+docs/security.md
+```
+
+Work:
+
+```text
+replayable local-agent scenarios
+multi-user isolation tests
+context resume tests
+patch safety tests
+command policy tests
+asset extraction tests
+relay timeout tests
+```
+
+Exit criteria:
+
+```text
+regression suite proves isolation, memory, safety, patching, and resume behavior
+```
+
+## 13. Recommended PR Sequence
+
+```text
+PR 1: multi-tenant auth skeleton + unified error model
+PR 2: local agent registration + outbound relay ping
+PR 3: open_workspace routing through relay
+PR 4: context ledger core + get_workspace_context
+PR 5: context compaction tools + summary validation
+PR 6: runtime event store + UI event protocol
+PR 7: tool runtime bus wrapping existing tools
+PR 8: policy engine + approval store
+PR 9: apply_patch tool + patch safety
+PR 10: run_check/run_command with caps/cancel
+PR 11: diff/rollback expansion
+PR 12: multimodal asset tools
+PR 13: graphical workbench MVP
+PR 14: hooks/workflow packs
+PR 15: eval suite and hardening
+```
+
+Do not start with the graphical UI first. The UI should render runtime events; it should not invent state by scraping logs.
+
+## 14. End-To-End User Flows
+
+### 14.1 First user setup
+
+```text
+1. User adds shared GPT in ChatGPT.
+2. User invokes DevSpace tool.
+3. ChatGPT launches OAuth.
+4. User signs in and grants scopes.
+5. User installs/runs local DevSpace Agent.
+6. Local Agent registers and connects outbound.
+7. ChatGPT calls list_local_agents.
+8. ChatGPT calls open_workspace.
+9. DevSpace returns workspaceSessionId/contextWindowId.
+10. User starts local coding task.
+```
+
+### 14.2 Normal coding task
+
+```text
+1. get_workspace_context
+2. read_file/search_workspace/list_directory
+3. record decisions/assumptions
+4. apply_patch
+5. run_check
+6. show_changes
+7. prepare_context_compaction if needed
+8. save_context_summary
+```
+
+### 14.3 Resume next day
+
+```text
+1. User says: continue yesterday's DevSpace MCP refactor.
+2. ChatGPT calls list workspace sessions or get_workspace_context with resume mode.
+3. DevSpace returns goal, summary, decisions, touched files, last tests, risks, next steps.
+4. ChatGPT continues without rereading the whole repo.
+```
+
+### 14.4 Multi-agent ambiguity
+
+```text
+1. User has laptop and desktop agents online.
+2. ChatGPT calls open_workspace without localAgentId.
+3. DevSpace returns LOCAL_AGENT_SELECTION_REQUIRED.
+4. ChatGPT asks user which machine.
+5. User chooses.
+6. open_workspace succeeds.
+```
+
+### 14.5 Risky command approval
+
+```text
+1. ChatGPT calls run_command for network install or destructive command.
+2. Policy engine classifies risk.
+3. Approval request is created.
+4. UI and MCP result show approval required.
+5. User approves once/session or denies.
+6. Decision is scoped to user/session and recorded.
+```
+
+## 15. Acceptance Criteria
+
+The system is successful when:
+
+```text
+same GPT can serve multiple users safely
+one MCP domain can route to many local agents
+user A can never access user B's files, context, approvals, or local agents
+ChatGPT can open a local workspace through MCP
+ChatGPT can retrieve compact workspace context
+ChatGPT can patch local files without invoking Codex CLI
+ChatGPT can run tests/checks with output caps and cancellation
+user can review diffs and rollback changes
+context survives across turns and future sessions
+compaction preserves important state
+multimodal assets can be inspected locally and summarized safely
+local UI shows memory, runs, approvals, diffs, and assets
+all risky actions are auditable
+```
+
+A concrete target prompt should work:
+
+```text
+Open ~/code/my-api on my MacBook, remember the goal, read AGENTS.md,
+inspect the error handling path, make the smallest patch, run tests,
+show me the diff, and keep enough context so we can continue tomorrow.
+```
+
+Expected tool path:
+
+```text
+list_local_agents
 open_workspace
 get_workspace_context
-record_context_note
-prepare_context_compaction
-save_context_summary
-read_file / search_files / list_directory
+read_file / search_workspace
 apply_patch
 run_check
-git_diff / show_changes
-rollback if requested
+show_changes
+prepare_context_compaction
+save_context_summary
 ```
 
-Without invoking Codex CLI, Claude Code CLI, Codex SDK, or Claude SDK as local model executors.
+## 16. Current DevSpace Baseline
 
-A concrete resume scenario should work:
+Observed from `chen362/devspace`:
 
 ```text
-User: continue yesterday's DevSpace MCP refactor.
-ChatGPT calls get_workspace_context.
-DevSpace returns the latest project/task summary, decisions, touched files, open risks, and next steps.
-ChatGPT continues without re-reading the whole repo.
+src/server.ts
+  Streamable HTTP MCP server, OAuth-protected endpoint, tool registration, widgets, server instructions
+
+src/pi-tools.ts
+  wraps @earendil-works/pi-coding-agent tools for read/write/edit/grep/find/ls/bash
+
+src/roots.ts
+  allowed root containment
+
+src/workspaces.ts
+  checkout/worktree sessions, workspace IDs, AGENTS/CLAUDE.md discovery, skills, path resolution
+
+src/git-worktrees.ts
+  isolated managed git worktrees
+
+src/review-checkpoints.ts
+  git snapshot review and show_changes
+
+src/workspace-store.ts
+  SQLite workspace sessions
 ```
 
-## 16. Source Notes
+DevSpace already has a strong MCP shell. The missing layers are:
+
+```text
+multi-user cloud relay
+per-user local agent routing
+context ledger
+compaction
+runtime event store
+tool runtime bus
+policy/approval engine
+patch-first edit engine
+bounded command runtime
+multimodal asset gateway
+local workbench UI
+```
+
+## 17. Source Notes
 
 DevSpace source files reviewed:
 
@@ -1504,13 +2467,20 @@ codex-rs/core/src/compact_remote_v2.rs
 codex-rs/core/src/rollout.rs
 codex-rs/core/src/memory_usage.rs
 codex-rs/core/src/apply_patch.rs
+codex-rs/apply-patch/src/lib.rs
 codex-rs/core/src/tools/orchestrator.rs
 codex-rs/core/src/tools/sandboxing.rs
 codex-rs/core/src/exec_policy.rs
+codex-rs/core/src/safety.rs
+codex-rs/core/src/turn_diff_tracker.rs
+codex-rs/core/src/exec.rs
+codex-rs/tui/src/chatwidget.rs
+codex-rs/tui/src/app.rs
+codex-rs/app-server/src/lib.rs
 docs/config.md
 ```
 
-Claude Code source/docs reviewed:
+Claude Code public materials reviewed only as workflow inspiration:
 
 ```text
 README.md
@@ -1520,4 +2490,12 @@ plugins/feature-dev/README.md
 plugins/commit-commands/README.md
 plugins/security-guidance/README.md
 plugins/plugin-dev/README.md
+```
+
+OpenAI public docs consulted for remote MCP/OAuth/tunnel direction:
+
+```text
+https://developers.openai.com/api/docs/mcp
+https://developers.openai.com/apps-sdk/build/auth
+https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
 ```
