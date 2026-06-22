@@ -9,6 +9,7 @@ import { loadConfig, type ServerConfig } from "./config.js";
 import { postgresConnectionSummary } from "./db/postgres.js";
 import type { PostgresDatabaseConfig } from "./db/types.js";
 import type { PostgresMigrationStatusJson } from "./db/postgres-migrations.js";
+import { buildReadinessReport } from "./readiness.js";
 import {
   generateOwnerToken,
   loadDevspaceFiles,
@@ -252,6 +253,11 @@ async function serve(): Promise<void> {
   const { createServer } = await import("./server.js");
   const runningServer = createServer(config);
   const { app } = runningServer;
+  app.get("/readyz", async (_req, res) => {
+    const report = await buildReadinessReport(config);
+    res.status(report.ok ? 200 : 503).json(report);
+  });
+
   const httpServer = app.listen(config.port, config.host, () => {
     console.log(`devspace listening on http://${config.host}:${config.port}/mcp`);
     console.log(`public base url: ${config.publicBaseUrl}`);
