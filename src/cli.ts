@@ -163,21 +163,23 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
 }
 
 async function serve(): Promise<void> {
-  const sqliteStatus = checkSqliteNative();
-  if (sqliteStatus !== "ok") {
-    throw new Error(
-      [
-        "better-sqlite3 could not load for this Node runtime.",
-        sqliteStatus,
-        "",
-        "Try reinstalling or rebuilding dependencies under the active Node version:",
-        "  npm rebuild better-sqlite3",
-      ].join("\n"),
-    );
+  const config = loadConfig();
+  if (config.database.provider === "sqlite") {
+    const sqliteStatus = checkSqliteNative();
+    if (sqliteStatus !== "ok") {
+      throw new Error(
+        [
+          "better-sqlite3 could not load for this Node runtime.",
+          sqliteStatus,
+          "",
+          "Try reinstalling or rebuilding dependencies under the active Node version:",
+          "  npm rebuild better-sqlite3",
+        ].join("\n"),
+      );
+    }
   }
 
   const { createServer } = await import("./server.js");
-  const config = loadConfig();
   const { app } = createServer(config);
   const httpServer = app.listen(config.port, config.host, () => {
     console.log(`devspace listening on http://${config.host}:${config.port}/mcp`);
@@ -188,6 +190,7 @@ async function serve(): Promise<void> {
       console.warn("warning: Host header allowlist is disabled because DEVSPACE_ALLOWED_HOSTS=*");
     }
     console.log("auth: Owner password approval required");
+    console.log(`database: ${config.database.provider}`);
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
   });
 
@@ -200,6 +203,15 @@ async function serve(): Promise<void> {
 
 async function runDoctor(): Promise<void> {
   const files = loadDevspaceFiles();
+  let config: ReturnType<typeof loadConfig> | undefined;
+  let configError: unknown;
+
+  try {
+    config = loadConfig();
+  } catch (error) {
+    configError = error;
+  }
+
   console.log(`Config dir: ${files.dir}`);
   console.log(`Config file: ${files.configExists ? files.configPath : "missing"}`);
   console.log(`Auth file: ${files.authExists ? files.authPath : "missing"}`);
@@ -208,17 +220,18 @@ async function runDoctor(): Promise<void> {
   console.log(`Platform: ${process.platform} ${process.arch}`);
   console.log(`Git: ${checkGitAvailable()}`);
   console.log(`Bash shell: ${checkBashShell()}`);
-  console.log(`SQLite native dependency: ${checkSqliteNative()}`);
+  console.log(`SQLite native dependency: ${sqliteNativeStatus(config)}`);
 
-  try {
-    const config = loadConfig();
-    console.log(`Local MCP URL: http://${config.host}:${config.port}/mcp`);
-    console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
-    console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
-    console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
-  } catch (error) {
-    console.log(`Config status: ${error instanceof Error ? error.message : String(error)}`);
+  if (!config) {
+    console.log(`Config status: ${configError instanceof Error ? configError.message : String(configError)}`);
+    return;
   }
+
+  console.log(`Database provider: ${config.database.provider}`);
+  console.log(`Local MCP URL: http://${config.host}:${config.port}/mcp`);
+  console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
+  console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
+  console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
 }
 
 function runConfigCommand(args: string[]): void {
@@ -344,6 +357,11 @@ function nodeVersionStatus(): string {
 }
 
 class SetupCancelledError extends Error {}
+
+function sqliteNativeStatus(config: ReturnType<typeof loadConfig> | undefined): string {
+  if (config?.database.provider === "postgres") return "skipped (postgres mode)";
+  return checkSqliteNative();
+}
 
 function checkSqliteNative(): string {
   try {
