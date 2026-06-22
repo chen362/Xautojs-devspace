@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { loadConfig } from "./config.js";
 import { GitWorktreeError } from "./git-worktrees.js";
+import { LOCAL_WORKSPACE_IDENTITY } from "./identity.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
@@ -106,12 +107,29 @@ try {
     restoredWorkspace.availableAgentsFiles.map((file) => file.path),
     [join(gitRoot, "AGENTS.md"), join(root, "nested", "AGENTS.md")],
   );
+  assert.deepEqual(
+    (await secondStore.getLoadedAgentFiles(persistentWorkspace.workspace.id, LOCAL_WORKSPACE_IDENTITY)).map(
+      (file) => file.content,
+    ),
+    ["global instructions\n", "root instructions\n"],
+  );
 
   const restoredWorktree = await restoredRegistry.getWorkspace(persistentWorktree.workspace.id);
   assert.equal(restoredWorktree.mode, "worktree");
   assert.equal(restoredWorktree.sourceRoot, gitRoot);
   assert.equal(restoredWorktree.root, persistentWorktree.workspace.root);
   assert.equal(restoredWorktree.worktree?.managed, true);
+
+  assert.equal(await secondStore.deleteSession(persistentWorkspace.workspace.id, LOCAL_WORKSPACE_IDENTITY), true);
+  assert.deepEqual(
+    await secondStore.getLoadedAgentFiles(persistentWorkspace.workspace.id, LOCAL_WORKSPACE_IDENTITY),
+    [],
+  );
+  assert.equal(await secondStore.deleteExpiredSessions(new Date(Date.now() + 1000).toISOString()), 1);
+  assert.equal(
+    await secondStore.getSession(persistentWorktree.workspace.id, LOCAL_WORKSPACE_IDENTITY),
+    undefined,
+  );
   await secondStore.close();
 
   if (platform() !== "win32") {
