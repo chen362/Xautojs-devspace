@@ -10,6 +10,8 @@ MCP traffic on it. It is written for Ubuntu/Linux, macOS, and Windows.
 - migrations can be applied safely
 - `devspace doctor` reports Postgres schema readiness
 - the server can start after schema readiness passes
+- `/healthz` returns process liveness
+- `/readyz` returns runtime readiness with Postgres schema status
 
 ## Requirements
 
@@ -190,6 +192,33 @@ accepts traffic. The server should only start when:
 A failed serve exits with a migration hint instead of accepting requests with an
 unknown schema.
 
+## Runtime Probe Endpoints
+
+After `devspace serve` starts, deployment platforms can probe the process and
+runtime readiness over the same public origin.
+
+Ubuntu/Linux and macOS:
+
+```bash
+curl -fsS https://devspace.example.com/healthz
+curl -fsS https://devspace.example.com/readyz
+```
+
+Windows PowerShell:
+
+```powershell
+Invoke-RestMethod https://devspace.example.com/healthz
+Invoke-RestMethod https://devspace.example.com/readyz
+```
+
+`/healthz` is a liveness probe and returns HTTP 200 when the process can respond.
+`/readyz` is a readiness probe. It returns HTTP 200 with `status: "ready"` when
+checks pass, and HTTP 503 with `status: "not_ready"` when Postgres schema status
+is missing, pending, modified, or unreadable.
+
+In Postgres mode, `/readyz` includes the same migration readiness shape used by
+`db status --json`. It does not include the raw database URL.
+
 ## Smoke Checklist
 
 - `npx @waishnav/devspace db status --json` returns valid JSON.
@@ -198,3 +227,5 @@ unknown schema.
 - `postgresSchema.ready` is `true`.
 - `database.url` in doctor output is redacted.
 - `npx @waishnav/devspace serve` starts and prints the public `/mcp` URL.
+- `/healthz` returns HTTP 200.
+- `/readyz` returns HTTP 200 with `status: "ready"`.
