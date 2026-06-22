@@ -18,8 +18,8 @@ export const workspaceSessions = sqliteTable(
   },
   (table) => [
     index("workspace_sessions_owner_idx").on(table.tenantId, table.userId, table.lastUsedAt),
-    index("workspace_sessions_root_idx").on(table.tenantId, table.userId, table.root, table.lastUsedAt),
-    index("workspace_sessions_status_idx").on(table.tenantId, table.userId, table.status, table.lastUsedAt),
+    index("workspace_sessions_owner_root_idx").on(table.tenantId, table.userId, table.root, table.lastUsedAt),
+    index("workspace_sessions_owner_status_idx").on(table.tenantId, table.userId, table.status, table.lastUsedAt),
   ],
 );
 
