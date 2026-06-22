@@ -19,6 +19,10 @@ type Command = "serve" | "init" | "doctor" | "config" | "help";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
 
+interface SqliteMemoryDatabaseConstructor {
+  new (filename: string): { close(): void };
+}
+
 async function main(argv: string[]): Promise<void> {
   assertSupportedNode();
 
@@ -365,7 +369,7 @@ function sqliteNativeStatus(config: ReturnType<typeof loadConfig> | undefined): 
 
 function checkSqliteNative(): string {
   try {
-    const Database = require("better-sqlite3") as typeof import("better-sqlite3");
+    const Database = require("better-sqlite3") as SqliteMemoryDatabaseConstructor;
     const db = new Database(":memory:");
     db.close();
     return "ok";
