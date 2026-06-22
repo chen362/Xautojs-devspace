@@ -11,6 +11,7 @@ import { loadConfig, type ServerConfig } from "./config.js";
 import { postgresConnectionSummary } from "./db/postgres.js";
 import type { PostgresDatabaseConfig } from "./db/types.js";
 import type { PostgresMigrationStatusJson } from "./db/postgres-migrations.js";
+import { registerGithubWebhookRoutes } from "./github-webhook-api.js";
 import { buildReadinessReport } from "./readiness.js";
 import {
   generateOwnerToken,
@@ -265,6 +266,7 @@ async function serve(): Promise<void> {
   const runningServer = createServer(config);
   const { app } = runningServer;
   const automationRoutes = registerAutomationApiRoutes(app, config);
+  const githubWebhookRoutes = registerGithubWebhookRoutes(app, config);
   app.get("/readyz", async (_req, res) => {
     const report = await buildReadinessReport(config);
     res.status(report.ok ? 200 : 503).json(report);
@@ -287,6 +289,7 @@ async function serve(): Promise<void> {
     httpServer.close(() => {
       void Promise.all([
         automationRoutes.close(),
+        githubWebhookRoutes.close(),
         runningServer.close(),
       ]).finally(() => process.exit(0));
     });
