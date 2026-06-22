@@ -153,7 +153,7 @@ async function runPostgresIntegrationTest(
       files: [{ path: "/tmp/devspace-postgres-expired/AGENTS.md", content: "expired instructions\n" }],
     });
     await adminPool.query(
-      "update workspace_sessions set last_used_at = $1::timestamptz where id = $2",
+      `update ${quoteIdentifier(schemaName)}.workspace_sessions set last_used_at = $1::timestamptz where id = $2`,
       ["2000-01-01T00:00:00.000Z", expiredSessionId],
     );
     assert.equal(await store.deleteExpiredSessions("2001-01-01T00:00:00.000Z"), 1);
