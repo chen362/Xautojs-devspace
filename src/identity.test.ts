@@ -4,6 +4,7 @@ import {
   createOidcIdentity,
   identityFromAuthInfo,
   identityMatches,
+  type DevSpaceAuthInfo,
 } from "./identity.js";
 
 const local = createLocalIdentity(["devspace"], "local-client");
@@ -35,10 +36,17 @@ const issuerScoped = createOidcIdentity({
 assert.equal(issuerScoped.tenantId, "https://single-tenant.example.com#https://single-tenant.example.com");
 assert.equal(issuerScoped.userId, "https://single-tenant.example.com#https://single-tenant.example.com#user-123");
 
+const authWithIdentity: DevSpaceAuthInfo = {
+  token: "token",
+  clientId: "client",
+  scopes: ["devspace"],
+  expiresAt: 1,
+  devspace: oidc,
+};
 assert.equal(
   identityFromAuthInfo(
     { deploymentMode: "production", oauth: { mode: "oidc" } },
-    { token: "token", clientId: "client", scopes: ["devspace"], devspace: oidc } as never,
+    authWithIdentity,
   ),
   oidc,
 );
@@ -49,7 +57,7 @@ assert.throws(
 assert.equal(
   identityFromAuthInfo(
     { deploymentMode: "local", oauth: { mode: "owner-token" } },
-    { token: "token", clientId: "client", scopes: ["devspace"] } as never,
+    { token: "token", clientId: "client", scopes: ["devspace"], expiresAt: 1 },
   ).tenantId,
   "local",
 );
