@@ -74,6 +74,21 @@ DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" 
 npx @waishnav/devspace db migrate
 ```
 
+For real Postgres regression coverage in a development checkout, install the
+optional `pg` peer dependency and provide a test database URL:
+
+```bash
+npm install pg
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@127.0.0.1:5432/devspace_test" \
+DEVSPACE_POSTGRES_SSL_MODE="disable" \
+npm run test:postgres
+```
+
+`npm run test:postgres` creates a temporary schema, runs the packaged Postgres
+migrations there, verifies `PostgresWorkspaceStore` create/read/touch behavior,
+and drops the schema before exit. It skips cleanly when `DEVSPACE_DATABASE_URL`
+is not set.
+
 `devspace serve` checks the Postgres schema before starting and exits with a
 migration hint if the schema version table is missing, a migration is pending,
 or an applied migration checksum no longer matches the packaged SQL file.
