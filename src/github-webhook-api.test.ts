@@ -43,7 +43,11 @@ class FakeGithubWebhookStore implements GithubWebhookStore {
   readonly events = new Map<string, AutomationEvent>();
   readonly runs = new Map<string, AutomationRun>();
 
-  constructor(private readonly source: AutomationSource | undefined) {}
+  constructor(private source: AutomationSource | undefined) {}
+
+  setSource(source: AutomationSource | undefined): void {
+    this.source = source;
+  }
 
   async getGithubWebhookSource(id: string): Promise<AutomationSource | undefined> {
     if (id !== this.source?.id) return undefined;
@@ -302,6 +306,27 @@ process.env.DEVSPACE_TEST_GITHUB_WEBHOOK_SECRET = "github-webhook-secret";
   assert.equal(duplicate.status, "ignored");
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.automationEventId, ignored.automationEventId);
+  assert.equal(store.events.size, 1);
+  assert.equal(store.runs.size, 0);
+
+  store.setSource({
+    ...source,
+    config: { events: { pull_request: ["edited"] } },
+  });
+  const duplicateAfterPolicyChange = await handleGithubWebhook({
+    store,
+    sourceId: "github-main",
+    githubEvent: "pull_request",
+    githubDelivery: "delivery-ignored-action",
+    githubSignature256: sign(body),
+    rawBody: body,
+    requestId: "req-ignored-action-policy-change",
+  });
+  const stillIgnored = expectIgnored(duplicateAfterPolicyChange.body);
+  assert.equal(duplicateAfterPolicyChange.statusCode, 202);
+  assert.equal(stillIgnored.duplicate, true);
+  assert.equal(stillIgnored.automationEventId, ignored.automationEventId);
+  assert.equal(stillIgnored.routing.reason, "event_not_routable");
   assert.equal(store.events.size, 1);
   assert.equal(store.runs.size, 0);
 }
