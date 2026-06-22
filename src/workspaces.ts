@@ -83,14 +83,14 @@ export class WorkspaceRegistry {
     return this.openCheckoutWorkspace(options.path);
   }
 
-  getWorkspace(workspaceId: string): Workspace {
+  async getWorkspace(workspaceId: string): Promise<Workspace> {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) {
-      this.store?.touchSession(workspaceId, this.owner);
+      await this.store?.touchSession(workspaceId, this.owner);
       return workspace;
     }
 
-    const session = this.store?.getSession(workspaceId, this.owner);
+    const session = await this.store?.getSession(workspaceId, this.owner);
     if (!session) {
       throw new Error(`Unknown workspaceId: ${workspaceId}. Call open_workspace first.`);
     }
@@ -116,7 +116,7 @@ export class WorkspaceRegistry {
       ...this.loadSkillsForWorkspace(root),
       activatedSkillDirs: new Set(),
     };
-    this.store?.touchSession(workspaceId, this.owner);
+    await this.store?.touchSession(workspaceId, this.owner);
     this.workspaces.set(restoredWorkspace.id, restoredWorkspace);
 
     return restoredWorkspace;
@@ -208,7 +208,7 @@ export class WorkspaceRegistry {
       activatedSkillDirs: new Set(),
     };
 
-    this.store?.createSession({
+    await this.store?.createSession({
       owner: this.owner,
       id: workspace.id,
       root: workspace.root,
