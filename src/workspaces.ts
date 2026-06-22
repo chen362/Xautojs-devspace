@@ -83,14 +83,14 @@ export class WorkspaceRegistry {
     return this.openCheckoutWorkspace(options.path);
   }
 
-  getWorkspace(workspaceId: string): Workspace {
+  async getWorkspace(workspaceId: string): Promise<Workspace> {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) {
       this.touchSessionInBackground(workspaceId);
       return workspace;
     }
 
-    return this.restoreWorkspace(workspaceId) as unknown as Workspace;
+    return this.restoreWorkspace(workspaceId);
   }
 
   resolvePath(workspace: Workspace, inputPath: string): string {
