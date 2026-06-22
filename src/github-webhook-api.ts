@@ -27,8 +27,15 @@ const ENV_SECRET_REF_PATTERN = /^env:([A-Za-z_][A-Za-z0-9_]*)$/;
 const MAX_SECRET_LENGTH = 4096;
 const MAX_SIGNATURE_LENGTH = 200;
 const MAX_EVENT_TYPE_SEGMENT_LENGTH = 100;
+const DEFAULT_ROUTABLE_GITHUB_ACTIONS: Readonly<Record<string, readonly string[]>> = {
+  pull_request: ["opened", "synchronize", "closed"],
+  release: ["published"],
+};
 
 type QueryValue = string | boolean | number | null;
+
+type GithubWebhookRoutingDecision = "queued" | "ignored";
+type GithubWebhookRoutingReason = "event_not_routable" | "repository_not_allowed" | "branch_not_allowed";
 
 interface PgPoolResult<Row> {
   rows: Row[];
@@ -66,6 +73,14 @@ interface AutomationSourceRow {
   updated_at: string | Date;
 }
 
+export interface GithubWebhookRoutingSummary {
+  decision: GithubWebhookRoutingDecision;
+  eventType: string;
+  reason?: GithubWebhookRoutingReason;
+  repository?: string;
+  branch?: string;
+}
+
 export interface GithubWebhookAcceptedResponse {
   automationRunId: string;
   automationEventId: string;
@@ -74,6 +89,18 @@ export interface GithubWebhookAcceptedResponse {
   dedupeGuaranteed: boolean;
   githubEvent: string;
   githubDelivery: string;
+  routing: GithubWebhookRoutingSummary;
+  createdAt: string;
+}
+
+export interface GithubWebhookIgnoredResponse {
+  automationEventId: string;
+  status: "ignored";
+  duplicate: boolean;
+  dedupeGuaranteed: boolean;
+  githubEvent: string;
+  githubDelivery: string;
+  routing: GithubWebhookRoutingSummary;
   createdAt: string;
 }
 
@@ -87,7 +114,7 @@ export interface GithubWebhookErrorResponse {
   };
 }
 
-export type GithubWebhookResponse = GithubWebhookAcceptedResponse | GithubWebhookErrorResponse;
+export type GithubWebhookResponse = GithubWebhookAcceptedResponse | GithubWebhookIgnoredResponse | GithubWebhookErrorResponse;
 
 export interface GithubWebhookRouteRegistration {
   close(): Promise<void>;
@@ -129,6 +156,11 @@ interface NormalizedGithubWebhook {
   payload: JsonObject;
   metadata: JsonObject;
   requestFingerprint: string;
+}
+
+interface GithubWebhookRouteDecision {
+  shouldQueue: boolean;
+  routing: GithubWebhookRoutingSummary;
 }
 
 class GithubWebhookHttpError extends Error {
@@ -289,6 +321,7 @@ export async function handleGithubWebhook(
       githubDelivery: input.githubDelivery,
       rawBody,
     });
+    const route = evaluateGithubWebhookRoute(source, webhook);
     const owner = { tenantId: source.tenantId, userId: source.userId };
     const record = await input.store.recordEvent({
       owner,
@@ -302,9 +335,34 @@ export async function handleGithubWebhook(
       metadata: {
         ...webhook.metadata,
         requestId,
+        routingDecision: route.routing.decision,
+        ...(route.routing.reason ? { routingReason: route.routing.reason } : {}),
+        ...(route.routing.branch ? { branch: route.routing.branch } : {}),
       },
+      status: route.shouldQueue ? "accepted" : "rejected",
     });
-    const run = await getOrCreateRunForEvent(input.store, owner, record.event, webhook);
+    const routing = record.outcome === "duplicate"
+      ? routingFromRecordedEvent(record.event, route.routing)
+      : route.routing;
+    const shouldQueue = record.outcome === "duplicate" ? record.event.status === "accepted" : route.shouldQueue;
+
+    if (!shouldQueue) {
+      return {
+        statusCode: 202,
+        body: {
+          automationEventId: record.event.id,
+          status: "ignored",
+          duplicate: record.outcome === "duplicate",
+          dedupeGuaranteed: true,
+          githubEvent: webhook.githubEvent,
+          githubDelivery: webhook.githubDelivery,
+          routing,
+          createdAt: record.event.receivedAt,
+        },
+      };
+    }
+
+    const run = await getOrCreateRunForEvent(input.store, owner, record.event, webhook, routing);
 
     return {
       statusCode: 202,
@@ -316,6 +374,7 @@ export async function handleGithubWebhook(
         dedupeGuaranteed: true,
         githubEvent: webhook.githubEvent,
         githubDelivery: webhook.githubDelivery,
+        routing,
         createdAt: run.createdAt,
       },
     };
@@ -511,11 +570,164 @@ function verifyGithubSignature(
   }
 }
 
+function evaluateGithubWebhookRoute(
+  source: AutomationSource,
+  webhook: NormalizedGithubWebhook,
+): GithubWebhookRouteDecision {
+  const repository = nestedString(webhook.payload, "repository", "full_name");
+  const branch = githubBranch(webhook.githubEvent, webhook.payload);
+  const baseRouting = {
+    eventType: webhook.eventType,
+    ...(repository ? { repository } : {}),
+    ...(branch ? { branch } : {}),
+  };
+
+  if (!githubEventAllowed(source.config, webhook)) {
+    return {
+      shouldQueue: false,
+      routing: {
+        decision: "ignored",
+        reason: "event_not_routable",
+        ...baseRouting,
+      },
+    };
+  }
+
+  const allowedRepositories = optionalPolicyStringArray(source.config, "repositories");
+  if (allowedRepositories && (!repository || !allowedRepositories.includes(repository))) {
+    return {
+      shouldQueue: false,
+      routing: {
+        decision: "ignored",
+        reason: "repository_not_allowed",
+        ...baseRouting,
+      },
+    };
+  }
+
+  const allowedBranches = optionalPolicyStringArray(source.config, "branches");
+  if (allowedBranches && (!branch || !allowedBranches.includes(branch))) {
+    return {
+      shouldQueue: false,
+      routing: {
+        decision: "ignored",
+        reason: "branch_not_allowed",
+        ...baseRouting,
+      },
+    };
+  }
+
+  return {
+    shouldQueue: true,
+    routing: {
+      decision: "queued",
+      ...baseRouting,
+    },
+  };
+}
+
+function githubEventAllowed(config: JsonObject, webhook: NormalizedGithubWebhook): boolean {
+  const configuredEvents = githubEventPolicy(config);
+  const allowedActions = configuredEvents?.get(webhook.githubEvent)
+    ?? DEFAULT_ROUTABLE_GITHUB_ACTIONS[webhook.githubEvent];
+
+  if (!allowedActions) return false;
+  if (allowedActions.includes("*")) return true;
+  return webhook.action ? allowedActions.includes(webhook.action) : false;
+}
+
+function githubEventPolicy(config: JsonObject): Map<string, string[]> | undefined {
+  const rawEvents = config.events;
+  if (rawEvents === undefined) return undefined;
+  if (!rawEvents || typeof rawEvents !== "object" || Array.isArray(rawEvents)) {
+    throw invalidGithubPolicy("config.events must be an object mapping GitHub event names to action arrays.");
+  }
+
+  const policy = new Map<string, string[]>();
+  for (const [eventName, rawActions] of Object.entries(rawEvents as JsonObject)) {
+    if (!GITHUB_EVENT_PATTERN.test(eventName)) {
+      throw invalidGithubPolicy("config.events contains an invalid GitHub event name.", { eventName });
+    }
+    policy.set(eventName, policyStringArray(rawActions, `events.${eventName}`));
+  }
+  return policy;
+}
+
+function optionalPolicyStringArray(config: JsonObject, key: string): string[] | undefined {
+  const value = config[key];
+  if (value === undefined) return undefined;
+  return policyStringArray(value, key);
+}
+
+function policyStringArray(value: JsonValue, field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw invalidGithubPolicy(`config.${field} must be an array of strings.`, { field });
+  }
+
+  return value.map((item, index) => {
+    if (typeof item !== "string") {
+      throw invalidGithubPolicy(`config.${field} must contain only strings.`, { field, index });
+    }
+    const normalized = item.trim();
+    if (!normalized || normalized.length > MAX_EVENT_TYPE_SEGMENT_LENGTH) {
+      throw invalidGithubPolicy(`config.${field} contains an empty or too-long string.`, { field, index });
+    }
+    return normalized;
+  });
+}
+
+function invalidGithubPolicy(message: string, details?: Record<string, unknown>): GithubWebhookHttpError {
+  return new GithubWebhookHttpError(500, "GITHUB_WEBHOOK_POLICY_INVALID", message, false, details);
+}
+
+function routingFromRecordedEvent(
+  event: AutomationEvent,
+  fallback: GithubWebhookRoutingSummary,
+): GithubWebhookRoutingSummary {
+  const decision = routingDecisionFromEvent(event, fallback);
+  const reason = decision === "ignored" ? metadataRoutingReason(event.metadata.routingReason) ?? fallback.reason : undefined;
+  const repository = metadataString(event.metadata.repository) ?? fallback.repository;
+  const branch = metadataString(event.metadata.branch) ?? fallback.branch;
+
+  return {
+    decision,
+    eventType: event.eventType || fallback.eventType,
+    ...(reason ? { reason } : {}),
+    ...(repository ? { repository } : {}),
+    ...(branch ? { branch } : {}),
+  };
+}
+
+function routingDecisionFromEvent(
+  event: AutomationEvent,
+  fallback: GithubWebhookRoutingSummary,
+): GithubWebhookRoutingDecision {
+  if (event.status === "accepted") return "queued";
+  if (event.status === "rejected") return "ignored";
+  return metadataRoutingDecision(event.metadata.routingDecision) ?? fallback.decision;
+}
+
+function metadataRoutingDecision(value: JsonValue | undefined): GithubWebhookRoutingDecision | undefined {
+  return value === "queued" || value === "ignored" ? value : undefined;
+}
+
+function metadataRoutingReason(value: JsonValue | undefined): GithubWebhookRoutingReason | undefined {
+  if (value === "event_not_routable" || value === "repository_not_allowed" || value === "branch_not_allowed") {
+    return value;
+  }
+  return undefined;
+}
+
+function metadataString(value: JsonValue | undefined): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 async function getOrCreateRunForEvent(
   store: GithubWebhookStore,
   owner: WorkspaceIdentity,
   event: AutomationEvent,
   webhook: NormalizedGithubWebhook,
+  routing: GithubWebhookRoutingSummary,
 ): Promise<AutomationRun> {
   const existing = await store.getRunForEvent(event.id, owner);
   if (existing) return existing;
@@ -529,7 +741,11 @@ async function getOrCreateRunForEvent(
       provider: "github",
       githubEvent: webhook.githubEvent,
       githubDelivery: webhook.githubDelivery,
+      routingDecision: routing.decision,
+      eventType: routing.eventType,
       ...(webhook.action ? { action: webhook.action } : {}),
+      ...(routing.repository ? { repository: routing.repository } : {}),
+      ...(routing.branch ? { branch: routing.branch } : {}),
     },
   };
 
@@ -565,6 +781,7 @@ function githubMetadata(input: {
 }): JsonObject {
   const repository = nestedString(input.payload, "repository", "full_name");
   const sender = nestedString(input.payload, "sender", "login");
+  const branch = githubBranch(input.githubEvent, input.payload);
   return {
     provider: "github",
     sourceId: input.sourceId,
@@ -573,14 +790,35 @@ function githubMetadata(input: {
     ...(input.action ? { action: input.action } : {}),
     ...(repository ? { repository } : {}),
     ...(sender ? { sender } : {}),
+    ...(branch ? { branch } : {}),
   };
 }
 
+function githubBranch(githubEvent: string, payload: JsonObject): string | undefined {
+  if (githubEvent === "pull_request") {
+    return nestedStringPath(payload, ["pull_request", "base", "ref"]);
+  }
+  if (githubEvent === "release") {
+    return nestedStringPath(payload, ["release", "target_commitish"]);
+  }
+  if (githubEvent === "push") {
+    const ref = typeof payload.ref === "string" ? payload.ref : undefined;
+    return ref?.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+  }
+  return undefined;
+}
+
 function nestedString(value: JsonObject, objectKey: string, fieldKey: string): string | undefined {
-  const nested = value[objectKey];
-  if (!nested || typeof nested !== "object" || Array.isArray(nested)) return undefined;
-  const field = (nested as JsonObject)[fieldKey];
-  return typeof field === "string" && field.length > 0 ? field : undefined;
+  return nestedStringPath(value, [objectKey, fieldKey]);
+}
+
+function nestedStringPath(value: JsonObject, path: string[]): string | undefined {
+  let current: JsonValue | undefined = value;
+  for (const segment of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return undefined;
+    current = (current as JsonObject)[segment];
+  }
+  return typeof current === "string" && current.length > 0 ? current : undefined;
 }
 
 function optionalPayloadString(payload: JsonObject, key: string, maxLength: number): string | undefined {

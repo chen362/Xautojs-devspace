@@ -4,6 +4,8 @@ import {
   handleGithubWebhook,
   type GithubWebhookAcceptedResponse,
   type GithubWebhookErrorResponse,
+  type GithubWebhookIgnoredResponse,
+  type GithubWebhookResponse,
   type GithubWebhookStore,
 } from "./github-webhook-api.js";
 import { AutomationIdempotencyConflictError } from "./postgres-automation-store.js";
@@ -13,6 +15,7 @@ import type {
   AutomationRun,
   AutomationSource,
   CreateAutomationRunInput,
+  JsonObject,
   RecordAutomationEventInput,
 } from "./postgres-automation-store.js";
 import type { WorkspaceIdentity } from "./identity.js";
@@ -40,7 +43,11 @@ class FakeGithubWebhookStore implements GithubWebhookStore {
   readonly events = new Map<string, AutomationEvent>();
   readonly runs = new Map<string, AutomationRun>();
 
-  constructor(private readonly source: AutomationSource | undefined) {}
+  constructor(private source: AutomationSource | undefined) {}
+
+  setSource(source: AutomationSource | undefined): void {
+    this.source = source;
+  }
 
   async getGithubWebhookSource(id: string): Promise<AutomationSource | undefined> {
     if (id !== this.source?.id) return undefined;
@@ -197,6 +204,7 @@ process.env.DEVSPACE_TEST_GITHUB_WEBHOOK_SECRET = "github-webhook-secret";
   const body = payloadBuffer({
     action: "opened",
     repository: { full_name: "chen362/Xautojs-devspace" },
+    pull_request: { base: { ref: "main" } },
     sender: { login: "chen362" },
   });
   const first = await handleGithubWebhook({
@@ -214,6 +222,10 @@ process.env.DEVSPACE_TEST_GITHUB_WEBHOOK_SECRET = "github-webhook-secret";
   assert.equal(accepted.duplicate, false);
   assert.equal(accepted.githubEvent, "pull_request");
   assert.equal(accepted.githubDelivery, "delivery-success");
+  assert.equal(accepted.routing.decision, "queued");
+  assert.equal(accepted.routing.eventType, "github.pull_request.opened");
+  assert.equal(accepted.routing.repository, "chen362/Xautojs-devspace");
+  assert.equal(accepted.routing.branch, "main");
   assert.equal(store.events.size, 1);
   assert.equal(store.runs.size, 1);
 
@@ -221,8 +233,16 @@ process.env.DEVSPACE_TEST_GITHUB_WEBHOOK_SECRET = "github-webhook-secret";
   assert.equal(event?.sourceEventId, "delivery-success");
   assert.equal(event?.idempotencyKey, "github:delivery-success");
   assert.equal(event?.eventType, "github.pull_request.opened");
+  assert.equal(event?.status, "accepted");
   assert.equal(event?.metadata.repository, "chen362/Xautojs-devspace");
   assert.equal(event?.metadata.sender, "chen362");
+  assert.equal(event?.metadata.branch, "main");
+  assert.equal(event?.metadata.routingDecision, "queued");
+
+  const run = Array.from(store.runs.values())[0];
+  assert.equal(run?.metadata.eventType, "github.pull_request.opened");
+  assert.equal(run?.metadata.repository, "chen362/Xautojs-devspace");
+  assert.equal(run?.metadata.branch, "main");
 
   const second = await handleGithubWebhook({
     store,
@@ -239,8 +259,215 @@ process.env.DEVSPACE_TEST_GITHUB_WEBHOOK_SECRET = "github-webhook-secret";
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.automationEventId, accepted.automationEventId);
   assert.equal(duplicate.automationRunId, accepted.automationRunId);
+  assert.equal(duplicate.routing.decision, "queued");
   assert.equal(store.events.size, 1);
   assert.equal(store.runs.size, 1);
+}
+
+{
+  const store = new FakeGithubWebhookStore(source);
+  const body = payloadBuffer({
+    action: "edited",
+    repository: { full_name: "chen362/Xautojs-devspace" },
+    pull_request: { base: { ref: "main" } },
+  });
+  const result = await handleGithubWebhook({
+    store,
+    sourceId: "github-main",
+    githubEvent: "pull_request",
+    githubDelivery: "delivery-ignored-action",
+    githubSignature256: sign(body),
+    rawBody: body,
+    requestId: "req-ignored-action",
+  });
+  const ignored = expectIgnored(result.body);
+  assert.equal(result.statusCode, 202);
+  assert.equal(ignored.status, "ignored");
+  assert.equal(ignored.duplicate, false);
+  assert.equal(ignored.routing.reason, "event_not_routable");
+  assert.equal(store.events.size, 1);
+  assert.equal(store.runs.size, 0);
+  const event = Array.from(store.events.values())[0];
+  assert.equal(event?.status, "rejected");
+  assert.equal(event?.metadata.routingDecision, "ignored");
+  assert.equal(event?.metadata.routingReason, "event_not_routable");
+
+  const duplicateResult = await handleGithubWebhook({
+    store,
+    sourceId: "github-main",
+    githubEvent: "pull_request",
+    githubDelivery: "delivery-ignored-action",
+    githubSignature256: sign(body),
+    rawBody: body,
+    requestId: "req-ignored-action-duplicate",
+  });
+  const duplicate = expectIgnored(duplicateResult.body);
+  assert.equal(duplicateResult.statusCode, 202);
+  assert.equal(duplicate.status, "ignored");
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.automationEventId, ignored.automationEventId);
+  assert.equal(store.events.size, 1);
+  assert.equal(store.runs.size, 0);
+
+  store.setSource({
+    ...source,
+    config: { events: { pull_request: ["edited"] } },
+  });
+  const duplicateAfterPolicyChange = await handleGithubWebhook({
+    store,
+    sourceId: "github-main",
+    githubEvent: "pull_request",
+    githubDelivery: "delivery-ignored-action",
+    githubSignature256: sign(body),
+    rawBody: body,
+    requestId: "req-ignored-action-policy-change",
+  });
+  const stillIgnored = expectIgnored(duplicateAfterPolicyChange.body);
+  assert.equal(duplicateAfterPolicyChange.statusCode, 202);
+  assert.equal(stillIgnored.duplicate, true);
+  assert.equal(stillIgnored.automationEventId, ignored.automationEventId);
+  assert.equal(stillIgnored.routing.reason, "event_not_routable");
+  assert.equal(store.events.size, 1);
+  assert.equal(store.runs.size, 0);
+}
+
+{
+  const store = new FakeGithubWebhookStore({
+    ...source,
+    config: {
+      events: { pull_request: ["synchronize"], release: ["published"] },
+      repositories: ["chen362/Xautojs-devspace"],
+      branches: ["main"],
+    },
+  });
+  const body = payloadBuffer({
+    action: "synchronize",
+    repository: { full_name: "chen362/Xautojs-devspace" },
+    pull_request: { base: { ref: "main" } },
+  });
+  const result = await handleGithubWebhook({
+    store,
+    sourceId: "github-main",
+    githubEvent: "pull_request",
+    githubDelivery: "delivery-policy-queued",
+    githubSignature256: sign(body),
+    rawBody: body,
+    requestId: "req-policy-queued",
+  });
+  const accepted = expectAccepted(result.body);
+  assert.equal(result.statusCode, 202);
+  assert.equal(accepted.status, "queued");
+  assert.equal(accepted.routing.repository, "chen362/Xautojs-devspace");
+  assert.equal(accepted.routing.branch, "main");
+  assert.equal(store.runs.size, 1);
+}
+
+{
+  const store = new FakeGithubWebhookStore({
+    ...source,
+    config: {
+      events: { pull_request: ["opened", "synchronize", "closed"] },
+      repositories: ["chen362/Xautojs-devspace"],
+      branches: ["main"],
+    },
+  });
+  const body = payloadBuffer({
+    action: "opened",
+    repository: { full_name: "other/repo" },
+    pull_request: { base: { ref: "main" } },
+  });
+  const result = await handleGithubWebhook({
+    store,
+    sourceId: "github-main",
+    githubEvent: "pull_request",
+    githubDelivery: "delivery-policy-repo",
+    githubSignature256: sign(body),
+    rawBody: body,
+    requestId: "req-policy-repo",
+  });
+  const ignored = expectIgnored(result.body);
+  assert.equal(result.statusCode, 202);
+  assert.equal(ignored.routing.reason, "repository_not_allowed");
+  assert.equal(ignored.routing.repository, "other/repo");
+  assert.equal(store.events.size, 1);
+  assert.equal(store.runs.size, 0);
+}
+
+{
+  const store = new FakeGithubWebhookStore({
+    ...source,
+    config: {
+      events: { pull_request: ["opened", "synchronize", "closed"] },
+      repositories: ["chen362/Xautojs-devspace"],
+      branches: ["main"],
+    },
+  });
+  const body = payloadBuffer({
+    action: "opened",
+    repository: { full_name: "chen362/Xautojs-devspace" },
+    pull_request: { base: { ref: "feature/pr" } },
+  });
+  const result = await handleGithubWebhook({
+    store,
+    sourceId: "github-main",
+    githubEvent: "pull_request",
+    githubDelivery: "delivery-policy-branch",
+    githubSignature256: sign(body),
+    rawBody: body,
+    requestId: "req-policy-branch",
+  });
+  const ignored = expectIgnored(result.body);
+  assert.equal(result.statusCode, 202);
+  assert.equal(ignored.routing.reason, "branch_not_allowed");
+  assert.equal(ignored.routing.branch, "feature/pr");
+  assert.equal(store.events.size, 1);
+  assert.equal(store.runs.size, 0);
+}
+
+{
+  const store = new FakeGithubWebhookStore(source);
+  const body = payloadBuffer({
+    action: "published",
+    repository: { full_name: "chen362/Xautojs-devspace" },
+    release: { target_commitish: "main" },
+  });
+  const result = await handleGithubWebhook({
+    store,
+    sourceId: "github-main",
+    githubEvent: "release",
+    githubDelivery: "delivery-release-published",
+    githubSignature256: sign(body),
+    rawBody: body,
+    requestId: "req-release-published",
+  });
+  const accepted = expectAccepted(result.body);
+  assert.equal(result.statusCode, 202);
+  assert.equal(accepted.status, "queued");
+  assert.equal(accepted.routing.eventType, "github.release.published");
+  assert.equal(accepted.routing.branch, "main");
+  assert.equal(store.runs.size, 1);
+}
+
+{
+  const store = new FakeGithubWebhookStore({
+    ...source,
+    config: { events: "pull_request" as unknown as JsonObject },
+  });
+  const body = payloadBuffer({ action: "opened" });
+  const result = await handleGithubWebhook({
+    store,
+    sourceId: "github-main",
+    githubEvent: "pull_request",
+    githubDelivery: "delivery-policy-invalid",
+    githubSignature256: sign(body),
+    rawBody: body,
+    requestId: "req-policy-invalid",
+  });
+  const error = expectError(result.body);
+  assert.equal(result.statusCode, 500);
+  assert.equal(error.error.code, "GITHUB_WEBHOOK_POLICY_INVALID");
+  assert.equal(store.events.size, 0);
+  assert.equal(store.runs.size, 0);
 }
 
 {
@@ -279,12 +506,19 @@ function sign(body: Buffer, secret = "github-webhook-secret"): string {
   return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
 }
 
-function expectAccepted(body: GithubWebhookAcceptedResponse | GithubWebhookErrorResponse): GithubWebhookAcceptedResponse {
-  assert.ok(!("error" in body));
+function expectAccepted(body: GithubWebhookResponse): GithubWebhookAcceptedResponse {
+  if ("error" in body) assert.fail(`Expected accepted response, got error ${body.error.code}.`);
+  if (body.status === "ignored") assert.fail("Expected queued or duplicate response, got ignored.");
   return body;
 }
 
-function expectError(body: GithubWebhookAcceptedResponse | GithubWebhookErrorResponse): GithubWebhookErrorResponse {
+function expectIgnored(body: GithubWebhookResponse): GithubWebhookIgnoredResponse {
+  if ("error" in body) assert.fail(`Expected ignored response, got error ${body.error.code}.`);
+  if (body.status !== "ignored") assert.fail(`Expected ignored response, got ${body.status}.`);
+  return body;
+}
+
+function expectError(body: GithubWebhookResponse): GithubWebhookErrorResponse {
   assert.ok("error" in body);
   return body;
 }
