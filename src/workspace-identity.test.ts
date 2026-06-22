@@ -52,9 +52,7 @@ try {
 
   const bobRegistry = new WorkspaceRegistry(config, store, bob);
   await assert.rejects(
-    async () => {
-      await (bobRegistry.getWorkspace(aliceContext.workspace.id) as unknown as Promise<unknown>);
-    },
+    () => bobRegistry.getWorkspace(aliceContext.workspace.id),
     /Unknown workspaceId/,
   );
 
