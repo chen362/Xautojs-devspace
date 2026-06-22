@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import type { PostgresDatabaseConfig } from "./db/types.js";
 import { createOidcIdentity } from "./identity.js";
 import {
   PostgresWorkspaceStore,
@@ -25,10 +24,9 @@ interface StoredWorkspaceSessionRow {
 
 const rows: StoredWorkspaceSessionRow[] = [];
 const calls: PostgresQuery[] = [];
-const runner: PostgresQueryRunner = <Row>(
-  _config: PostgresDatabaseConfig,
+const runner: PostgresQueryRunner = async <Row>(
   query: PostgresQuery,
-): PostgresQueryResult<Row> => {
+): Promise<PostgresQueryResult<Row>> => {
   calls.push(query);
   const normalizedSql = query.text.replace(/\s+/g, " ").trim().toLowerCase();
 
@@ -99,7 +97,7 @@ const bob = createOidcIdentity({
   scopes: ["devspace"],
 });
 
-const created = store.createSession({
+const created = await store.createSession({
   owner: alice,
   id: "ws_postgres_1",
   root: "/repo",
@@ -119,19 +117,19 @@ assert.match(calls[0]?.text ?? "", /insert into workspace_sessions/i);
 assert.equal(calls[0]?.values[0], "ws_postgres_1");
 assert.equal(calls[0]?.text.includes("ws_postgres_1"), false);
 
-const loaded = store.getSession("ws_postgres_1", alice);
+const loaded = await store.getSession("ws_postgres_1", alice);
 assert.equal(loaded?.id, "ws_postgres_1");
 assert.equal(loaded?.sourceRoot, "/source");
 assert.equal(loaded?.baseRef, "main");
 assert.equal(loaded?.baseSha, "abc123");
 assert.equal(loaded?.managed, true);
 
-assert.equal(store.getSession("ws_postgres_1", bob), undefined);
+assert.equal(await store.getSession("ws_postgres_1", bob), undefined);
 
-store.touchSession("ws_postgres_1", bob);
+await store.touchSession("ws_postgres_1", bob);
 assert.equal(rows[0]?.last_used_at, created.lastUsedAt);
 
-store.touchSession("ws_postgres_1", alice);
+await store.touchSession("ws_postgres_1", alice);
 const lastTouchValue = calls.at(-1)?.values[3];
 assert.equal(typeof lastTouchValue, "string");
 assert.equal(rows[0]?.last_used_at, lastTouchValue);
