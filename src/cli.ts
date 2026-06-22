@@ -6,6 +6,7 @@ import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
 import { registerAutomationApiRoutes } from "./automation-api.js";
+import { runAutomationCommand } from "./automation-source-cli.js";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { postgresConnectionSummary } from "./db/postgres.js";
 import type { PostgresDatabaseConfig } from "./db/types.js";
@@ -20,7 +21,7 @@ import {
 } from "./user-config.js";
 import { expandHomePath } from "./roots.js";
 
-type Command = "serve" | "init" | "doctor" | "config" | "db" | "help";
+type Command = "serve" | "init" | "doctor" | "config" | "db" | "automation" | "help";
 type DbCommand = "migrate" | "status";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
@@ -108,6 +109,9 @@ async function main(argv: string[]): Promise<void> {
     case "db":
       await runDbCommand(args);
       return;
+    case "automation":
+      await runAutomationCommand(args, loadConfig());
+      return;
     case "help":
       printHelp();
       return;
@@ -116,7 +120,13 @@ async function main(argv: string[]): Promise<void> {
 
 function normalizeCommand(command: string | undefined): Command {
   if (!command || command === "serve" || command === "start") return "serve";
-  if (command === "init" || command === "doctor" || command === "config" || command === "db") return command;
+  if (
+    command === "init" ||
+    command === "doctor" ||
+    command === "config" ||
+    command === "db" ||
+    command === "automation"
+  ) return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   throw new Error(`Unknown command: ${command}`);
 }
@@ -562,6 +572,9 @@ function printHelp(): void {
       "  devspace db status --json",
       "  devspace db migrate      Apply pending Postgres migrations",
       "  devspace db migrate --json",
+      "  devspace automation source create --id <id> --name <name>",
+      "  devspace automation source list",
+      "  devspace automation source rotate-token --id <id>",
       "",
       "For temporary tunnels:",
       "  DEVSPACE_PUBLIC_BASE_URL=https://example.trycloudflare.com devspace serve",
