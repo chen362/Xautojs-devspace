@@ -14,7 +14,7 @@ const postgresStore = createWorkspaceStore({
   sslMode: "require",
 });
 assert.equal(postgresStore instanceof PostgresWorkspaceStore, true);
-postgresStore.close?.();
+await postgresStore.close?.();
 
 const root = await mkdtemp(join(tmpdir(), "devspace-workspace-identity-test-"));
 const stateDir = join(root, ".state");
@@ -47,19 +47,19 @@ try {
   assert.equal(aliceContext.workspace.owner.tenantId, alice.tenantId);
   assert.equal(aliceContext.workspace.owner.userId, alice.userId);
 
-  assert.equal(store.getSession(aliceContext.workspace.id, alice)?.id, aliceContext.workspace.id);
-  assert.equal(store.getSession(aliceContext.workspace.id, bob), undefined);
+  assert.equal((await store.getSession(aliceContext.workspace.id, alice))?.id, aliceContext.workspace.id);
+  assert.equal(await store.getSession(aliceContext.workspace.id, bob), undefined);
 
   const bobRegistry = new WorkspaceRegistry(config, store, bob);
-  assert.throws(
+  await assert.rejects(
     () => bobRegistry.getWorkspace(aliceContext.workspace.id),
     /Unknown workspaceId/,
   );
 
-  const restoredAlice = new WorkspaceRegistry(config, store, alice).getWorkspace(aliceContext.workspace.id);
+  const restoredAlice = await new WorkspaceRegistry(config, store, alice).getWorkspace(aliceContext.workspace.id);
   assert.equal(restoredAlice.root, projectRoot);
   assert.equal(restoredAlice.owner.userId, alice.userId);
 } finally {
-  store.close();
+  await store.close();
   await rm(root, { recursive: true, force: true });
 }
