@@ -13,7 +13,6 @@ import type {
   AutomationRun,
   AutomationSource,
   CreateAutomationRunInput,
-  JsonObject,
   RecordAutomationEventInput,
 } from "./postgres-automation-store.js";
 import type { WorkspaceIdentity } from "./identity.js";
@@ -280,5 +279,3 @@ function expectError(body: AutomationAcceptedResponse | AutomationErrorResponse)
   assert.ok("error" in body);
   return body;
 }
-
-void ({} satisfies JsonObject);
