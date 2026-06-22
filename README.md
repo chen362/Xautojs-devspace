@@ -141,9 +141,12 @@ npx @waishnav/devspace db status --json
 Then start the server with the same database settings. `devspace serve` checks
 that migrations are current before accepting traffic. `devspace doctor --json`
 reports the resolved production config, redacted Postgres URL, and schema
-readiness for smoke checks. Long-running deployments can enable session expiry
-with `DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS`; loaded AGENTS/CLAUDE file
-snapshots are deleted automatically when their workspace session is cleaned up.
+readiness for smoke checks. Runtime probes are available at `/healthz` for
+liveness and `/readyz` for readiness; `/readyz` returns HTTP 503 when Postgres
+schema status is not ready or cannot be read. Long-running deployments can enable
+session expiry with `DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS`; loaded AGENTS/CLAUDE
+file snapshots are deleted automatically when their workspace session is cleaned
+up.
 
 For a full Ubuntu/Linux, macOS, and Windows production smoke flow, see
 [Production Smoke Check](docs/production-smoke.md). A copyable environment
