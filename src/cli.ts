@@ -5,7 +5,10 @@ import { resolve } from "node:path";
 import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
-import { loadConfig } from "./config.js";
+import { loadConfig, type ServerConfig } from "./config.js";
+import { postgresConnectionSummary } from "./db/postgres.js";
+import type { PostgresDatabaseConfig } from "./db/types.js";
+import type { PostgresMigrationStatusJson } from "./db/postgres-migrations.js";
 import {
   generateOwnerToken,
   loadDevspaceFiles,
@@ -24,6 +27,62 @@ interface SqliteMemoryDatabaseConstructor {
   new (filename: string): { close(): void };
 }
 
+interface DoctorReport {
+  ok: boolean;
+  configDir: string;
+  configFile: string | "missing";
+  authFile: string | "missing";
+  runtime: {
+    node: string;
+    nodeRange: string;
+    nodeStatus: string;
+    nodeSupported: boolean;
+    nodeAbi: string;
+    platform: NodeJS.Platform;
+    arch: string;
+  };
+  tools: {
+    git: string;
+    bashShell: string;
+    sqliteNative: string;
+  };
+  config: DoctorConfigReport;
+  postgresSchema?: DoctorPostgresSchemaReport;
+}
+
+type DoctorConfigReport =
+  | {
+      status: "ok";
+      deploymentMode: ServerConfig["deploymentMode"];
+      authMode: ServerConfig["oauth"]["mode"];
+      database: DoctorDatabaseReport;
+      localMcpUrl: string;
+      publicMcpUrl: string;
+      allowedRoots: string[];
+      allowedHosts: string[];
+      logging: ServerConfig["logging"];
+    }
+  | {
+      status: "error";
+      error: string;
+    };
+
+type DoctorDatabaseReport =
+  | {
+      provider: "sqlite";
+      stateDir: string;
+      filePath: string;
+    }
+  | ReturnType<typeof postgresConnectionSummary>;
+
+type DoctorPostgresSchemaReport =
+  | ({ state: "ready" | "missing" | "pending" | "modified" } & PostgresMigrationStatusJson)
+  | {
+      state: "error";
+      ready: false;
+      error: string;
+    };
+
 async function main(argv: string[]): Promise<void> {
   assertSupportedNode();
 
@@ -39,7 +98,7 @@ async function main(argv: string[]): Promise<void> {
       await runInit({ force: args.includes("--force") });
       return;
     case "doctor":
-      await runDoctor();
+      await runDoctor(args);
       return;
     case "config":
       runConfigCommand(args);
@@ -215,9 +274,21 @@ async function serve(): Promise<void> {
   process.once("SIGTERM", shutdown);
 }
 
-async function runDoctor(): Promise<void> {
+async function runDoctor(args: string[]): Promise<void> {
+  const json = parseJsonOnlyArgs(args, "devspace doctor");
+  const report = await buildDoctorReport();
+
+  if (json) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  printDoctorReport(report);
+}
+
+async function buildDoctorReport(): Promise<DoctorReport> {
   const files = loadDevspaceFiles();
-  let config: ReturnType<typeof loadConfig> | undefined;
+  let config: ServerConfig | undefined;
   let configError: unknown;
 
   try {
@@ -226,34 +297,133 @@ async function runDoctor(): Promise<void> {
     configError = error;
   }
 
-  console.log(`Config dir: ${files.dir}`);
-  console.log(`Config file: ${files.configExists ? files.configPath : "missing"}`);
-  console.log(`Auth file: ${files.authExists ? files.authPath : "missing"}`);
-  console.log(`Node: ${process.version} (${nodeVersionStatus()})`);
-  console.log(`Node ABI: ${process.versions.modules}`);
-  console.log(`Platform: ${process.platform} ${process.arch}`);
-  console.log(`Git: ${checkGitAvailable()}`);
-  console.log(`Bash shell: ${checkBashShell()}`);
-  console.log(`SQLite native dependency: ${sqliteNativeStatus(config)}`);
+  const sqliteNative = sqliteNativeStatus(config);
+  const report: DoctorReport = {
+    ok: false,
+    configDir: files.dir,
+    configFile: files.configExists ? files.configPath : "missing",
+    authFile: files.authExists ? files.authPath : "missing",
+    runtime: {
+      node: process.version,
+      nodeRange: SUPPORTED_NODE_RANGE,
+      nodeStatus: nodeVersionStatus(),
+      nodeSupported: isNodeSupported(),
+      nodeAbi: process.versions.modules,
+      platform: process.platform,
+      arch: process.arch,
+    },
+    tools: {
+      git: checkGitAvailable(),
+      bashShell: checkBashShell(),
+      sqliteNative,
+    },
+    config: config
+      ? {
+          status: "ok",
+          deploymentMode: config.deploymentMode,
+          authMode: config.oauth.mode,
+          database: doctorDatabaseReport(config),
+          localMcpUrl: `http://${config.host}:${config.port}/mcp`,
+          publicMcpUrl: new URL("/mcp", config.publicBaseUrl).toString(),
+          allowedRoots: config.allowedRoots,
+          allowedHosts: config.allowedHosts,
+          logging: config.logging,
+        }
+      : {
+          status: "error",
+          error: configError instanceof Error ? configError.message : String(configError),
+        },
+  };
 
-  if (!config) {
-    console.log(`Config status: ${configError instanceof Error ? configError.message : String(configError)}`);
+  if (config?.database.provider === "postgres") {
+    report.postgresSchema = await getDoctorPostgresSchemaReport(config.database);
+  }
+
+  report.ok =
+    report.config.status === "ok"
+    && report.runtime.nodeSupported
+    && sqliteNativeIsOk(sqliteNative)
+    && (report.postgresSchema ? report.postgresSchema.ready : true);
+
+  return report;
+}
+
+function printDoctorReport(report: DoctorReport): void {
+  console.log(`Config dir: ${report.configDir}`);
+  console.log(`Config file: ${report.configFile}`);
+  console.log(`Auth file: ${report.authFile}`);
+  console.log(`Node: ${report.runtime.node} (${report.runtime.nodeStatus})`);
+  console.log(`Node ABI: ${report.runtime.nodeAbi}`);
+  console.log(`Platform: ${report.runtime.platform} ${report.runtime.arch}`);
+  console.log(`Git: ${report.tools.git}`);
+  console.log(`Bash shell: ${report.tools.bashShell}`);
+  console.log(`SQLite native dependency: ${report.tools.sqliteNative}`);
+
+  if (report.config.status !== "ok") {
+    console.log(`Config status: ${report.config.error}`);
     return;
   }
 
-  console.log(`Database provider: ${config.database.provider}`);
-  console.log(`Local MCP URL: http://${config.host}:${config.port}/mcp`);
-  console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
-  console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
-  console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
+  console.log(`Database provider: ${report.config.database.provider}`);
+  if (report.config.database.provider === "postgres") {
+    console.log(`Postgres URL: ${report.config.database.url}`);
+    console.log(`Postgres SSL mode: ${report.config.database.sslMode}`);
+  }
+  if (report.postgresSchema) {
+    console.log(`Postgres schema: ${formatPostgresSchemaLine(report.postgresSchema)}`);
+  }
+  console.log(`Local MCP URL: ${report.config.localMcpUrl}`);
+  console.log(`Public MCP URL: ${report.config.publicMcpUrl}`);
+  console.log(`Allowed roots: ${report.config.allowedRoots.join(", ")}`);
+  console.log(`Allowed hosts: ${report.config.allowedHosts.join(", ")}`);
+}
+
+async function getDoctorPostgresSchemaReport(
+  config: PostgresDatabaseConfig,
+): Promise<DoctorPostgresSchemaReport> {
+  try {
+    const {
+      getPostgresMigrationStatus,
+      postgresSchemaState,
+      toPostgresMigrationStatusJson,
+    } = await import("./db/postgres-migrations.js");
+    const status = await getPostgresMigrationStatus(config);
+    const json = toPostgresMigrationStatusJson(status);
+    return {
+      ...json,
+      state: postgresSchemaState(status),
+    };
+  } catch (error) {
+    return {
+      state: "error",
+      ready: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function doctorDatabaseReport(config: ServerConfig): DoctorDatabaseReport {
+  if (config.database.provider === "postgres") return postgresConnectionSummary(config.database);
+  return {
+    provider: "sqlite",
+    stateDir: config.database.stateDir,
+    filePath: config.database.filePath,
+  };
+}
+
+function formatPostgresSchemaLine(schema: DoctorPostgresSchemaReport): string {
+  if (schema.state === "error") return `error (${schema.error})`;
+  return [
+    schema.state,
+    `table=${schema.tableExists ? schema.tableName : "missing"}`,
+    `applied=${schema.appliedCount}`,
+    `pending=${schema.pendingCount}`,
+    `modified=${schema.modifiedCount}`,
+  ].join(" ");
 }
 
 async function runDbCommand(args: string[]): Promise<void> {
-  const [rawSubcommand, ...rest] = args;
-  const command = normalizeDbCommand(rawSubcommand);
-  if (rest.length > 0) {
-    throw new Error(`Unexpected devspace db argument: ${rest.join(" ")}`);
-  }
+  const { command, json } = parseDbCommandArgs(args);
 
   const config = loadConfig();
   if (config.database.provider !== "postgres") {
@@ -265,18 +435,69 @@ async function runDbCommand(args: string[]): Promise<void> {
     formatPostgresMigrationStatus,
     getPostgresMigrationStatus,
     migratePostgresDatabase,
+    toPostgresMigrationStatusJson,
   } = await import("./db/postgres-migrations.js");
 
   if (command === "status") {
     const status = await getPostgresMigrationStatus(config.database);
+    if (json) {
+      console.log(JSON.stringify(toPostgresMigrationStatusJson(status), null, 2));
+      return;
+    }
     console.log(formatPostgresMigrationStatus(status));
     return;
   }
 
   const result = await migratePostgresDatabase(config.database);
+  if (json) {
+    console.log(JSON.stringify({
+      applied: result.applied.map((migration) => ({
+        version: migration.version,
+        name: migration.name,
+        checksum: migration.checksum,
+      })),
+      status: toPostgresMigrationStatusJson(result.status),
+    }, null, 2));
+    return;
+  }
   console.log(formatPostgresMigrationResult(result));
   console.log("");
   console.log(formatPostgresMigrationStatus(result.status));
+}
+
+function parseDbCommandArgs(args: string[]): { command: DbCommand; json: boolean } {
+  const positional: string[] = [];
+  let json = false;
+
+  for (const arg of args) {
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`Unexpected devspace db option: ${arg}`);
+    }
+    positional.push(arg);
+  }
+
+  const [rawSubcommand, ...rest] = positional;
+  if (rest.length > 0) {
+    throw new Error(`Unexpected devspace db argument: ${rest.join(" ")}`);
+  }
+
+  return { command: normalizeDbCommand(rawSubcommand), json };
+}
+
+function parseJsonOnlyArgs(args: string[], command: string): boolean {
+  let json = false;
+  for (const arg of args) {
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    throw new Error(`Unexpected ${command} argument: ${arg}`);
+  }
+  return json;
 }
 
 function normalizeDbCommand(command: string | undefined): DbCommand {
@@ -322,11 +543,14 @@ function printHelp(): void {
       "  devspace                 Run first-time setup if needed, then start the server",
       "  devspace serve           Start the server",
       "  devspace init            Create or update ~/.devspace/config.json and auth.json",
-      "  devspace doctor          Show config, runtime, and native dependency status",
+      "  devspace doctor          Show config, runtime, and dependency status",
+      "  devspace doctor --json   Show doctor status as JSON",
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
       "  devspace db status       Show Postgres migration status",
+      "  devspace db status --json",
       "  devspace db migrate      Apply pending Postgres migrations",
+      "  devspace db migrate --json",
       "",
       "For temporary tunnels:",
       "  DEVSPACE_PUBLIC_BASE_URL=https://example.trycloudflare.com devspace serve",
@@ -391,7 +615,7 @@ function validatePublicBaseUrl(value: string): string | undefined {
 }
 
 function assertSupportedNode(): void {
-  if (satisfies(process.versions.node, SUPPORTED_NODE_RANGE)) return;
+  if (isNodeSupported()) return;
 
   throw new Error(
     [
@@ -403,8 +627,12 @@ function assertSupportedNode(): void {
   );
 }
 
+function isNodeSupported(): boolean {
+  return satisfies(process.versions.node, SUPPORTED_NODE_RANGE);
+}
+
 function nodeVersionStatus(): string {
-  return satisfies(process.versions.node, SUPPORTED_NODE_RANGE)
+  return isNodeSupported()
     ? `supported ${SUPPORTED_NODE_RANGE}`
     : `unsupported, requires ${SUPPORTED_NODE_RANGE}`;
 }
@@ -414,6 +642,10 @@ class SetupCancelledError extends Error {}
 function sqliteNativeStatus(config: ReturnType<typeof loadConfig> | undefined): string {
   if (config?.database.provider === "postgres") return "skipped (postgres mode)";
   return checkSqliteNative();
+}
+
+function sqliteNativeIsOk(status: string): boolean {
+  return status === "ok" || status.startsWith("skipped ");
 }
 
 function checkSqliteNative(): string {
