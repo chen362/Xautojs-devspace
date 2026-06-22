@@ -30,7 +30,9 @@ The core principle is:
 ```text
 The GPT can be shared.
 The MCP domain can be shared.
-But user identity, workspace sessions, context memory, approvals, file permissions, local agents, and audit trails must be isolated per user and per workspace.
+But user identity, web conversation bindings, workspace sessions, context memory,
+approvals, file permissions, local agents, and audit trails must be isolated per
+user, per tenant, per workspace, and per task conversation.
 ```
 
 Hard product decisions:
@@ -41,14 +43,124 @@ Production cloud relay uses Postgres as the system database.
 SQLite is allowed only for local development, test fixtures, or single-machine demo mode.
 DevSpace should not self-build username/password login as the primary identity system.
 DevSpace should use a standards-compliant OIDC/OAuth provider for user authentication.
-DevSpace itself acts as the MCP protected resource, resource server, tenant mapper, policy engine, and relay gateway.
+DevSpace itself acts as the MCP protected resource, resource server, tenant mapper, policy engine, relay gateway, and local-context memory layer.
+Workspace Agents API can be used for optional backend-triggered ChatGPT agent runs, but it does not replace MCP relay for live local file work.
 ```
 
-The target is not to call Codex CLI or Claude Code CLI as another agent. The target is to absorb the best local-agent runtime capabilities from Codex, implement them inside DevSpace, and then exceed Codex for web-driven multi-user local workspaces.
+The target is not to call Codex CLI or Claude Code CLI as another local executor. The target is to absorb the best local-agent runtime capabilities from Codex, implement them inside DevSpace, and then exceed Codex for web-driven multi-user local workspaces.
 
-## 1. Product Boundary
+## 1. Conversation And Session Model
 
-### 1.1 What ChatGPT Web owns
+This is the most important correction for web-side multi-session behavior.
+
+There are four different session concepts. They must not be mixed.
+
+```text
+ChatGPT chat conversation
+  The user's visible chat thread in ChatGPT Web. DevSpace may not receive a stable native ChatGPT conversation id through MCP, so DevSpace must not depend on it.
+
+Workspace Agent triggered conversation
+  A published ChatGPT Workspace Agent run triggered through OpenAI's Workspace Agents API. This supports a caller-defined `conversation_key` for continuing the same agent conversation across trigger events.
+
+DevSpace conversation binding
+  DevSpace's own durable mapping between a user, a task, a workspace session, a context window, and optional external conversation keys.
+
+DevSpace workspace session
+  The local execution and memory boundary: user + localAgentId + root + worktree/branch + contextWindowId.
+```
+
+### 1.1 Default interactive path
+
+For normal user-driven local work, the default path is:
+
+```text
+User opens a ChatGPT chat with the shared GPT
+  -> ChatGPT calls DevSpace remote MCP tools
+  -> DevSpace authenticates the user
+  -> DevSpace creates or resumes a conversation binding
+  -> DevSpace opens or resumes a workspace session
+  -> DevSpace routes local tool calls to the correct local agent
+```
+
+This path is interactive and suitable for reading/modifying local files.
+
+### 1.2 Optional backend-trigger path
+
+For automation, DevSpace may also trigger a published ChatGPT Workspace Agent through OpenAI's Workspace Agents API:
+
+```text
+External event or DevSpace backend job
+  -> POST /v1/workspace_agents/{id}/trigger
+  -> input + conversation_key
+  -> OpenAI durably queues the trigger event
+```
+
+Use this for:
+
+```text
+scheduled context review
+GitHub webhook summaries
+failed CI triage
+nightly workspace memory refresh
+background task kickoff
+customer/team automation that does not need immediate API retrieval of the agent answer
+```
+
+Do not use this as the primary live local-file editing path because the official trigger endpoint currently returns `202 Accepted` without a public run id or retrievable response body.
+
+### 1.3 Conversation binding rule
+
+Every local workspace conversation should get a DevSpace-owned id:
+
+```text
+devspaceConversationId
+```
+
+It binds:
+
+```text
+tenantId
+userId
+localAgentId
+workspaceSessionId
+contextWindowId
+taskGoal
+conversationLabel
+optional chatgptSurfaceHint
+optional workspaceAgentConversationKey
+status
+createdAt
+lastUsedAt
+```
+
+The model should keep `workspaceSessionId` and `devspaceConversationId` in its visible context after `open_workspace`. The server must still validate ownership on every tool call.
+
+### 1.4 How to separate web conversations
+
+If the same user opens the same workspace in multiple ChatGPT chats, DevSpace should not silently merge all work.
+
+Recommended behavior:
+
+```text
+open_workspace with no existing active binding:
+  create a new workspace session and context window
+
+open_workspace with same user + same localAgentId + same root + same taskGoal within a recent window:
+  return existing session only if reusePolicy is `reuse` or user confirms
+
+open_workspace with same root but different taskGoal:
+  create a separate conversation binding and context window
+
+resume_workspace_session:
+  explicitly resumes an existing binding
+
+list_workspace_sessions:
+  lets ChatGPT show candidates when the user says "continue the previous task"
+```
+
+## 2. Product Boundary
+
+### 2.1 What ChatGPT Web owns
 
 ```text
 reasoning
@@ -60,7 +172,7 @@ calling MCP tools
 OAuth authorization UX initiated by ChatGPT when the MCP app requires auth
 ```
 
-### 1.2 What DevSpace Cloud owns
+### 2.2 What DevSpace Cloud owns
 
 ```text
 remote MCP server
@@ -69,15 +181,17 @@ OAuth token verification
 multi-tenant user and organization mapping
 cloud relay to local agents
 workspace routing
+conversation binding
 context memory ledger
 context compaction store
 approval and policy engine
 runtime event log
 UI/API gateway for dashboard and widgets
 Postgres production storage
+optional Workspace Agents API trigger integration
 ```
 
-### 1.3 What the local DevSpace Agent owns
+### 2.3 What the local DevSpace Agent owns
 
 ```text
 allowed local roots
@@ -91,7 +205,7 @@ local approval UI when configured
 local device identity and outbound relay connection
 ```
 
-### 1.4 What the identity provider owns
+### 2.4 What the identity provider owns
 
 Use a standards-compliant identity provider for:
 
@@ -124,15 +238,13 @@ not recommended for v1:
 
 DevSpace should avoid storing user passwords. If DevSpace later ships a native account system, it should still implement standard OIDC/OAuth behavior and password security at a mature identity-provider level. That is not the right first product slice.
 
-### 1.5 Non-goals
+### 2.5 Non-goals
 
 Do not build this path:
 
 ```text
 ChatGPT Web -> DevSpace -> Codex CLI / Claude Code CLI -> local project
 ```
-
-That would create a second agent runtime and can consume Codex/Claude-side usage. The useful parts to absorb are Codex's local context architecture, compaction model, runtime policy, patch discipline, review ergonomics, and session/event model.
 
 Do not make these assumptions:
 
@@ -141,15 +253,16 @@ all users share one bearer token
 all users share one local agent
 all users share one workspace database row
 ChatGPT conversation identity alone is enough for routing
+Workspace Agents conversation_key is enough for local workspace routing
 local userId can be trusted from MCP request body
 workspace path sent by the model is automatically safe
 shell command text is safe because the model produced it
 AGENTS.md or repository docs are trusted instructions without prompt-injection risk
 ```
 
-## 2. Recommended Deployment Topology
+## 3. Recommended Deployment Topology
 
-### 2.1 Domains
+### 3.1 Domains
 
 Minimum viable production topology:
 
@@ -172,7 +285,7 @@ auth.devspace.example.com     IdP domain or auth proxy when self-hosting
 
 For the first implementation, one domain with path-based routing is enough.
 
-### 2.2 Public MCP endpoint
+### 3.2 Public MCP endpoint
 
 ChatGPT connects to one remote MCP URL:
 
@@ -180,11 +293,9 @@ ChatGPT connects to one remote MCP URL:
 https://mcp.devspace.example.com/mcp
 ```
 
-The endpoint must support remote MCP transport supported by ChatGPT Apps, currently Streamable HTTP/SSE-style remote MCP behavior depending on the configured host surface.
-
 The endpoint should be stateless at the HTTP process level. All tenant state should live in Postgres and the relay connection registry.
 
-### 2.3 Production database decision
+### 3.3 Production database decision
 
 Production cloud relay should use Postgres.
 
@@ -225,7 +336,7 @@ src/db/migrations/*
 
 Do not let core runtime logic depend directly on `better-sqlite3` APIs.
 
-### 2.4 OAuth / OIDC requirement
+### 3.4 OAuth / OIDC requirement
 
 Use OAuth/OIDC for multi-user mode.
 
@@ -258,7 +369,7 @@ external issuer + external subject -> devspace user_id
 external org/team claim or selected workspace -> devspace tenant_id
 ```
 
-### 2.5 Which login UI to build
+### 3.5 Login UI
 
 Do not put a raw username/password form inside the GPT or MCP tool UI.
 
@@ -282,16 +393,6 @@ Local DevSpace Agent:
   Store only local device credentials and refresh material allowed by the IdP policy.
 ```
 
-Acceptable UI labels:
-
-```text
-Sign in with DevSpace
-Connect ChatGPT
-Connect this computer
-Register local agent
-Choose workspace
-```
-
 Avoid:
 
 ```text
@@ -301,25 +402,7 @@ one shared MCP secret for every user
 manual userId entry
 ```
 
-### 2.6 OAuth client model
-
-There are three different client surfaces:
-
-```text
-ChatGPT MCP client:
-  ChatGPT acts as the OAuth client for the remote MCP app.
-  It uses authorization-code + PKCE according to the MCP app auth flow.
-
-DevSpace web dashboard client:
-  Browser app or backend-for-frontend authenticates with the same IdP.
-
-Local DevSpace Agent client:
-  Native/CLI app uses device-code flow or loopback/browser PKCE.
-```
-
-DevSpace Cloud should expose protected resource metadata for the MCP server and verify tokens minted for that protected resource. If using an IdP that supports Client ID Metadata Documents or dynamic client registration, align with ChatGPT MCP auth expectations.
-
-### 2.7 Cloud relay
+### 3.6 Cloud relay
 
 The relay is the bridge between ChatGPT's remote MCP calls and a user's private local machine.
 
@@ -327,7 +410,7 @@ The relay is the bridge between ChatGPT's remote MCP calls and a user's private 
 ChatGPT Web
   -> HTTPS MCP request
   -> MCP Gateway authenticates user
-  -> Gateway resolves workspaceSessionId/localAgentId
+  -> Gateway resolves devspaceConversationId/workspaceSessionId/localAgentId
   -> Cloud Relay sends request over user's existing local-agent connection
   -> Local Agent performs local operation
   -> Local Agent returns structured result
@@ -343,7 +426,7 @@ devspace-agent connect
 
 Do not require users to expose localhost or open inbound firewall ports.
 
-### 2.8 Secure tunnel option
+### 3.7 Secure tunnel option
 
 For private/on-prem deployments, support an outbound-only secure tunnel mode. This maps to the same design principle as OpenAI Secure MCP Tunnel: local/private MCP remains private, while supported OpenAI surfaces reach it through an outbound tunnel client.
 
@@ -357,15 +440,171 @@ self-hosted tunnel mode:
   user/team runs MCP server privately and connects through an outbound tunnel
 ```
 
-## 3. Multi-User Routing Model
+## 4. OpenAI Workspace Agents API Alignment
 
-### 3.1 Routing key
+Workspace Agents API is useful, but it is not a replacement for DevSpace MCP relay.
 
-Every MCP request must resolve to this routing tuple:
+### 4.1 Official behavior to absorb
+
+OpenAI's Workspace Agents trigger API supports:
+
+```text
+POST https://api.chatgpt.com/v1/workspace_agents/{id}/trigger
+```
+
+Where:
+
+```text
+id:
+  stable public API trigger identifier for the published API channel, in agtch_XXX form
+
+input:
+  required string passed to the agent as trigger input
+
+conversation_key:
+  optional caller-defined stable identifier for continuing the same agent conversation across multiple trigger events
+
+Idempotency-Key header:
+  optional retry key. Reusing the same key for the same trigger returns the original accepted outcome instead of enqueueing a duplicate event
+
+response:
+  202 Accepted with no response body
+
+current limitation:
+  no public run id is returned, and the agent response cannot currently be retrieved through the API
+```
+
+Authentication uses Workspace Agent access tokens:
+
+```text
+Authorization: Bearer $AGENT_ACCESS_TOKEN
+```
+
+Operational notes from the official auth page:
+
+```text
+workspace admin must enable Workspace agents and personal access tokens
+user creates an access token in ChatGPT Admin > Access tokens
+user selects the Workspace Agents scope
+the token is scoped to Workspace Agents API operations only
+```
+
+### 4.2 What DevSpace should absorb
+
+Absorb these patterns:
+
+```text
+caller-defined conversation_key
+idempotency key for retry safety
+published-channel trigger id
+202 accepted async trigger semantics
+separate automation token from user interactive MCP OAuth token
+```
+
+Do not copy these assumptions into the live MCP path:
+
+```text
+that a trigger response can be read immediately
+that Workspace Agent token can access DevSpace local relay
+that conversation_key alone identifies a local workspace
+that automation triggers can replace interactive MCP tools
+```
+
+### 4.3 DevSpace conversation key design
+
+DevSpace should define its own stable conversation key format for external triggers and internal bindings:
+
+```text
+devspace:v1:{tenantId}:{userId}:{localAgentId}:{workspaceFingerprint}:{taskKey}
+```
+
+Where:
+
+```text
+workspaceFingerprint:
+  hash of canonical root + optional repo remote + branch/worktree identity
+
+taskKey:
+  user-provided task id, issue id, PR id, CI run id, or generated task slug
+```
+
+Never expose raw local paths inside public conversation keys.
+
+### 4.4 Optional Workspace Agent channel table
+
+```sql
+workspace_agent_channels(
+  id uuid primary key,
+  tenant_id uuid not null references tenants(id),
+  owner_user_id uuid not null references users(id),
+  openai_agent_channel_id text not null,
+  display_name text not null,
+  token_secret_ref text not null,
+  status text not null,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+)
+
+workspace_agent_trigger_events(
+  id uuid primary key,
+  tenant_id uuid not null references tenants(id),
+  user_id uuid not null references users(id),
+  workspace_agent_channel_id uuid not null references workspace_agent_channels(id),
+  devspace_conversation_id uuid,
+  conversation_key text not null,
+  idempotency_key text not null,
+  input text not null,
+  status text not null,
+  accepted_at timestamptz,
+  error_code text,
+  created_at timestamptz not null,
+  unique(workspace_agent_channel_id, idempotency_key)
+)
+```
+
+Store Workspace Agent access tokens in a secrets manager. Do not store plaintext tokens in Postgres.
+
+### 4.5 Optional DevSpace API: trigger workspace agent
+
+This is a DevSpace backend/admin API, not a primary MCP tool for local file mutation.
+
+```ts
+interface TriggerWorkspaceAgentRequest {
+  workspaceAgentChannelId: string;
+  devspaceConversationId?: string;
+  conversationKey: string;
+  input: string;
+  idempotencyKey: string;
+}
+
+interface TriggerWorkspaceAgentResponse {
+  status: "accepted";
+  acceptedAt: string;
+  devspaceTriggerEventId: string;
+}
+```
+
+Rules:
+
+```text
+idempotencyKey is required
+conversationKey is required
+same idempotencyKey + same input returns the same accepted record
+same idempotencyKey + different input returns IDEMPOTENCY_CONFLICT
+trigger token is loaded from secrets manager
+accepted trigger does not imply response retrieval
+```
+
+## 5. Multi-User Routing Model
+
+### 5.1 Routing tuple
+
+Every MCP request must resolve to this tuple:
 
 ```text
 tenantId
 userId
+devspaceConversationId
 localAgentId
 workspaceId
 workspaceSessionId
@@ -373,13 +612,19 @@ contextWindowId
 requestId
 ```
 
-Minimum key for safe routing:
+Minimum key for safe local routing:
 
 ```text
 userId + localAgentId + workspaceSessionId
 ```
 
-### 3.2 Why conversation auto-detection is not enough
+Minimum key for safe web conversation isolation:
+
+```text
+userId + devspaceConversationId + contextWindowId
+```
+
+### 5.2 Why conversation auto-detection is not enough
 
 A shared GPT does not provide a reliable local project identity by itself. The model may be used in multiple chats, by multiple users, with multiple machines and workspaces.
 
@@ -387,14 +632,13 @@ Therefore routing should be explicit:
 
 ```text
 1. ChatGPT calls list_local_agents if needed.
-2. ChatGPT calls open_workspace.
-3. DevSpace returns workspaceSessionId and contextWindowId.
-4. All later tools must pass workspaceSessionId.
+2. ChatGPT calls list_workspace_sessions or open_workspace.
+3. DevSpace creates or returns devspaceConversationId, workspaceSessionId, and contextWindowId.
+4. All later tools must pass workspaceSessionId or devspaceConversationId.
+5. DevSpace validates ownership and resolves the local agent.
 ```
 
-If the user has exactly one online agent and one default workspace, DevSpace may choose it automatically. If there are multiple online agents or ambiguous workspace paths, DevSpace must return a selection-required error or list.
-
-### 3.3 Adaptive allocation rules
+### 5.3 Adaptive allocation rules
 
 ```text
 if no authenticated user:
@@ -407,7 +651,7 @@ if user has registered agents but none online:
   return LOCAL_AGENT_OFFLINE
 
 if exactly one agent is online and input has no agentId:
-  use that agent
+  use that agent only if no ambiguity with workspace/session state exists
 
 if multiple agents are online and no default is configured:
   return LOCAL_AGENT_SELECTION_REQUIRED with candidates
@@ -415,53 +659,64 @@ if multiple agents are online and no default is configured:
 if workspaceSessionId is supplied:
   route to the agent bound to that session
 
-if workspaceSessionId is stale or belongs to another user:
-  return WORKSPACE_SESSION_NOT_FOUND
+if devspaceConversationId is supplied:
+  resolve its current workspaceSessionId/contextWindowId
+
+if workspaceSessionId or devspaceConversationId belongs to another user:
+  return WORKSPACE_SESSION_NOT_FOUND or CONVERSATION_NOT_FOUND
 
 if requested path is outside allowed roots:
   return PATH_NOT_ALLOWED
 ```
 
-### 3.4 Session stickiness
+### 5.4 Session stickiness
 
 `open_workspace` creates a sticky local session:
 
 ```text
-workspaceSessionId -> userId, localAgentId, root, mode, branch/worktree, contextWindowId
+workspaceSessionId -> tenantId, userId, devspaceConversationId, localAgentId, root, mode, branch/worktree, contextWindowId
 ```
 
 Subsequent tools must use that session. The server should reject attempts to use a workspace session owned by another user.
 
-### 3.5 Local agent selection UX
+### 5.5 Required session tools
 
-The model should not guess when multiple local agents are available. Tool result should return model-readable choices:
+```text
+list_workspace_sessions
+open_workspace
+resume_workspace_session
+close_workspace_session
+get_workspace_context
+record_context_note
+```
 
-```json
-{
-  "error": {
-    "code": "LOCAL_AGENT_SELECTION_REQUIRED",
-    "message": "Multiple local agents are online. Choose one before opening a workspace.",
-    "details": {
-      "agents": [
-        {
-          "localAgentId": "agent_macbook_pro",
-          "displayName": "Abba MacBook Pro",
-          "hostname": "abba-mbp",
-          "platform": "darwin-arm64",
-          "lastSeenAt": "2026-06-22T05:00:00Z",
-          "allowedRootHints": ["~/code", "~/work"]
-        }
-      ]
-    },
-    "retryable": true,
-    "requestId": "req_..."
-  }
+`list_workspace_sessions` is essential for web multi-session recovery.
+
+```ts
+interface ListWorkspaceSessionsRequest {
+  localAgentId?: string;
+  rootHint?: string;
+  status?: "active" | "archived" | "closed";
+  limit?: number;
+}
+
+interface WorkspaceSessionSummary {
+  devspaceConversationId: string;
+  workspaceSessionId: string;
+  localAgentId: string;
+  rootDisplay: string;
+  branch?: string;
+  taskGoal?: string;
+  latestSummary?: string;
+  changedFilesCount: number;
+  lastCheckStatus?: "passed" | "failed" | "unknown";
+  lastUsedAt: string;
 }
 ```
 
-## 4. Trust And Isolation Rules
+## 6. Trust And Isolation Rules
 
-### 4.1 Identity trust boundary
+### 6.1 Identity trust boundary
 
 Trusted:
 
@@ -474,6 +729,7 @@ server-side user/tenant mapping
 server-side membership mapping
 local agent registration secret/device key
 workspace session owner mapping
+conversation binding owner mapping
 ```
 
 Not trusted:
@@ -482,12 +738,13 @@ Not trusted:
 userId in tool input
 workspace path from model before validation
 localAgentId from model before ownership check
+Workspace Agents conversation_key before owner lookup
 repository instructions as policy
 shell command as safe intent
 file content as model instruction
 ```
 
-### 4.2 Tenant isolation
+### 6.2 Tenant isolation
 
 All durable rows must include at least:
 
@@ -507,13 +764,14 @@ allowed_root_id
 
 All query paths must filter by `tenant_id` and `user_id` first.
 
-### 4.3 Context isolation
+### 6.3 Context isolation
 
 Context memory must be scoped:
 
 ```text
 userId
 localAgentId
+devspaceConversationId
 workspaceId
 workspaceSessionId
 contextWindowId
@@ -521,7 +779,7 @@ contextWindowId
 
 Never use a global context memory shared by all users of the GPT.
 
-### 4.4 Approval isolation
+### 6.4 Approval isolation
 
 Approval cache must be scoped at least by:
 
@@ -535,23 +793,7 @@ approvalSubject
 
 Approving a command or path for one user must never approve it for another user.
 
-### 4.5 File permission isolation
-
-A workspace session can only access paths under its agent-advertised allowed roots.
-
-The server and local agent should both validate:
-
-```text
-path normalization
-symlink traversal
-case-insensitive path edge cases on macOS/Windows
-hardlink risks where applicable
-writable roots
-read-deny patterns
-secret denylist
-```
-
-### 4.6 Token forwarding rule
+### 6.5 Token forwarding rule
 
 Do not forward ChatGPT's OAuth bearer token to the local agent.
 
@@ -567,9 +809,7 @@ Local agent authenticates to relay with its own device credentials.
 
 This prevents local machines from becoming holders of ChatGPT/MCP bearer tokens.
 
-## 5. Data Model
-
-### 5.1 Production database contract
+## 7. Production Data Model
 
 Production storage target:
 
@@ -589,11 +829,11 @@ Implementation rule:
 Core stores use interfaces and migrations that map cleanly to Postgres.
 Do not use SQLite-only behavior as a product contract.
 Prefer timestamp with time zone in Postgres.
-Prefer JSONB for payload_json/capabilities_json.
-Add composite indexes for tenant/user/session lookups.
+Prefer JSONB for payload/capabilities/structured fields.
+Add composite indexes for tenant/user/conversation/session lookups.
 ```
 
-### 5.2 Users, tenants, and memberships
+### 7.1 Users, tenants, and identities
 
 ```sql
 tenants(
@@ -644,7 +884,33 @@ one user -> one personal tenant by default
 teams/orgs -> one tenant with multiple memberships
 ```
 
-### 5.3 Local agents
+### 7.2 Conversation bindings
+
+```sql
+devspace_conversations(
+  id uuid primary key,
+  tenant_id uuid not null references tenants(id),
+  user_id uuid not null references users(id),
+  local_agent_id uuid,
+  workspace_session_id uuid,
+  context_window_id uuid,
+  task_goal text,
+  conversation_label text,
+  workspace_fingerprint text,
+  workspace_agent_conversation_key text,
+  status text not null default 'active',
+  created_at timestamptz not null,
+  last_used_at timestamptz not null
+)
+
+create index devspace_conversations_owner_idx
+  on devspace_conversations(tenant_id, user_id, last_used_at desc);
+
+create index devspace_conversations_workspace_idx
+  on devspace_conversations(tenant_id, user_id, workspace_fingerprint, status);
+```
+
+### 7.3 Local agents and roots
 
 ```sql
 local_agents(
@@ -676,15 +942,17 @@ local_agent_allowed_roots(
 )
 ```
 
-### 5.4 Workspace sessions
+### 7.4 Workspace sessions
 
 ```sql
 workspace_sessions(
   id uuid primary key,
   tenant_id uuid not null references tenants(id),
   user_id uuid not null references users(id),
+  devspace_conversation_id uuid references devspace_conversations(id),
   local_agent_id uuid not null references local_agents(id),
   root text not null,
+  workspace_fingerprint text not null,
   status text not null default 'active',
   mode text not null default 'checkout',
   source_root text,
@@ -704,13 +972,14 @@ create index workspace_sessions_agent_idx
   on workspace_sessions(tenant_id, user_id, local_agent_id, status);
 ```
 
-### 5.5 Context memory
+### 7.5 Context memory
 
 ```sql
 context_windows(
   id uuid primary key,
   tenant_id uuid not null references tenants(id),
   user_id uuid not null references users(id),
+  devspace_conversation_id uuid references devspace_conversations(id),
   workspace_session_id uuid not null references workspace_sessions(id),
   status text not null,
   token_budget integer,
@@ -724,6 +993,7 @@ context_events(
   id uuid primary key,
   tenant_id uuid not null references tenants(id),
   user_id uuid not null references users(id),
+  devspace_conversation_id uuid references devspace_conversations(id),
   workspace_session_id uuid not null references workspace_sessions(id),
   context_window_id uuid not null references context_windows(id),
   event_type text not null,
@@ -736,6 +1006,7 @@ context_summaries(
   id uuid primary key,
   tenant_id uuid not null references tenants(id),
   user_id uuid not null references users(id),
+  devspace_conversation_id uuid references devspace_conversations(id),
   workspace_session_id uuid not null references workspace_sessions(id),
   context_window_id uuid not null references context_windows(id),
   summary_type text not null,
@@ -746,26 +1017,16 @@ context_summaries(
   validation_status text not null,
   created_at timestamptz not null
 )
-
-context_pins(
-  id uuid primary key,
-  tenant_id uuid not null references tenants(id),
-  user_id uuid not null references users(id),
-  workspace_session_id uuid not null references workspace_sessions(id),
-  label text not null,
-  content text not null,
-  source_event_id uuid,
-  created_at timestamptz not null
-)
 ```
 
-### 5.6 Runtime events and tool runs
+### 7.6 Runtime, approvals, and relay
 
 ```sql
 runtime_events(
   id uuid primary key,
   tenant_id uuid not null references tenants(id),
   user_id uuid not null references users(id),
+  devspace_conversation_id uuid,
   local_agent_id uuid,
   workspace_session_id uuid,
   request_id text not null,
@@ -778,6 +1039,7 @@ tool_runs(
   id uuid primary key,
   tenant_id uuid not null references tenants(id),
   user_id uuid not null references users(id),
+  devspace_conversation_id uuid,
   local_agent_id uuid not null references local_agents(id),
   workspace_session_id uuid not null references workspace_sessions(id),
   tool_name text not null,
@@ -791,15 +1053,12 @@ tool_runs(
   result_summary text,
   unique(tenant_id, user_id, operation_id)
 )
-```
 
-### 5.7 Approvals
-
-```sql
 approvals(
   id uuid primary key,
   tenant_id uuid not null references tenants(id),
   user_id uuid not null references users(id),
+  devspace_conversation_id uuid,
   local_agent_id uuid not null references local_agents(id),
   workspace_session_id uuid not null references workspace_sessions(id),
   subject_type text not null,
@@ -811,15 +1070,12 @@ approvals(
   created_at timestamptz not null,
   resolved_at timestamptz
 )
-```
 
-### 5.8 Relay messages
-
-```sql
 relay_requests(
   id uuid primary key,
   tenant_id uuid not null references tenants(id),
   user_id uuid not null references users(id),
+  devspace_conversation_id uuid,
   local_agent_id uuid not null references local_agents(id),
   workspace_session_id uuid,
   operation_id text not null,
@@ -832,9 +1088,9 @@ relay_requests(
 )
 ```
 
-## 6. Auth Architecture
+## 8. Auth Architecture
 
-### 6.1 Recommended auth provider strategy
+### 8.1 Recommended auth provider strategy
 
 Use external OIDC provider for user auth.
 
@@ -863,14 +1119,7 @@ Avoid for v1:
 custom users table + password hashes + custom OAuth server
 ```
 
-Reason:
-
-```text
-The hard part of DevSpace is local-agent routing, context memory, policy, patching, and relay safety.
-Building a secure identity provider is a separate hard product.
-```
-
-### 6.2 ChatGPT MCP OAuth flow
+### 8.2 ChatGPT MCP OAuth flow
 
 ```text
 1. User invokes DevSpace MCP tool in ChatGPT.
@@ -884,9 +1133,7 @@ Building a secure identity provider is a separate hard product.
 9. DevSpace executes only authorized tools.
 ```
 
-### 6.3 Local agent login flow
-
-Recommended local agent UX:
+### 8.3 Local agent login flow
 
 ```text
 1. User runs devspace-agent login.
@@ -899,25 +1146,19 @@ Recommended local agent UX:
 8. Agent connects outbound to relay.
 ```
 
-The local agent should not ask for the user's raw password.
-
-### 6.4 Dashboard login flow
-
-```text
-1. User visits app.devspace.example.com.
-2. UI shows Sign in / Connect account.
-3. User is redirected to IdP login.
-4. Dashboard receives authenticated session.
-5. Dashboard shows local agents, workspaces, approvals, context, and settings.
-```
-
-### 6.5 Token types
+### 8.4 Token types
 
 ```text
 user access token:
   issued by IdP
   accepted by MCP/API gateway
   not forwarded to local agents
+
+workspace agent access token:
+  provisioned from ChatGPT Admin access-token flow
+  scoped only to Workspace Agents API operations
+  stored in secrets manager if DevSpace supports automation triggers
+  not used for local relay authorization
 
 local agent device credential:
   minted after authenticated registration
@@ -927,28 +1168,17 @@ local agent device credential:
 relay request token/signature:
   short-lived internal envelope from cloud to local agent
   contains requestId, operationId, workspaceSessionId, deadline, policy summary
-
-one-time registration code:
-  short-lived
-  used to bind a new local agent to a user
 ```
 
-### 6.6 Account and tenant model
+### 8.5 Scope model
 
-```text
-Every user belongs to at least one tenant.
-A personal user gets a personal tenant automatically.
-Team/org mode adds tenant memberships.
-All workspaces, agents, context, approvals, and events belong to a tenant and user.
-```
-
-### 6.7 Scope model
-
-Recommended OAuth scopes:
+Recommended OAuth scopes for DevSpace MCP:
 
 ```text
 devspace:agents:read
 devspace:workspace:open
+devspace:conversation:read
+devspace:conversation:write
 devspace:files:read
 devspace:files:write
 devspace:commands:run
@@ -960,9 +1190,7 @@ devspace:assets:read
 devspace:approvals:write
 ```
 
-Default user install should start with conservative scopes. Higher-risk scopes can be requested only when needed.
-
-## 7. API Contract: Remote MCP Tools
+## 9. API Contract: Remote MCP Tools
 
 All tools below are called by ChatGPT through the shared remote MCP server.
 
@@ -978,16 +1206,17 @@ Identity:
 Idempotency:
   mutation tools require operationId or derive one from MCP tool call id + input fingerprint
 
+Conversation:
+  local work should use devspaceConversationId after one is created or resumed
+
 Workspace:
-  all workspace tools require workspaceSessionId after open_workspace
+  local workspace tools require workspaceSessionId after open_workspace
 
 Errors:
   use stable machine-readable error codes
 ```
 
-### 7.1 Unified tool response envelope
-
-Internally every tool should produce:
+### 9.1 Unified response envelope
 
 ```ts
 interface ToolResponse<T = unknown> {
@@ -995,6 +1224,7 @@ interface ToolResponse<T = unknown> {
   data?: T;
   meta: {
     requestId: string;
+    devspaceConversationId?: string;
     workspaceSessionId?: string;
     contextWindowId?: string;
     operationId?: string;
@@ -1005,7 +1235,7 @@ interface ToolResponse<T = unknown> {
 }
 ```
 
-### 7.2 Unified error model
+### 9.2 Unified error model
 
 ```ts
 interface DevSpaceError {
@@ -1029,6 +1259,8 @@ TOKEN_AUDIENCE_INVALID
 TOKEN_SCOPE_MISSING
 TENANT_DISABLED
 USER_DISABLED
+CONVERSATION_NOT_FOUND
+CONVERSATION_SELECTION_REQUIRED
 LOCAL_AGENT_NOT_REGISTERED
 LOCAL_AGENT_OFFLINE
 LOCAL_AGENT_SELECTION_REQUIRED
@@ -1056,81 +1288,43 @@ ASSET_UNSUPPORTED
 ASSET_EXTRACTION_FAILED
 RELAY_TIMEOUT
 RELAY_DELIVERY_FAILED
+WORKSPACE_AGENT_TRIGGER_FAILED
 IDEMPOTENCY_CONFLICT
 INTERNAL_ERROR
 ```
 
-### 7.3 `list_local_agents`
-
-Purpose:
+### 9.3 Conversation tools
 
 ```text
-Return local agents owned by the authenticated user.
+list_workspace_sessions
+open_workspace
+resume_workspace_session
+close_workspace_session
+get_workspace_context
+record_context_note
 ```
 
-Request:
-
-```ts
-interface ListLocalAgentsRequest {
-  includeOffline?: boolean;
-  capability?: "files" | "git" | "shell" | "assets" | "ui";
-}
-```
-
-Response:
-
-```ts
-interface ListLocalAgentsResponse {
-  agents: Array<{
-    localAgentId: string;
-    displayName: string;
-    hostname?: string;
-    platform?: string;
-    version?: string;
-    status: "online" | "offline" | "degraded";
-    lastSeenAt: string;
-    capabilities: string[];
-    allowedRootHints: string[];
-  }>;
-}
-```
-
-### 7.4 `open_workspace`
-
-Purpose:
-
-```text
-Bind this conversation/task to a local agent and workspace root.
-```
-
-Request:
+`open_workspace` request:
 
 ```ts
 interface OpenWorkspaceRequest {
+  devspaceConversationId?: string;
   localAgentId?: string;
   path: string;
   mode?: "checkout" | "worktree";
   baseRef?: string;
   taskGoal?: string;
+  conversationLabel?: string;
+  reusePolicy?: "create_new" | "reuse_if_exact" | "ask_if_ambiguous";
   operationId?: string;
 }
 ```
 
-Validation:
-
-```text
-path is required
-path must resolve under one allowed root
-localAgentId must belong to authenticated user
-mode defaults to checkout
-worktree mode requires git eligibility
-operationId is recommended for retry safety
-```
-
-Response:
+`open_workspace` response:
 
 ```ts
 interface OpenWorkspaceResponse {
+  devspaceConversationId: string;
   workspaceSessionId: string;
   workspaceId: string;
   localAgentId: string;
@@ -1152,162 +1346,26 @@ interface OpenWorkspaceResponse {
 }
 ```
 
-Idempotency:
+### 9.4 Local agent tools
 
 ```text
-Same user + localAgentId + canonical path + mode + operationId returns same workspaceSessionId when still active.
-Different canonical path under same operationId returns IDEMPOTENCY_CONFLICT.
+list_local_agents
+get_local_agent_status
 ```
 
-### 7.5 `get_workspace_context`
-
-Purpose:
-
-```text
-Return compact, source-labeled, model-ready local project context.
-```
-
-Request:
-
-```ts
-interface GetWorkspaceContextRequest {
-  workspaceSessionId: string;
-  mode?: "brief" | "coding" | "review" | "resume" | "asset";
-  tokenBudget?: number;
-  includePins?: boolean;
-  includeRecentEvents?: boolean;
-}
-```
-
-Response includes:
-
-```text
-goal
-current task summary
-latest compacted summary
-pinned facts
-decisions
-assumptions
-open questions
-touched files
-changed files
-last test/build results
-open risks
-next steps
-source labels
-context budget status
-```
-
-### 7.6 `prepare_context_compaction`
-
-Purpose:
-
-```text
-Ask DevSpace to prepare a compaction packet for ChatGPT Web to summarize.
-```
-
-Required summary fields:
-
-```text
-goal
-current state
-important decisions
-assumptions
-files read
-files changed
-tests/build results
-open risks
-next steps
-what not to forget
-```
-
-### 7.7 `save_context_summary`
-
-Purpose:
-
-```text
-Persist a ChatGPT-produced summary back into DevSpace context memory.
-```
-
-Validation:
-
-```text
-compactionRequestId must exist and belong to same user/session
-summary must include all required fields
-filesChanged cannot omit known changed files unless explicitly marked irrelevant
-nextSteps cannot be empty when task remains open
-```
-
-### 7.8 File tools
+### 9.5 File, patch, command, git, and asset tools
 
 ```text
 read_file
 list_directory
 search_workspace
 find_files
-```
-
-Rules:
-
-```text
-read tools are read-only but still path-validated
-large files return bounded excerpts or chunk references
-binary files return metadata and suggest inspect_asset
-all reads record context events
-```
-
-### 7.9 `apply_patch`
-
-Purpose:
-
-```text
-Patch-first workspace editing. This should become the preferred write path.
-```
-
-Runtime:
-
-```text
-parse patch
-validate paths
-classify changes
-check writable roots
-check sensitive path denylist
-preview diff
-request approval if policy requires
-apply patch locally
-record exact delta
-update diff tracker
-record context event
-emit UI event
-```
-
-### 7.10 Command tools
-
-Recommended split:
-
-```text
-run_check       tests/build/lint/typecheck, approval-light
-run_command     policy-gated command with explicit purpose
-run_shell       advanced escape hatch, strict/off by default
-start_server    long-running dev server process
-stop_server     stop managed process
-```
-
-Rules:
-
-```text
-command is array form where possible
-cwd must be inside workspace
-output is capped
-stdout/stderr deltas are streamed to UI
-final result is summarized for model
-network commands require approval
-write/destructive commands require approval or are forbidden
-```
-
-### 7.11 Git and review tools
-
-```text
+apply_patch
+run_check
+run_command
+run_shell
+start_server
+stop_server
 git_status
 git_diff
 git_log
@@ -1316,20 +1374,6 @@ list_changed_files
 show_file_diff
 rollback_changes
 mark_reviewed
-```
-
-Rules:
-
-```text
-show_changes is safe/read-only
-rollback requires approval
-rollback can target file, patch operation, session, or managed worktree
-all diff/rollback events become context memory
-```
-
-### 7.12 Asset tools
-
-```text
 inspect_asset
 extract_text
 render_asset_preview
@@ -1340,27 +1384,17 @@ index_workspace_assets
 Rules:
 
 ```text
-asset path must be allowed
-binary contents are not dumped to the model
-extractors return bounded source-labeled facts
-OCR or document conversion warnings must be visible
-large extracted text uses chunks and summaries
+read tools are path-validated
+large files return bounded excerpts or chunk refs
+patch is preferred for writes
+commands are policy-gated and output-capped
+all writes and command runs record context and runtime events
+all risky actions require approval
 ```
 
-## 8. Local Agent Relay Contract
+## 10. Local Agent Relay Contract
 
-### 8.1 Agent registration
-
-The local agent must be registered to a user account.
-
-```text
-User signs in through browser or device-code flow.
-Server issues local-agent registration challenge.
-Local agent generates or loads device key.
-Server binds localAgentId to userId and tenantId.
-```
-
-### 8.2 Agent connection
+### 10.1 Agent connection
 
 Local agent opens outbound WebSocket:
 
@@ -1390,7 +1424,7 @@ interface AgentHello {
 }
 ```
 
-### 8.3 Relay request envelope
+### 10.2 Relay request envelope
 
 ```ts
 interface RelayRequest {
@@ -1399,6 +1433,7 @@ interface RelayRequest {
   operationId: string;
   tenantId: string;
   userId: string;
+  devspaceConversationId?: string;
   workspaceSessionId?: string;
   method: string;
   params: Record<string, unknown>;
@@ -1410,21 +1445,7 @@ interface RelayRequest {
 }
 ```
 
-### 8.4 Relay response envelope
-
-```ts
-interface RelayResponse {
-  type: "relay.response";
-  requestId: string;
-  operationId: string;
-  status: "ok" | "error";
-  result?: unknown;
-  error?: DevSpaceError["error"];
-  events?: RuntimeEvent[];
-}
-```
-
-### 8.5 Delivery semantics
+### 10.3 Delivery semantics
 
 ```text
 Relay delivery is at-least-once under reconnect/timeouts.
@@ -1434,13 +1455,11 @@ Write tools must be idempotent or return conflict.
 Long-running commands must expose status and cancellation.
 ```
 
-## 9. Context Memory And Compaction Design
+## 11. Context Memory And Compaction Design
 
 This remains the highest-value capability to absorb from Codex.
 
-### 9.1 Codex behavior to absorb
-
-Codex has:
+Codex behavior to absorb:
 
 ```text
 raw history
@@ -1467,7 +1486,7 @@ raw event ledger
 model-ready context projection
 UI-ready context projection
 context versioning
-context windows
+conversation-scoped context windows
 pinned facts
 compaction requests
 summary validation
@@ -1475,12 +1494,11 @@ resume summaries
 project/task memory
 ```
 
-### 9.2 Context event types
-
 Required event types:
 
 ```text
 workspace_opened
+conversation_bound
 user_task
 agents_instructions_loaded
 skill_loaded
@@ -1506,48 +1524,8 @@ context_projection_requested
 context_compaction_requested
 context_compaction_saved
 rollback_applied
+workspace_agent_triggered
 ```
-
-### 9.3 Context facets
-
-```ts
-interface ContextMemoryFacets {
-  project: ProjectSummary;
-  task: TaskSummary;
-  decisions: DecisionMemory[];
-  assumptions: AssumptionMemory[];
-  openQuestions: OpenQuestionMemory[];
-  fileFacts: FileFactMemory[];
-  symbolFacts: SymbolFactMemory[];
-  apiContracts: ApiContractMemory[];
-  commands: CommandMemory[];
-  diffs: DiffMemory[];
-  risks: RiskMemory[];
-  assets: AssetMemory[];
-  pins: ContextPin[];
-}
-```
-
-### 9.4 Projection modes
-
-```text
-brief:
-  goal, latest summary, next steps, top touched files
-
-coding:
-  goal, constraints, relevant file facts, decisions, current diff, last tests
-
-review:
-  changed files, risks, test results, unresolved approvals, rollback points
-
-resume:
-  project summary, active task, decisions, open questions, next steps
-
-asset:
-  asset summaries, extracted text, relevant files, user notes
-```
-
-### 9.5 Compaction invariants
 
 A compacted summary must not lose:
 
@@ -1564,23 +1542,14 @@ open risks
 next steps
 pinned facts
 approval decisions still in force
+conversation binding identity
 ```
-
-### 9.6 What DevSpace cannot do
 
 DevSpace cannot rewrite ChatGPT Web's native conversation history. It can only maintain local project/session context and expose compact model-ready projections through MCP tools, server instructions, and widgets.
 
-Therefore:
+## 12. Codex Deep Capability Absorption
 
-```text
-ChatGPT Web summarizes.
-DevSpace validates and stores.
-Future ChatGPT turns retrieve context through get_workspace_context.
-```
-
-## 10. Codex Deep Capability Absorption
-
-### 10.1 Tool runtime bus
+### 12.1 Tool runtime bus
 
 Absorb Codex `tools/orchestrator.rs` behavior:
 
@@ -1595,23 +1564,9 @@ telemetry/event recording
 final structured result
 ```
 
-DevSpace implementation:
-
-```ts
-interface ToolRuntimeBus {
-  run<TInput, TOutput>(input: {
-    workspaceSessionId: string;
-    toolName: string;
-    operationId: string;
-    params: TInput;
-    risk: RuntimeRisk;
-  }): Promise<RuntimeResult<TOutput>>;
-}
-```
-
 No local capability should bypass this bus.
 
-### 10.2 Approval store
+### 12.2 Approval store
 
 Absorb Codex approval caching:
 
@@ -1624,13 +1579,13 @@ approve network host
 reject and remember
 ```
 
-Approval keys must include user/session scope:
+Approval keys must include:
 
 ```text
 userId + localAgentId + workspaceSessionId + permissionProfile + approvalSubjectFingerprint
 ```
 
-### 10.3 Command policy engine
+### 12.3 Command policy engine
 
 Absorb Codex `exec_policy.rs` concepts:
 
@@ -1643,18 +1598,6 @@ prefix rule amendments
 network rule amendments
 policy parse warnings
 approval policy conflict handling
-```
-
-DevSpace command classes:
-
-```text
-read_only
-check
-build
-network
-write
-destructive
-forbidden_by_default
 ```
 
 Forbidden by default:
@@ -1671,7 +1614,7 @@ unknown shell scripts that hide writes
 commands outside workspace
 ```
 
-### 10.4 Patch-first editing
+### 12.4 Patch-first editing
 
 Absorb Codex `apply_patch`, `safety.rs`, and `apply-patch` crate behavior:
 
@@ -1695,9 +1638,7 @@ DevSpace should prefer:
 apply_patch > edit_file > write_file > shell writes
 ```
 
-Shell redirection, heredocs, `sed -i`, ad-hoc Python/Node file writers should be discouraged or blocked for normal edits.
-
-### 10.5 Turn diff tracker
+### 12.5 Turn diff tracker
 
 Absorb Codex `turn_diff_tracker.rs` behavior:
 
@@ -1709,17 +1650,7 @@ cache rendered diffs
 invalidate when exactness is lost
 ```
 
-DevSpace should maintain:
-
-```text
-per-tool diff
-per-task diff
-since-workspace-open diff
-since-last-review diff
-rollback checkpoint diff
-```
-
-### 10.6 Bounded command execution
+### 12.6 Bounded command execution
 
 Absorb Codex `exec.rs` behavior:
 
@@ -1735,7 +1666,7 @@ structured exit status
 timeout exit classification
 ```
 
-### 10.7 Session and rollout archive
+### 12.7 Session and rollout archive
 
 Absorb Codex rollout/session ideas:
 
@@ -1752,6 +1683,7 @@ DevSpace should support:
 
 ```text
 resume by project
+resume by web conversation binding
 resume by workspace session
 resume by branch
 resume by task goal
@@ -1760,20 +1692,9 @@ resume by failed check
 resume by pending approval
 ```
 
-### 10.8 Context update diffing
+### 12.8 Config layers, hooks, and workflow packs
 
-Absorb Codex context updates:
-
-```text
-only send changed model-visible context when possible
-version context projections
-avoid replaying unchanged instructions unnecessarily
-separate environment, permissions, instructions, token budget, and internal context fragments
-```
-
-### 10.9 Config layers and trust
-
-Absorb Codex config-layer thinking:
+Absorb:
 
 ```text
 user config
@@ -1782,27 +1703,6 @@ project config
 trusted vs untrusted project rules
 permission profile constraints
 warnings when policy files fail to parse
-```
-
-DevSpace config precedence:
-
-```text
-server defaults
-team policy
-user policy
-local agent policy
-workspace policy
-project instructions
-runtime override
-```
-
-Project instructions can guide behavior but must not override safety policy.
-
-### 10.10 Hooks and workflow packs
-
-Absorb public Claude Code plugin workflow ideas and Codex hook lifecycle:
-
-```text
 SessionStart
 PreToolUse
 PostToolUse
@@ -1811,44 +1711,17 @@ PreCompact
 PostCompact
 Stop
 SessionEnd
+feature-dev workflow pack
+code-review workflow pack
+security-guidance workflow pack
+commit-workflow pack
 ```
 
-Workflow packs:
+Project instructions can guide behavior but must not override safety policy.
 
-```text
-feature-dev
-code-review
-security-guidance
-commit-workflow
-api-contract-first
-minimal-patch-first
-```
+### 12.9 Multimodal local gateway beyond Codex
 
-Hooks must be deterministic by default. LLM-backed hooks should be opt-in.
-
-### 10.11 TUI/app-server UI ideas
-
-Absorb Codex TUI/app-server product ideas:
-
-```text
-live task thread
-active tool group
-approval overlays
-diff viewer
-token/context usage status
-MCP server status
-skills/plugins list
-thread/session state
-queued message editing concept
-resume picker
-runtime metrics
-```
-
-DevSpace should implement a graphical workbench around the same event source used by MCP.
-
-### 10.12 Multimodal local gateway beyond Codex
-
-This is where DevSpace can exceed Codex for ChatGPT Web:
+DevSpace can exceed Codex for ChatGPT Web by supporting:
 
 ```text
 code + PDFs + images + screenshots + spreadsheets + Office docs + generated artifacts
@@ -1868,15 +1741,14 @@ asset diff and preview generation
 
 Return compact facts to ChatGPT, not unbounded raw binary data.
 
-## 11. UI / Workbench Design Integrated Into Main Plan
-
-### 11.1 UI role
+## 13. UI / Workbench Design
 
 The UI is not the model. It is the local command center for:
 
 ```text
 connection status
 workspace state
+web conversation bindings
 context memory
 approvals
 tool runs
@@ -1886,14 +1758,14 @@ asset previews
 settings
 ```
 
-### 11.2 Default layout
+Default layout:
 
 ```text
 +--------------------------------------------------------------------------------+
 | Top Bar: Workspace / Branch / MCP Status / Context Budget / Safety Mode         |
 +-------------+----------------------------+-------------------------------+-----+
 | Left Rail   | Session + Task Sidebar     | Main Task Thread              |Right|
-| - Workspace | - Active task              | - ChatGPT actions             |Pane |
+| - Workspace | - Active conversation      | - ChatGPT actions             |Pane |
 | - Context   | - Recent sessions          | - Tool cards                  |     |
 | - Changes   | - Pending approvals        | - Output streams              |     |
 | - Runs      | - Failed checks            | - Assistant notes             |     |
@@ -1904,23 +1776,26 @@ settings
 +--------------------------------------------------------------------------------+
 ```
 
-### 11.3 Required panels
+Required panels:
 
 ```text
 Workspace panel
+Conversation/session picker
 Context memory panel
 Change review panel
 Approval queue panel
 Run output panel
 Asset preview panel
 Settings panel
+Workspace Agent trigger log panel
 ```
 
-### 11.4 Event card types
+Event card types:
 
 ```text
 UserRequestCard
 AssistantPlanCard
+ConversationBoundCard
 WorkspaceOpenCard
 ContextProjectionCard
 FileReadCard
@@ -1933,16 +1808,18 @@ ApprovalRequestCard
 DiffReviewCard
 TestResultCard
 CompactionCard
+WorkspaceAgentTriggerCard
 RollbackCard
 ErrorCard
 ```
 
-## 12. Security Model
+## 14. Security Model
 
-### 12.1 Main risks
+Main risks:
 
 ```text
 cross-user data leak
+wrong web conversation binding
 wrong local agent routing
 workspace path escape
 symlink/hardlink escape
@@ -1957,11 +1834,12 @@ compaction summary losing critical safety facts
 local agent token theft
 relay replay attack
 IdP token audience confusion
+Workspace Agent token misuse
 accidental forwarding of user OAuth token to local agent
 SQLite single-file assumptions leaking into production multi-user design
 ```
 
-### 12.2 Required mitigations
+Required mitigations:
 
 ```text
 OAuth token validation on every MCP request
@@ -1969,6 +1847,7 @@ issuer validation
 audience/resource validation
 scope validation
 per-user local agent ownership checks
+devspaceConversationId ownership checks
 workspaceSessionId ownership checks
 allowed root validation in cloud and local agent
 path normalization before access
@@ -1977,16 +1856,18 @@ patch safety before writes
 command policy before execution
 approval isolation per user/session
 operationId dedupe for mutations
+Idempotency-Key for Workspace Agent trigger retries
 short-lived relay request deadlines
 agent heartbeat and version checks
-audit log for all writes/commands/approvals
+audit log for all writes/commands/approvals/triggers
 context summary validation
 output caps and file-size caps
 Postgres production storage with tenant/user indexes
 no forwarding user bearer token to local agent
+secrets manager for Workspace Agent access tokens
 ```
 
-## 13. Implementation Roadmap
+## 15. Implementation Roadmap
 
 ### Phase 0: Consolidate planning
 
@@ -1995,6 +1876,8 @@ Exit criteria:
 ```text
 single source-of-truth plan exists
 multi-user relay architecture is defined
+web multi-session model is defined
+Workspace Agents API optional role is defined
 production auth provider decision is defined
 Postgres-first multi-user storage decision is defined
 Codex absorption scope is defined
@@ -2043,14 +1926,6 @@ local dev can use SQLite adapter only in dev mode
 
 ### Phase 2: Local agent registration and relay
 
-Files likely:
-
-```text
-src/relay/*
-src/agent/*
-src/db/schema.ts
-```
-
 Work:
 
 ```text
@@ -2064,30 +1939,16 @@ relay request/response envelope
 operationId dedupe foundation
 ```
 
-Exit criteria:
-
-```text
-user can register local agent
-server sees online/offline status
-server can relay a ping to the correct agent
-requests cannot route to another user's agent
-```
-
-### Phase 3: Workspace routing
-
-Files likely:
-
-```text
-src/workspaces.ts
-src/workspace-store.ts
-src/relay/workspace-router.ts
-src/server.ts
-```
+### Phase 3: Conversation binding and workspace routing
 
 Work:
 
 ```text
-open_workspace with localAgentId
+devspace_conversations table
+list_workspace_sessions
+open_workspace with devspaceConversationId/localAgentId
+resume_workspace_session
+close_workspace_session
 canonical path validation
 allowed root binding
 workspaceSessionId generation
@@ -2096,26 +1957,7 @@ sticky routing
 multi-agent selection errors
 ```
 
-Exit criteria:
-
-```text
-open_workspace returns stable session
-ambiguous agent selection returns candidates
-offline agent returns LOCAL_AGENT_OFFLINE
-all later tools require workspaceSessionId
-```
-
 ### Phase 4: Context ledger core
-
-Files likely:
-
-```text
-src/context/events.ts
-src/context/store.ts
-src/context/projection.ts
-src/db/schema.ts
-src/server.ts
-```
 
 Work:
 
@@ -2127,25 +1969,10 @@ record_context_note
 get_workspace_context
 projection modes
 source-labeled output
-```
-
-Exit criteria:
-
-```text
-workspace actions record context events
-resume mode returns useful project/task summary
-context is isolated per user/session
+conversation-scoped context
 ```
 
 ### Phase 5: Context compaction
-
-Files likely:
-
-```text
-src/context/compaction.ts
-src/context/summary-validation.ts
-src/server.ts
-```
 
 Work:
 
@@ -2158,24 +1985,7 @@ pinned fact preservation
 compaction recommendation
 ```
 
-Exit criteria:
-
-```text
-ChatGPT can compact local context through MCP
-summary cannot omit changed files silently
-future turn can resume from summary
-```
-
 ### Phase 6: Runtime event store and UI protocol
-
-Files likely:
-
-```text
-src/runtime/events.ts
-src/runtime/event-store.ts
-src/ui/events.ts
-src/server.ts
-```
 
 Work:
 
@@ -2188,24 +1998,7 @@ WebSocket or SSE stream for local UI
 MCP widget payload alignment
 ```
 
-Exit criteria:
-
-```text
-tool runs emit structured events
-UI can replay recent session state
-MCP and UI share same event source
-```
-
 ### Phase 7: Tool runtime bus
-
-Files likely:
-
-```text
-src/runtime/tool-runtime-bus.ts
-src/runtime/result.ts
-src/policy/tool-policy.ts
-src/server.ts
-```
 
 Work:
 
@@ -2219,24 +2012,7 @@ emit UI events
 normalize errors
 ```
 
-Exit criteria:
-
-```text
-read/search/write/shell/git tools all pass through runtime bus
-no direct risky action bypasses policy hooks
-```
-
 ### Phase 8: Policy and approvals
-
-Files likely:
-
-```text
-src/policy/command-policy.ts
-src/policy/path-policy.ts
-src/policy/approval-store.ts
-src/policy/rules.ts
-src/server.ts
-```
 
 Work:
 
@@ -2251,26 +2027,7 @@ approve once/session
 policy rule amendments
 ```
 
-Exit criteria:
-
-```text
-dangerous commands blocked or require approval
-network commands require approval
-sensitive paths denied
-approval cache scoped per user/session
-```
-
 ### Phase 9: Patch-first editing
-
-Files likely:
-
-```text
-src/patch/parser.ts
-src/patch/apply-patch.ts
-src/patch/safety.ts
-src/patch/delta.ts
-src/server.ts
-```
 
 Work:
 
@@ -2284,25 +2041,7 @@ context events
 show_changes integration
 ```
 
-Exit criteria:
-
-```text
-normal edits use apply_patch
-patches outside workspace rejected
-diff appears after patch
-rollback metadata is available
-```
-
 ### Phase 10: Command execution profiles
-
-Files likely:
-
-```text
-src/commands/run-check.ts
-src/commands/run-command.ts
-src/commands/process-manager.ts
-src/policy/command-policy.ts
-```
 
 Work:
 
@@ -2318,25 +2057,7 @@ stdout/stderr stream events
 exit classification
 ```
 
-Exit criteria:
-
-```text
-tests/builds can run safely
-long output is capped and summarized
-commands can be cancelled
-policy decisions are visible
-```
-
 ### Phase 11: Diff and rollback
-
-Files likely:
-
-```text
-src/review-checkpoints.ts
-src/diff/*
-src/rollback/*
-src/git.ts
-```
 
 Work:
 
@@ -2350,25 +2071,22 @@ rollback managed worktree
 mark reviewed
 ```
 
-Exit criteria:
+### Phase 12: Workspace Agents optional automation integration
+
+Work:
 
 ```text
-every write has reviewable diff
-every patch has rollback point when possible
-rollback records context event
+workspace_agent_channels table
+workspace_agent_trigger_events table
+secrets manager token reference
+trigger workspace agent helper
+conversation_key generator
+idempotency key support
+trigger audit log
+clear documentation that accepted trigger does not return agent answer
 ```
 
-### Phase 12: Multimodal local asset gateway
-
-Files likely:
-
-```text
-src/assets/inspect.ts
-src/assets/extract-text.ts
-src/assets/preview.ts
-src/assets/index.ts
-src/server.ts
-```
+### Phase 13: Multimodal local asset gateway
 
 Work:
 
@@ -2382,55 +2100,24 @@ bounded extraction
 source-labeled asset facts
 ```
 
-Exit criteria:
-
-```text
-images/PDFs/docs/spreadsheets can be inspected safely
-model receives compact facts, not raw unbounded binary
-asset facts can be pinned into context
-```
-
-### Phase 13: Graphical workbench
-
-Files likely:
-
-```text
-src/ui/*
-widgets/*
-app/*
-```
+### Phase 14: Graphical workbench
 
 Work:
 
 ```text
 workbench shell
 task thread
+conversation/session picker
 context panel
 diff panel
 approval queue
 run output panel
 asset preview panel
+Workspace Agent trigger log panel
 settings panel
 ```
 
-Exit criteria:
-
-```text
-user can see what ChatGPT is doing locally
-user can approve/deny risky actions
-user can inspect memory/diff/runs/assets
-```
-
-### Phase 14: Workflow packs and hooks
-
-Files likely:
-
-```text
-src/hooks/*
-src/workflows/*
-src/skills.ts
-src/workspaces.ts
-```
+### Phase 15: Workflow packs and hooks
 
 Work:
 
@@ -2444,67 +2131,49 @@ commit-workflow pack
 hierarchical AGENTS.md loading
 ```
 
-Exit criteria:
-
-```text
-project instructions are loaded by hierarchy
-workflow packs are discoverable
-hooks can warn/block/record around tools
-```
-
-### Phase 15: Evaluation and hardening
-
-Files likely:
-
-```text
-test/evals/*
-test/fixtures/*
-docs/security.md
-```
+### Phase 16: Evaluation and hardening
 
 Work:
 
 ```text
 replayable local-agent scenarios
 multi-user isolation tests
+multi-conversation isolation tests
 context resume tests
 patch safety tests
 command policy tests
 asset extraction tests
 relay timeout tests
+Workspace Agent trigger idempotency tests
 ```
 
-Exit criteria:
-
-```text
-regression suite proves isolation, memory, safety, patching, and resume behavior
-```
-
-## 14. Recommended PR Sequence
+## 16. Recommended PR Sequence
 
 ```text
 PR 1: auth provider integration + protected MCP resource + Postgres boundary
 PR 2: local agent registration + outbound relay ping
-PR 3: open_workspace routing through relay
-PR 4: context ledger core + get_workspace_context
-PR 5: context compaction tools + summary validation
-PR 6: runtime event store + UI event protocol
-PR 7: tool runtime bus wrapping existing tools
-PR 8: policy engine + approval store
-PR 9: apply_patch tool + patch safety
-PR 10: run_check/run_command with caps/cancel
-PR 11: diff/rollback expansion
-PR 12: multimodal asset tools
-PR 13: graphical workbench MVP
-PR 14: hooks/workflow packs
-PR 15: eval suite and hardening
+PR 3: conversation binding + open_workspace routing through relay
+PR 4: list/resume/close workspace sessions
+PR 5: context ledger core + get_workspace_context
+PR 6: context compaction tools + summary validation
+PR 7: runtime event store + UI event protocol
+PR 8: tool runtime bus wrapping existing tools
+PR 9: policy engine + approval store
+PR 10: apply_patch tool + patch safety
+PR 11: run_check/run_command with caps/cancel
+PR 12: diff/rollback expansion
+PR 13: optional Workspace Agents trigger integration
+PR 14: multimodal asset tools
+PR 15: graphical workbench MVP
+PR 16: hooks/workflow packs
+PR 17: eval suite and hardening
 ```
 
 Do not start with the graphical UI first. The UI should render runtime events; it should not invent state by scraping logs.
 
-## 15. End-To-End User Flows
+## 17. End-To-End User Flows
 
-### 15.1 First user setup
+### 17.1 First user setup
 
 ```text
 1. User adds shared GPT in ChatGPT.
@@ -2516,11 +2185,11 @@ Do not start with the graphical UI first. The UI should render runtime events; i
 7. Local Agent registers and connects outbound.
 8. ChatGPT calls list_local_agents.
 9. ChatGPT calls open_workspace.
-10. DevSpace returns workspaceSessionId/contextWindowId.
+10. DevSpace returns devspaceConversationId/workspaceSessionId/contextWindowId.
 11. User starts local coding task.
 ```
 
-### 15.2 Normal coding task
+### 17.2 Normal coding task
 
 ```text
 1. get_workspace_context
@@ -2533,38 +2202,40 @@ Do not start with the graphical UI first. The UI should render runtime events; i
 8. save_context_summary
 ```
 
-### 15.3 Resume next day
+### 17.3 Resume next day
 
 ```text
 1. User says: continue yesterday's DevSpace MCP refactor.
-2. ChatGPT calls list workspace sessions or get_workspace_context with resume mode.
-3. DevSpace returns goal, summary, decisions, touched files, last tests, risks, next steps.
-4. ChatGPT continues without rereading the whole repo.
+2. ChatGPT calls list_workspace_sessions.
+3. DevSpace returns candidate devspaceConversationId/workspaceSessionId rows.
+4. ChatGPT asks user to pick if ambiguous.
+5. ChatGPT calls resume_workspace_session.
+6. DevSpace returns goal, summary, decisions, touched files, last tests, risks, next steps.
+7. ChatGPT continues without rereading the whole repo.
 ```
 
-### 15.4 Multi-agent ambiguity
+### 17.4 Multiple web chats same workspace
 
 ```text
-1. User has laptop and desktop agents online.
-2. ChatGPT calls open_workspace without localAgentId.
-3. DevSpace returns LOCAL_AGENT_SELECTION_REQUIRED.
-4. ChatGPT asks user which machine.
-5. User chooses.
-6. open_workspace succeeds.
+1. User opens Chat A for feature work.
+2. open_workspace creates conversation A and context window A.
+3. User opens Chat B for code review on same root.
+4. open_workspace with different taskGoal creates conversation B and context window B.
+5. Both share same local agent/root but maintain separate task memory and approvals unless explicitly scoped wider.
 ```
 
-### 15.5 Risky command approval
+### 17.5 Workspace Agent backend trigger
 
 ```text
-1. ChatGPT calls run_command for network install or destructive command.
-2. Policy engine classifies risk.
-3. Approval request is created.
-4. UI and MCP result show approval required.
-5. User approves once/session or denies.
-6. Decision is scoped to user/session and recorded.
+1. CI failure event arrives in DevSpace backend.
+2. DevSpace computes conversation_key for tenant/user/workspace/task.
+3. DevSpace sends trigger to OpenAI Workspace Agents API with input and Idempotency-Key.
+4. OpenAI returns 202 Accepted.
+5. DevSpace records trigger event.
+6. DevSpace does not assume an agent answer is retrievable through the trigger API.
 ```
 
-## 16. Acceptance Criteria
+## 18. Acceptance Criteria
 
 The system is successful when:
 
@@ -2575,6 +2246,8 @@ production cloud mode uses Postgres
 SQLite is limited to dev/test/local demo mode
 user auth uses OIDC/OAuth provider instead of custom password storage
 user A can never access user B's files, context, approvals, or local agents
+same user can run multiple isolated web conversations against the same workspace
+ChatGPT can list/resume/close DevSpace workspace sessions
 ChatGPT can open a local workspace through MCP
 ChatGPT can retrieve compact workspace context
 ChatGPT can patch local files without invoking Codex CLI
@@ -2582,34 +2255,13 @@ ChatGPT can run tests/checks with output caps and cancellation
 user can review diffs and rollback changes
 context survives across turns and future sessions
 compaction preserves important state
+Workspace Agents API is used only for optional async backend triggers unless future response retrieval changes the product boundary
 multimodal assets can be inspected locally and summarized safely
-local UI shows memory, runs, approvals, diffs, and assets
+local UI shows memory, runs, approvals, diffs, assets, and conversation bindings
 all risky actions are auditable
 ```
 
-A concrete target prompt should work:
-
-```text
-Open ~/code/my-api on my MacBook, remember the goal, read AGENTS.md,
-inspect the error handling path, make the smallest patch, run tests,
-show me the diff, and keep enough context so we can continue tomorrow.
-```
-
-Expected tool path:
-
-```text
-list_local_agents
-open_workspace
-get_workspace_context
-read_file / search_workspace
-apply_patch
-run_check
-show_changes
-prepare_context_compaction
-save_context_summary
-```
-
-## 17. Current DevSpace Baseline
+## 19. Current DevSpace Baseline
 
 Observed from `chen362/devspace`:
 
@@ -2639,12 +2291,13 @@ src/db/client.ts and src/db/schema.ts
   current state is SQLite-first and must be abstracted before production multi-user cloud relay
 ```
 
-DevSpace already has a strong MCP shell. The missing layers are:
+Missing layers:
 
 ```text
 OIDC/OAuth provider integration
 Postgres production storage
 multi-user cloud relay
+web conversation binding
 per-user local agent routing
 context ledger
 compaction
@@ -2653,11 +2306,12 @@ tool runtime bus
 policy/approval engine
 patch-first edit engine
 bounded command runtime
+optional Workspace Agents trigger integration
 multimodal asset gateway
 local workbench UI
 ```
 
-## 18. Source Notes
+## 20. Source Notes
 
 DevSpace source files reviewed:
 
@@ -2719,10 +2373,15 @@ plugins/security-guidance/README.md
 plugins/plugin-dev/README.md
 ```
 
-OpenAI public docs consulted for remote MCP/OAuth/tunnel direction:
+OpenAI public docs consulted:
 
 ```text
-https://developers.openai.com/api/docs/mcp
-https://developers.openai.com/apps-sdk/build/auth
-https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
+Remote MCP / Apps auth:
+  https://developers.openai.com/api/docs/mcp
+  https://developers.openai.com/apps-sdk/build/auth
+  https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
+
+Workspace Agents:
+  https://developers.openai.com/workspace-agents/trigger-runs
+  https://developers.openai.com/workspace-agents/authentication
 ```
