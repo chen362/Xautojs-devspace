@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
+import { registerAutomationApiRoutes } from "./automation-api.js";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { postgresConnectionSummary } from "./db/postgres.js";
 import type { PostgresDatabaseConfig } from "./db/types.js";
@@ -253,6 +254,7 @@ async function serve(): Promise<void> {
   const { createServer } = await import("./server.js");
   const runningServer = createServer(config);
   const { app } = runningServer;
+  const automationRoutes = registerAutomationApiRoutes(app, config);
   app.get("/readyz", async (_req, res) => {
     const report = await buildReadinessReport(config);
     res.status(report.ok ? 200 : 503).json(report);
@@ -273,7 +275,10 @@ async function serve(): Promise<void> {
 
   const shutdown = () => {
     httpServer.close(() => {
-      void runningServer.close().finally(() => process.exit(0));
+      void Promise.all([
+        automationRoutes.close(),
+        runningServer.close(),
+      ]).finally(() => process.exit(0));
     });
   };
   process.once("SIGINT", shutdown);

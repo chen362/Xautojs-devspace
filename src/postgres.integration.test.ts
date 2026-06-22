@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { automationSourceTokenHash } from "./automation-api.js";
 import { createOidcIdentity } from "./identity.js";
 import { PostgresAutomationStore } from "./postgres-automation-store.js";
 import { PostgresWorkspaceStore } from "./postgres-workspace-store.js";
@@ -136,20 +137,37 @@ async function runPostgresIntegrationTest(
     assert.match(loadedAgentFiles[0]?.contentHash ?? "", /^[a-f0-9]{64}$/);
 
     const sourceId = `auto_src_it_${randomUUID()}`;
+    const sourceTokenHash = automationSourceTokenHash("integration-source-token");
     const source = await automationStore.createSource({
       owner,
       id: sourceId,
       kind: "api_trigger",
       name: "integration trigger",
       secretRef: "secret:automation/integration",
+      tokenHash: sourceTokenHash,
       config: { triggerId: "integration" },
     });
     assert.equal(source.id, sourceId);
     assert.equal(source.tenantId, owner.tenantId);
     assert.equal(source.userId, owner.userId);
     assert.equal(source.kind, "api_trigger");
+    assert.equal(source.tokenHash, sourceTokenHash);
     assert.deepEqual(source.config, { triggerId: "integration" });
     assert.equal(await automationStore.getSource(sourceId, otherOwner), undefined);
+    assert.equal(
+      (await automationStore.getApiTriggerSourceForToken({
+        triggerId: sourceId,
+        tokenHash: sourceTokenHash,
+      }))?.id,
+      sourceId,
+    );
+    assert.equal(
+      await automationStore.getApiTriggerSourceForToken({
+        triggerId: sourceId,
+        tokenHash: automationSourceTokenHash("wrong-token"),
+      }),
+      undefined,
+    );
 
     const eventId = `auto_evt_it_${randomUUID()}`;
     const recorded = await automationStore.recordEvent({
@@ -215,6 +233,8 @@ async function runPostgresIntegrationTest(
     assert.deepEqual(run.metadata, { queue: "default" });
     assert.equal(await automationStore.getRun(runId, otherOwner), undefined);
     assert.equal((await automationStore.getRun(runId, owner))?.id, runId);
+    assert.equal(await automationStore.getRunForEvent(eventId, otherOwner), undefined);
+    assert.equal((await automationStore.getRunForEvent(eventId, owner))?.id, runId);
 
     assert.equal(await store.getSession(sessionId, otherOwner), undefined);
     assert.deepEqual(await store.getLoadedAgentFiles(sessionId, otherOwner), []);

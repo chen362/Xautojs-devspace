@@ -59,6 +59,7 @@ export interface AutomationSource {
   name: string;
   status: AutomationSourceStatus;
   secretRef?: string;
+  tokenHash?: string;
   config: JsonObject;
   createdAt: string;
   updatedAt: string;
@@ -107,6 +108,7 @@ interface AutomationSourceRow {
   name: string;
   status: string;
   secret_ref: string | null;
+  token_hash: string | null;
   config: unknown;
   created_at: string | Date;
   updated_at: string | Date;
@@ -154,6 +156,7 @@ export interface CreateAutomationSourceInput {
   name: string;
   status?: AutomationSourceStatus;
   secretRef?: string;
+  tokenHash?: string;
   config?: JsonObject;
 }
 
@@ -240,6 +243,7 @@ export class PostgresAutomationStore {
           name,
           status,
           secret_ref,
+          token_hash,
           config,
           created_at,
           updated_at
@@ -251,9 +255,10 @@ export class PostgresAutomationStore {
           $5,
           $6,
           $7,
-          $8::jsonb,
-          $9::timestamptz,
-          $10::timestamptz
+          $8,
+          $9::jsonb,
+          $10::timestamptz,
+          $11::timestamptz
         )
         returning
           id,
@@ -263,6 +268,7 @@ export class PostgresAutomationStore {
           name,
           status,
           secret_ref,
+          token_hash,
           config,
           created_at,
           updated_at
@@ -275,6 +281,7 @@ export class PostgresAutomationStore {
         input.name,
         input.status ?? "enabled",
         input.secretRef ?? null,
+        input.tokenHash ?? null,
         stringifyJson(input.config ?? {}),
         now,
         now,
@@ -295,6 +302,7 @@ export class PostgresAutomationStore {
           name,
           status,
           secret_ref,
+          token_hash,
           config,
           created_at,
           updated_at
@@ -305,6 +313,37 @@ export class PostgresAutomationStore {
         limit 1
       `,
       values: [id, owner.tenantId, owner.userId],
+    });
+
+    const row = result.rows[0];
+    return row ? rowToAutomationSource(row) : undefined;
+  }
+
+  async getApiTriggerSourceForToken(input: {
+    triggerId: string;
+    tokenHash: string;
+  }): Promise<AutomationSource | undefined> {
+    const result = await this.query<AutomationSourceRow>({
+      text: `
+        select
+          id,
+          tenant_id,
+          user_id,
+          kind,
+          name,
+          status,
+          secret_ref,
+          token_hash,
+          config,
+          created_at,
+          updated_at
+        from automation_sources
+        where id = $1
+          and token_hash = $2
+          and kind = 'api_trigger'
+        limit 1
+      `,
+      values: [input.triggerId, input.tokenHash],
     });
 
     const row = result.rows[0];
@@ -557,6 +596,39 @@ export class PostgresAutomationStore {
     return row ? rowToAutomationRun(row) : undefined;
   }
 
+  async getRunForEvent(eventId: string, owner: WorkspaceIdentity): Promise<AutomationRun | undefined> {
+    const result = await this.query<AutomationRunRow>({
+      text: `
+        select
+          id,
+          tenant_id,
+          user_id,
+          event_id,
+          status,
+          workspace_session_id,
+          devspace_conversation_id,
+          attempt,
+          metadata,
+          result,
+          error_code,
+          error_message,
+          created_at,
+          started_at,
+          finished_at
+        from automation_runs
+        where event_id = $1
+          and tenant_id = $2
+          and user_id = $3
+        order by created_at asc
+        limit 1
+      `,
+      values: [eventId, owner.tenantId, owner.userId],
+    });
+
+    const row = result.rows[0];
+    return row ? rowToAutomationRun(row) : undefined;
+  }
+
   async close(): Promise<void> {
     const poolPromise = this.poolPromise;
     this.poolPromise = undefined;
@@ -650,6 +722,7 @@ function rowToAutomationSource(row: AutomationSourceRow): AutomationSource {
     name: row.name,
     status: automationSourceStatus(row.status),
     secretRef: row.secret_ref ?? undefined,
+    tokenHash: row.token_hash ?? undefined,
     config: jsonObject(row.config),
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
