@@ -33,8 +33,8 @@ const issuerScoped = createOidcIdentity({
   subject: "user-123",
   scopes: ["devspace"],
 });
-assert.equal(issuerScoped.tenantId, "https://single-tenant.example.com#https://single-tenant.example.com");
-assert.equal(issuerScoped.userId, "https://single-tenant.example.com#https://single-tenant.example.com#user-123");
+assert.equal(issuerScoped.tenantId, "https://single-tenant.example.com");
+assert.equal(issuerScoped.userId, "https://single-tenant.example.com#user-123");
 
 const authWithIdentity: DevSpaceAuthInfo = {
   token: "token",
