@@ -42,6 +42,8 @@ export interface Workspace {
   worktree?: WorkspaceWorktree;
   skills: LoadedSkills["skills"];
   skillDiagnostics: LoadedSkills["diagnostics"];
+  agentsFiles: LoadedAgentsFile[];
+  availableAgentsFiles: AvailableAgentsFile[];
   activatedSkillDirs: Set<string>;
 }
 
@@ -142,6 +144,8 @@ export class WorkspaceRegistry {
     }
 
     const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
+    const agentsFiles = await this.loadRestoredAgentsFiles(session.id, root);
+    const availableAgentsFiles = await this.findAvailableAgentsFiles(root, agentsFiles);
     const restoredWorkspace: Workspace = {
       id: session.id,
       owner: this.owner,
@@ -160,6 +164,8 @@ export class WorkspaceRegistry {
             }
           : undefined,
       ...this.loadSkillsForWorkspace(root),
+      agentsFiles,
+      availableAgentsFiles,
       activatedSkillDirs: new Set(),
     };
     await this.store?.touchSession(workspaceId, this.owner);
@@ -206,6 +212,8 @@ export class WorkspaceRegistry {
     sourceRoot?: string;
     worktree?: WorkspaceWorktree;
   }): Promise<WorkspaceContext> {
+    const agentsFiles = this.loadInitialAgentsFiles(input.root);
+    const availableAgentsFiles = await this.findAvailableAgentsFiles(input.root, agentsFiles);
     const workspace: Workspace = {
       id: `ws_${randomUUID()}`,
       owner: this.owner,
@@ -214,6 +222,8 @@ export class WorkspaceRegistry {
       sourceRoot: input.sourceRoot,
       worktree: input.worktree,
       ...this.loadSkillsForWorkspace(input.root),
+      agentsFiles,
+      availableAgentsFiles,
       activatedSkillDirs: new Set(),
     };
 
@@ -227,11 +237,29 @@ export class WorkspaceRegistry {
       baseSha: workspace.worktree?.baseSha,
       managed: workspace.worktree?.managed,
     });
+    await this.store?.saveLoadedAgentFiles({
+      owner: this.owner,
+      workspaceSessionId: workspace.id,
+      files: agentsFiles,
+    });
     this.workspaces.set(workspace.id, workspace);
-    const agentsFiles = this.loadInitialAgentsFiles(workspace.root);
-    const availableAgentsFiles = await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
 
     return { workspace, agentsFiles, availableAgentsFiles };
+  }
+
+  private async loadRestoredAgentsFiles(
+    workspaceSessionId: string,
+    root: string,
+  ): Promise<LoadedAgentsFile[]> {
+    const storedFiles = await this.store?.getLoadedAgentFiles(workspaceSessionId, this.owner);
+    if (storedFiles && storedFiles.length > 0) {
+      return storedFiles.map((file) => ({
+        path: file.path,
+        content: file.content,
+      }));
+    }
+
+    return this.loadInitialAgentsFiles(root);
   }
 
   private loadSkillsForWorkspace(root: string): Pick<Workspace, "skills" | "skillDiagnostics"> {
