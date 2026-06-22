@@ -176,6 +176,7 @@ devspace doctor
 - [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
 - [Configuration Reference](docs/configuration.md)
 - [Production Smoke Check](docs/production-smoke.md)
+- [DevSpace Automation Ingress Plan](docs/devspace-automation-ingress-plan.md)
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)
 
