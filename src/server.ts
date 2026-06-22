@@ -690,7 +690,7 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.getWorkspace(workspaceId);
       const readPath = workspaces.resolveReadPath(workspace, input.path);
       const response = await readFileTool(
         { ...input, path: readPath.absolutePath },
@@ -764,7 +764,7 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.getWorkspace(workspaceId);
       workspaces.resolvePath(workspace, input.path);
       const response = await writeFileTool(input, {
         cwd: workspace.root,
@@ -851,7 +851,7 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.getWorkspace(workspaceId);
       workspaces.resolvePath(workspace, input.path);
       const response = await editFileTool(input, {
         cwd: workspace.root,
@@ -933,7 +933,7 @@ function createMcpServer(
       },
       async ({ workspaceId, since, markReviewed }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.getWorkspace(workspaceId);
         const review = await reviewCheckpoints.reviewChanges({
           workspaceId,
           root: workspace.root,
@@ -997,7 +997,7 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.getWorkspace(workspaceId);
         if (input.path) workspaces.resolvePath(workspace, input.path);
         const response = await grepFilesTool(input, {
           cwd: workspace.root,
@@ -1067,7 +1067,7 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.getWorkspace(workspaceId);
         if (input.path) workspaces.resolvePath(workspace, input.path);
         const response = await findFilesTool(input, {
           cwd: workspace.root,
@@ -1137,7 +1137,7 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = await workspaces.getWorkspace(workspaceId);
         workspaces.resolvePath(workspace, input.path);
         const response = await listDirectoryTool(input, {
           cwd: workspace.root,
@@ -1217,7 +1217,7 @@ function createMcpServer(
     },
     async ({ workspaceId, workingDirectory, ...input }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = await workspaces.getWorkspace(workspaceId);
       const cwd = workspaces.resolveWorkingDirectory(
         workspace,
         workingDirectory,
