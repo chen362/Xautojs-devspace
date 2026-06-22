@@ -48,6 +48,9 @@ jobs:
       - name: Doctor
         run: node dist/cli.js doctor
 
+      - name: Doctor JSON
+        run: node dist/cli.js doctor --json
+
   postgres-integration:
     name: Postgres integration (ubuntu-latest)
     runs-on: ubuntu-latest
@@ -70,6 +73,7 @@ jobs:
       DEVSPACE_ALLOWED_ROOTS: ${{ github.workspace }}
       DEVSPACE_OAUTH_OWNER_TOKEN: ci-owner-token-that-is-long-enough
       DEVSPACE_PUBLIC_BASE_URL: http://127.0.0.1:7676
+      DEVSPACE_DATABASE_PROVIDER: postgres
       DEVSPACE_DATABASE_URL: postgres://devspace:secret@127.0.0.1:5432/devspace_test
       DEVSPACE_POSTGRES_SSL_MODE: disable
 
@@ -88,6 +92,9 @@ jobs:
 
       - name: Install Postgres peer dependency
         run: npm install --no-save --no-package-lock pg
+
+      - name: Run Postgres db status JSON
+        run: npx tsx src/cli.ts db status --json
 
       - name: Run Postgres integration tests
         run: npm run test:postgres
