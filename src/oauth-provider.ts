@@ -10,13 +10,25 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+
+export interface OidcOAuthConfig {
+  issuer: string;
+  audience: string;
+  jwksUri: string;
+  userClaim: string;
+  tenantClaim?: string;
+  clockToleranceSeconds: number;
+}
 
 export interface OAuthConfig {
-  ownerToken: string;
+  mode: "owner-token" | "oidc";
+  ownerToken?: string;
   accessTokenTtlSeconds: number;
   refreshTokenTtlSeconds: number;
   scopes: string[];
   allowedRedirectHosts: string[];
+  oidc?: OidcOAuthConfig;
 }
 
 interface AuthorizationCodeRecord {
@@ -174,6 +186,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   private readonly accessTokens = new Map<string, AccessTokenRecord>();
   private readonly refreshTokens = new Map<string, RefreshTokenRecord>();
   private readonly resourceServerUrl: URL;
+  private readonly oidcJwks?: ReturnType<typeof createRemoteJWKSet>;
 
   constructor(
     private readonly config: OAuthConfig,
@@ -181,6 +194,9 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   ) {
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
     this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts);
+    this.oidcJwks = config.mode === "oidc" && config.oidc
+      ? createRemoteJWKSet(new URL(config.oidc.jwksUri))
+      : undefined;
   }
 
   async authorize(
@@ -188,6 +204,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
+    this.assertOwnerTokenMode();
     if (!params.resource || !checkResourceAllowed({ requestedResource: params.resource, configuredResource: this.resourceServerUrl })) {
       throw new InvalidRequestError("Invalid or missing OAuth resource");
     }
@@ -209,7 +226,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     }
 
     const providedToken = String(res.req.body?.owner_token ?? "");
-    if (!safeEquals(providedToken, this.config.ownerToken)) {
+    if (!safeEquals(providedToken, this.requiredOwnerToken())) {
       res.status(401).setHeader("Content-Type", "text/html; charset=utf-8");
       res.send(
         formHtml({
@@ -240,6 +257,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     client: OAuthClientInformationFull,
     authorizationCode: string,
   ): Promise<string> {
+    this.assertOwnerTokenMode();
     const record = this.validCodeRecord(client, authorizationCode);
     return record.params.codeChallenge;
   }
@@ -251,6 +269,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     redirectUri?: string,
     resource?: URL,
   ): Promise<OAuthTokens> {
+    this.assertOwnerTokenMode();
     const record = this.validCodeRecord(client, authorizationCode);
     if (redirectUri && redirectUri !== record.params.redirectUri) {
       throw new InvalidGrantError("redirect_uri does not match the authorization request");
@@ -269,6 +288,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     scopes?: string[],
     resource?: URL,
   ): Promise<OAuthTokens> {
+    this.assertOwnerTokenMode();
     const record = this.refreshTokens.get(hashToken(refreshToken));
     if (!record || record.clientId !== client.client_id || record.expiresAt < Math.floor(Date.now() / 1000)) {
       throw new InvalidGrantError("Invalid refresh token");
@@ -287,6 +307,10 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
+    if (this.config.mode === "oidc") {
+      return this.verifyOidcAccessToken(token);
+    }
+
     const record = this.accessTokens.get(hashToken(token));
     if (!record || record.expiresAt < Math.floor(Date.now() / 1000)) {
       throw new InvalidTokenError("Invalid or expired access token");
@@ -302,9 +326,47 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   }
 
   async revokeToken(_client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest): Promise<void> {
+    this.assertOwnerTokenMode();
     const hashed = hashToken(request.token);
     this.accessTokens.delete(hashed);
     this.refreshTokens.delete(hashed);
+  }
+
+  private async verifyOidcAccessToken(token: string): Promise<AuthInfo> {
+    const oidc = this.requiredOidcConfig();
+    const jwks = this.requiredOidcJwks();
+
+    try {
+      const { payload } = await jwtVerify(token, jwks, {
+        issuer: oidc.issuer,
+        audience: oidc.audience,
+        clockTolerance: oidc.clockToleranceSeconds,
+      });
+      const scopes = scopesFromPayload(payload);
+      const missingScopes = this.config.scopes.filter((scope) => !scopes.includes(scope));
+      if (missingScopes.length > 0) {
+        throw new InvalidTokenError(`Token is missing required scope: ${missingScopes.join(", ")}`);
+      }
+      if (!payload.exp) {
+        throw new InvalidTokenError("Token is missing exp claim");
+      }
+
+      const subject = claimAsString(payload, oidc.userClaim) ?? payload.sub;
+      if (!subject) {
+        throw new InvalidTokenError(`Token is missing user claim: ${oidc.userClaim}`);
+      }
+
+      return {
+        token,
+        clientId: claimAsString(payload, "client_id") ?? claimAsString(payload, "azp") ?? subject,
+        scopes,
+        expiresAt: payload.exp,
+        resource: this.resourceServerUrl,
+      };
+    } catch (error) {
+      if (error instanceof InvalidTokenError) throw error;
+      throw new InvalidTokenError(error instanceof Error ? error.message : "Invalid OIDC access token");
+    }
   }
 
   private validCodeRecord(
@@ -319,6 +381,7 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   }
 
   private issueTokens(clientId: string, scopes: string[], resource?: URL): OAuthTokens {
+    this.assertOwnerTokenMode();
     const now = Math.floor(Date.now() / 1000);
     const accessToken = randomToken();
     const refreshToken = randomToken();
@@ -348,6 +411,33 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       scope: scopes.join(" "),
     };
   }
+
+  private assertOwnerTokenMode(): void {
+    if (this.config.mode !== "owner-token") {
+      throw new InvalidRequestError("Local owner-token OAuth flow is disabled in OIDC auth mode");
+    }
+  }
+
+  private requiredOwnerToken(): string {
+    if (!this.config.ownerToken) {
+      throw new InvalidRequestError("Owner token is not configured");
+    }
+    return this.config.ownerToken;
+  }
+
+  private requiredOidcConfig(): OidcOAuthConfig {
+    if (this.config.mode !== "oidc" || !this.config.oidc) {
+      throw new InvalidTokenError("OIDC auth is not configured");
+    }
+    return this.config.oidc;
+  }
+
+  private requiredOidcJwks(): ReturnType<typeof createRemoteJWKSet> {
+    if (!this.oidcJwks) {
+      throw new InvalidTokenError("OIDC JWKS is not configured");
+    }
+    return this.oidcJwks;
+  }
 }
 
 function authorizationFormFields(
@@ -364,6 +454,28 @@ function authorizationFormFields(
     state: params.state,
     resource: params.resource?.href,
   };
+}
+
+function scopesFromPayload(payload: JWTPayload): string[] {
+  const scopeClaim = payload.scope;
+  if (typeof scopeClaim === "string") {
+    return scopeClaim.split(/\s+/).map((scope) => scope.trim()).filter(Boolean);
+  }
+
+  const scpClaim = payload.scp;
+  if (Array.isArray(scpClaim)) {
+    return scpClaim.filter((scope): scope is string => typeof scope === "string");
+  }
+  if (typeof scpClaim === "string") {
+    return scpClaim.split(/\s+/).map((scope) => scope.trim()).filter(Boolean);
+  }
+
+  return [];
+}
+
+function claimAsString(payload: JWTPayload, claim: string): string | undefined {
+  const value = payload[claim];
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function hashToken(token: string): string {
