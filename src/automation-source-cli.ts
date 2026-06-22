@@ -17,6 +17,21 @@ import {
 const SOURCE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 const MIN_SOURCE_TOKEN_LENGTH = 24;
 const MAX_SOURCE_TOKEN_LENGTH = 4096;
+const COMMON_FLAGS = new Set([
+  "json",
+  "local-owner",
+  "tenant-id",
+  "user-id",
+  "oidc-issuer",
+  "oidc-subject",
+  "oidc-tenant",
+  "oidc-client-id",
+]);
+const ACTION_FLAGS: Record<AutomationSourceAction, Set<string>> = {
+  create: new Set(["id", "name", "kind", "status", "secret-ref", "config-json", "token"]),
+  list: new Set(["kind", "status"]),
+  "rotate-token": new Set(["id", "token"]),
+};
 
 type AutomationSourceAction = "create" | "list" | "rotate-token";
 
@@ -102,6 +117,7 @@ async function runAutomationSourceAction(
   if (parsed.positionals.length > 0) {
     throw new Error(`Unexpected automation source argument: ${parsed.positionals.join(" ")}`);
   }
+  assertAllowedFlags(action, parsed.flags);
 
   switch (action) {
     case "create":
@@ -249,9 +265,22 @@ function parseArgs(args: string[]): ParsedArgs {
   return { positionals, flags };
 }
 
+function assertAllowedFlags(action: AutomationSourceAction, flags: Map<string, FlagValue>): void {
+  const actionFlags = ACTION_FLAGS[action];
+  for (const flag of flags.keys()) {
+    if (!COMMON_FLAGS.has(flag) && !actionFlags.has(flag)) {
+      throw new Error(`Unexpected automation source option for ${action}: --${flag}`);
+    }
+  }
+}
+
 function resolveOwner(config: ServerConfig, flags: Map<string, FlagValue>): WorkspaceIdentity {
   const hasExactOwner = flags.has("tenant-id") || flags.has("user-id");
-  const hasOidcOwner = flags.has("oidc-issuer") || flags.has("oidc-subject") || flags.has("oidc-tenant");
+  const hasOidcOwner =
+    flags.has("oidc-issuer") ||
+    flags.has("oidc-subject") ||
+    flags.has("oidc-tenant") ||
+    flags.has("oidc-client-id");
   const localOwner = flags.has("local-owner");
 
   if ([hasExactOwner, hasOidcOwner, localOwner].filter(Boolean).length > 1) {
