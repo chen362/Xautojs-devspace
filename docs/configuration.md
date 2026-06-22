@@ -24,6 +24,8 @@ npx @waishnav/devspace serve
 npx @waishnav/devspace doctor
 npx @waishnav/devspace config get
 npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
+npx @waishnav/devspace db status
+npx @waishnav/devspace db migrate
 ```
 
 ## Core Environment Variables
@@ -42,9 +44,8 @@ npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
 ## Database
 
 SQLite is the default local database provider. Postgres mode is intended for
-production deployments and requires the schema in
-`migrations/postgres/0001_workspace_sessions.sql` to be applied before serving
-traffic.
+production deployments and requires the schema in `migrations/postgres` to be
+applied before serving traffic.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -58,6 +59,24 @@ runtime environment as DevSpace when enabling Postgres:
 ```bash
 npm install pg
 ```
+
+The migration runner stores applied versions in `devspace_schema_migrations`.
+Use `status` to inspect pending or modified migrations, and `migrate` to apply
+pending files in lexical order:
+
+```bash
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+npx @waishnav/devspace db status
+
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+npx @waishnav/devspace db migrate
+```
+
+`devspace serve` checks the Postgres schema before starting and exits with a
+migration hint if the schema version table is missing, a migration is pending,
+or an applied migration checksum no longer matches the packaged SQL file.
 
 Example:
 
