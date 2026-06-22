@@ -3,17 +3,21 @@ import { join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
 import type { LoggingConfig, LogFormat, LogLevel } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
+import type { DatabaseConfig, DatabaseProvider, DeploymentMode, PostgresSslMode } from "./db/types.js";
 import { loadDevspaceFiles } from "./user-config.js";
 
 export type ToolNamingMode = "legacy" | "short";
 export type WidgetMode = "off" | "changes" | "full";
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+const DEFAULT_OIDC_CLOCK_TOLERANCE_SECONDS = 30;
 
 export interface ServerConfig {
   host: string;
   port: number;
+  deploymentMode: DeploymentMode;
   oauth: OAuthConfig;
+  database: DatabaseConfig;
   allowedRoots: string[];
   allowedHosts: string[];
   publicBaseUrl: string;
@@ -159,6 +163,34 @@ function parseWidgetMode(value: string | undefined): WidgetMode {
   throw new Error(`Invalid DEVSPACE_WIDGETS: ${value}`);
 }
 
+function parseDeploymentMode(value: string | undefined): DeploymentMode {
+  if (!value || value === "local") return "local";
+  if (value === "production") return "production";
+
+  throw new Error(`Invalid DEVSPACE_DEPLOYMENT_MODE: ${value}`);
+}
+
+function parseAuthMode(value: string | undefined): OAuthConfig["mode"] {
+  if (!value || value === "owner-token") return "owner-token";
+  if (value === "oidc") return "oidc";
+
+  throw new Error(`Invalid DEVSPACE_AUTH_MODE: ${value}`);
+}
+
+function parseDatabaseProvider(value: string | undefined): DatabaseProvider {
+  if (!value || value === "sqlite") return "sqlite";
+  if (value === "postgres") return "postgres";
+
+  throw new Error(`Invalid DEVSPACE_DATABASE_PROVIDER: ${value}`);
+}
+
+function parsePostgresSslMode(value: string | undefined): PostgresSslMode {
+  if (!value || value === "prefer") return "prefer";
+  if (value === "disable" || value === "require") return value;
+
+  throw new Error(`Invalid DEVSPACE_POSTGRES_SSL_MODE: ${value}`);
+}
+
 function parseRequiredSecret(value: string | undefined, name: string): string {
   const secret = value?.trim();
   if (!secret) {
@@ -170,9 +202,33 @@ function parseRequiredSecret(value: string | undefined, name: string): string {
   return secret;
 }
 
+function parseRequiredString(value: string | undefined, name: string): string {
+  const parsed = value?.trim();
+  if (!parsed) throw new Error(`${name} is required.`);
+  return parsed;
+}
+
+function parseUrlString(value: string | undefined, name: string): string {
+  const raw = parseRequiredString(value, name);
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = "";
+    parsed.search = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    throw new Error(`Invalid ${name}: ${raw}`);
+  }
+}
+
+function defaultJwksUri(issuer: string): string {
+  return new URL(".well-known/jwks.json", `${issuer}/`).toString();
+}
+
 function parseOAuthConfig(env: NodeJS.ProcessEnv, ownerToken: string | undefined): OAuthConfig {
-  return {
-    ownerToken: parseRequiredSecret(env.DEVSPACE_OAUTH_OWNER_TOKEN ?? ownerToken, "DEVSPACE_OAUTH_OWNER_TOKEN"),
+  const mode = parseAuthMode(env.DEVSPACE_AUTH_MODE);
+  const scopes = parseStringList(env.DEVSPACE_OAUTH_SCOPES ?? env.DEVSPACE_OIDC_SCOPES, ["devspace"]);
+  const common = {
+    mode,
     accessTokenTtlSeconds: parsePositiveInteger(
       env.DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS,
       DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS,
@@ -183,13 +239,68 @@ function parseOAuthConfig(env: NodeJS.ProcessEnv, ownerToken: string | undefined
       DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS,
       "DEVSPACE_OAUTH_REFRESH_TOKEN_TTL_SECONDS",
     ),
-    scopes: parseStringList(env.DEVSPACE_OAUTH_SCOPES, ["devspace"]),
+    scopes,
     allowedRedirectHosts: parseStringList(env.DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS, [
       "chatgpt.com",
       "localhost",
       "127.0.0.1",
     ]),
   };
+
+  if (mode === "oidc") {
+    const issuer = parseUrlString(env.DEVSPACE_OIDC_ISSUER, "DEVSPACE_OIDC_ISSUER");
+    return {
+      ...common,
+      mode,
+      oidc: {
+        issuer,
+        audience: parseRequiredString(env.DEVSPACE_OIDC_AUDIENCE, "DEVSPACE_OIDC_AUDIENCE"),
+        jwksUri: env.DEVSPACE_OIDC_JWKS_URI
+          ? parseUrlString(env.DEVSPACE_OIDC_JWKS_URI, "DEVSPACE_OIDC_JWKS_URI")
+          : defaultJwksUri(issuer),
+        userClaim: env.DEVSPACE_OIDC_USER_CLAIM?.trim() || "sub",
+        tenantClaim: env.DEVSPACE_OIDC_TENANT_CLAIM?.trim() || undefined,
+        clockToleranceSeconds: parsePositiveInteger(
+          env.DEVSPACE_OIDC_CLOCK_TOLERANCE_SECONDS,
+          DEFAULT_OIDC_CLOCK_TOLERANCE_SECONDS,
+          "DEVSPACE_OIDC_CLOCK_TOLERANCE_SECONDS",
+        ),
+      },
+    };
+  }
+
+  return {
+    ...common,
+    mode,
+    ownerToken: parseRequiredSecret(env.DEVSPACE_OAUTH_OWNER_TOKEN ?? ownerToken, "DEVSPACE_OAUTH_OWNER_TOKEN"),
+  };
+}
+
+function parseDatabaseConfig(env: NodeJS.ProcessEnv, stateDir: string): DatabaseConfig {
+  const provider = parseDatabaseProvider(env.DEVSPACE_DATABASE_PROVIDER);
+  if (provider === "postgres") {
+    return {
+      provider,
+      url: parseRequiredString(env.DEVSPACE_DATABASE_URL, "DEVSPACE_DATABASE_URL"),
+      sslMode: parsePostgresSslMode(env.DEVSPACE_POSTGRES_SSL_MODE),
+    };
+  }
+
+  return {
+    provider,
+    stateDir,
+    filePath: join(stateDir, "devspace.sqlite"),
+  };
+}
+
+function assertProductionConfig(config: Pick<ServerConfig, "deploymentMode" | "oauth" | "database">): void {
+  if (config.deploymentMode !== "production") return;
+  if (config.oauth.mode !== "oidc") {
+    throw new Error("DEVSPACE_DEPLOYMENT_MODE=production requires DEVSPACE_AUTH_MODE=oidc.");
+  }
+  if (config.database.provider !== "postgres") {
+    throw new Error("DEVSPACE_DEPLOYMENT_MODE=production requires DEVSPACE_DATABASE_PROVIDER=postgres.");
+  }
 }
 
 function defaultStateDir(): string {
@@ -219,24 +330,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     new URL(publicBaseUrl).hostname,
     ...(files.config.allowedHosts ?? []),
   ];
-
-  return {
+  const stateDir = resolve(expandHomePath(env.DEVSPACE_STATE_DIR ?? files.config.stateDir ?? defaultStateDir()));
+  const config: ServerConfig = {
     host,
     port,
+    deploymentMode: parseDeploymentMode(env.DEVSPACE_DEPLOYMENT_MODE),
     oauth: parseOAuthConfig(env, files.auth.ownerToken),
+    database: parseDatabaseConfig(env, stateDir),
     allowedRoots: parseAllowedRoots(env.DEVSPACE_ALLOWED_ROOTS ?? files.config.allowedRoots),
     allowedHosts: parseAllowedHosts(env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
     publicBaseUrl,
     minimalTools: parseMinimalTools(env),
     toolNaming: parseToolNaming(env.DEVSPACE_TOOL_NAMING),
     widgets: parseWidgetMode(env.DEVSPACE_WIDGETS),
-    stateDir: resolve(expandHomePath(env.DEVSPACE_STATE_DIR ?? files.config.stateDir ?? defaultStateDir())),
+    stateDir,
     worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
     skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
     skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
   };
+
+  assertProductionConfig(config);
+  return config;
 }
 
 function parsePublicBaseUrl(value: string): string {
