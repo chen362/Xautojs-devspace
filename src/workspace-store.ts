@@ -35,10 +35,10 @@ export interface WorkspaceStore {
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
-  }): WorkspaceSession;
-  getSession(id: string, owner: WorkspaceIdentity): WorkspaceSession | undefined;
-  touchSession(id: string, owner: WorkspaceIdentity): void;
-  close?(): void;
+  }): Promise<WorkspaceSession>;
+  getSession(id: string, owner: WorkspaceIdentity): Promise<WorkspaceSession | undefined>;
+  touchSession(id: string, owner: WorkspaceIdentity): Promise<void>;
+  close?(): Promise<void>;
 }
 
 export class SqliteWorkspaceStore implements WorkspaceStore {
@@ -49,7 +49,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.migrate();
   }
 
-  createSession(input: {
+  async createSession(input: {
     owner: WorkspaceIdentity;
     id: string;
     root: string;
@@ -58,7 +58,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
-  }): WorkspaceSession {
+  }): Promise<WorkspaceSession> {
     const now = new Date().toISOString();
     const session: WorkspaceSession = {
       id: input.id,
@@ -96,7 +96,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return session;
   }
 
-  getSession(id: string, owner: WorkspaceIdentity): WorkspaceSession | undefined {
+  async getSession(id: string, owner: WorkspaceIdentity): Promise<WorkspaceSession | undefined> {
     const row = this.database.db
       .select()
       .from(workspaceSessions)
@@ -106,7 +106,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return row ? rowToWorkspaceSession(row) : undefined;
   }
 
-  touchSession(id: string, owner: WorkspaceIdentity): void {
+  async touchSession(id: string, owner: WorkspaceIdentity): Promise<void> {
     this.database.db
       .update(workspaceSessions)
       .set({ lastUsedAt: new Date().toISOString() })
@@ -114,7 +114,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .run();
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.database.close();
   }
 
