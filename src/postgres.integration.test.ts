@@ -169,6 +169,41 @@ async function runPostgresIntegrationTest(
       undefined,
     );
 
+    const listedSources = await automationStore.listSources({ owner, kind: "api_trigger" });
+    assert.equal(listedSources.some((candidate) => candidate.id === sourceId), true);
+    assert.equal(await automationStore.listSources({ owner: otherOwner, kind: "api_trigger" }).then((sources) => sources.length), 0);
+
+    const rotatedSourceTokenHash = automationSourceTokenHash("integration-source-token-rotated");
+    const rotatedSource = await automationStore.rotateSourceToken({
+      owner,
+      id: sourceId,
+      tokenHash: rotatedSourceTokenHash,
+    });
+    assert.equal(rotatedSource?.id, sourceId);
+    assert.equal(rotatedSource?.tokenHash, rotatedSourceTokenHash);
+    assert.equal(
+      await automationStore.rotateSourceToken({
+        owner: otherOwner,
+        id: sourceId,
+        tokenHash: automationSourceTokenHash("other-owner-token"),
+      }),
+      undefined,
+    );
+    assert.equal(
+      await automationStore.getApiTriggerSourceForToken({
+        triggerId: sourceId,
+        tokenHash: sourceTokenHash,
+      }),
+      undefined,
+    );
+    assert.equal(
+      (await automationStore.getApiTriggerSourceForToken({
+        triggerId: sourceId,
+        tokenHash: rotatedSourceTokenHash,
+      }))?.id,
+      sourceId,
+    );
+
     const eventId = `auto_evt_it_${randomUUID()}`;
     const recorded = await automationStore.recordEvent({
       owner,
