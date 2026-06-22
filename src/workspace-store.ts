@@ -136,10 +136,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       create index if not exists workspace_sessions_owner_idx
         on workspace_sessions(tenant_id, user_id, last_used_at desc);
 
-      create index if not exists workspace_sessions_root_idx
+      create index if not exists workspace_sessions_owner_root_idx
         on workspace_sessions(tenant_id, user_id, root, last_used_at desc);
 
-      create index if not exists workspace_sessions_status_idx
+      create index if not exists workspace_sessions_owner_status_idx
         on workspace_sessions(tenant_id, user_id, status, last_used_at desc);
 
       create table if not exists loaded_agent_files (
@@ -170,10 +170,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       create index if not exists workspace_sessions_owner_idx
         on workspace_sessions(tenant_id, user_id, last_used_at desc);
 
-      create index if not exists workspace_sessions_root_idx
+      create index if not exists workspace_sessions_owner_root_idx
         on workspace_sessions(tenant_id, user_id, root, last_used_at desc);
 
-      create index if not exists workspace_sessions_status_idx
+      create index if not exists workspace_sessions_owner_status_idx
         on workspace_sessions(tenant_id, user_id, status, last_used_at desc);
     `);
   }
