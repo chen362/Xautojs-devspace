@@ -94,8 +94,9 @@ assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
 ]);
 assert.equal(loadConfig(baseEnv).oauth.accessTokenTtlSeconds, 3600);
 assert.equal(loadConfig(baseEnv).oauth.refreshTokenTtlSeconds, 2592000);
-assert.equal(loadConfig(baseEnv).database.provider, "sqlite");
-assert.equal(loadConfig(baseEnv).database.provider === "sqlite" ? loadConfig(baseEnv).database.filePath.endsWith("devspace.sqlite") : false, true);
+const sqliteDatabase = loadConfig(baseEnv).database;
+assert.equal(sqliteDatabase.provider, "sqlite");
+assert.equal(sqliteDatabase.provider === "sqlite" ? sqliteDatabase.filePath.endsWith("devspace.sqlite") : false, true);
 
 assert.deepEqual(
   loadConfig({ ...baseEnv, DEVSPACE_OAUTH_SCOPES: "devspace,admin" }).oauth.scopes,
