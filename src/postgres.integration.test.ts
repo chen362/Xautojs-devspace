@@ -1,0 +1,195 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createOidcIdentity } from "./identity.js";
+import { PostgresWorkspaceStore } from "./postgres-workspace-store.js";
+import {
+  assertPostgresSchemaReady,
+  getPostgresMigrationStatus,
+  migratePostgresDatabase,
+} from "./db/postgres-migrations.js";
+import type { PostgresDatabaseConfig, PostgresSslMode } from "./db/types.js";
+
+type QueryValue = string | boolean | number | null;
+
+interface PgQueryResult<Row> {
+  rows: Row[];
+  rowCount: number | null;
+}
+
+interface PgPool {
+  query<Row = Record<string, unknown>>(
+    text: string,
+    values?: QueryValue[],
+  ): Promise<PgQueryResult<Row>>;
+  end(): Promise<void>;
+}
+
+interface PgPoolConstructor {
+  new (config: {
+    connectionString: string;
+    ssl?: boolean | { rejectUnauthorized: boolean };
+    application_name: string;
+    max: number;
+  }): PgPool;
+}
+
+const databaseUrl = process.env.DEVSPACE_DATABASE_URL;
+
+if (!databaseUrl) {
+  console.log("Skipping Postgres integration test; set DEVSPACE_DATABASE_URL to run it.");
+} else {
+  await runPostgresIntegrationTest(databaseUrl, parsePostgresSslMode(process.env.DEVSPACE_POSTGRES_SSL_MODE));
+}
+
+async function runPostgresIntegrationTest(
+  databaseUrl: string,
+  sslMode: PostgresSslMode,
+): Promise<void> {
+  const schemaName = `devspace_it_${randomUUID().replace(/-/g, "_")}`;
+  const adminPool = await createPgPool({
+    provider: "postgres",
+    url: databaseUrl,
+    sslMode,
+  });
+  let store: PostgresWorkspaceStore | undefined;
+
+  try {
+    await adminPool.query(`create schema ${quoteIdentifier(schemaName)}`);
+
+    const config: PostgresDatabaseConfig = {
+      provider: "postgres",
+      url: withSearchPath(databaseUrl, schemaName),
+      sslMode,
+    };
+
+    const initialStatus = await getPostgresMigrationStatus(config);
+    assert.equal(initialStatus.tableExists, false);
+    assert.ok(initialStatus.pendingCount > 0);
+
+    const migrationResult = await migratePostgresDatabase(config);
+    assert.ok(migrationResult.applied.length > 0);
+
+    const migratedStatus = await getPostgresMigrationStatus(config);
+    assert.equal(migratedStatus.tableExists, true);
+    assert.equal(migratedStatus.pendingCount, 0);
+    assert.equal(migratedStatus.modifiedCount, 0);
+    await assertPostgresSchemaReady(config);
+
+    store = new PostgresWorkspaceStore(config);
+    const owner = createOidcIdentity({
+      issuer: "https://auth.example.com",
+      tenantExternalId: "tenant-postgres-it",
+      subject: "alice",
+      scopes: ["devspace"],
+    });
+    const otherOwner = createOidcIdentity({
+      issuer: "https://auth.example.com",
+      tenantExternalId: "tenant-postgres-it",
+      subject: "bob",
+      scopes: ["devspace"],
+    });
+    const sessionId = `ws_postgres_it_${randomUUID()}`;
+
+    const created = await store.createSession({
+      owner,
+      id: sessionId,
+      root: "/tmp/devspace-postgres-integration",
+      mode: "worktree",
+      sourceRoot: "/tmp/devspace-source",
+      baseRef: "main",
+      baseSha: "abc123",
+      managed: true,
+    });
+
+    assert.equal(created.tenantId, owner.tenantId);
+    assert.equal(created.userId, owner.userId);
+    assert.equal(created.mode, "worktree");
+    assert.equal(created.managed, true);
+
+    const loaded = await store.getSession(sessionId, owner);
+    assert.equal(loaded?.id, sessionId);
+    assert.equal(loaded?.root, "/tmp/devspace-postgres-integration");
+    assert.equal(loaded?.sourceRoot, "/tmp/devspace-source");
+    assert.equal(loaded?.baseRef, "main");
+    assert.equal(loaded?.baseSha, "abc123");
+    assert.equal(loaded?.managed, true);
+
+    assert.equal(await store.getSession(sessionId, otherOwner), undefined);
+
+    await delay(20);
+    await store.touchSession(sessionId, owner);
+    const touched = await store.getSession(sessionId, owner);
+    assert.ok(touched);
+    assert.notEqual(touched.lastUsedAt, loaded?.lastUsedAt);
+  } finally {
+    await store?.close();
+    await adminPool.query(`drop schema if exists ${quoteIdentifier(schemaName)} cascade`);
+    await adminPool.end();
+  }
+}
+
+async function createPgPool(config: PostgresDatabaseConfig): Promise<PgPool> {
+  const Pool = await importPgPool();
+  return new Pool({
+    connectionString: config.url,
+    ssl: sslFor(config),
+    application_name: "devspace-integration-test",
+    max: 1,
+  });
+}
+
+async function importPgPool(): Promise<PgPoolConstructor> {
+  const moduleName = "pg";
+
+  try {
+    const pg = (await import(moduleName)) as {
+      Pool?: PgPoolConstructor;
+      default?: { Pool?: PgPoolConstructor };
+    };
+    const Pool = pg.Pool ?? pg.default?.Pool;
+    if (!Pool) throw new Error("The pg module did not export Pool.");
+    return Pool;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Cannot find package 'pg'") || message.includes("Cannot find module 'pg'")) {
+      throw new Error(
+        "Postgres integration tests require the optional pg peer dependency. Install it before running: npm install pg",
+      );
+    }
+    throw error;
+  }
+}
+
+function withSearchPath(databaseUrl: string, schemaName: string): string {
+  const parsed = new URL(databaseUrl);
+  const existingOptions = parsed.searchParams.get("options")?.trim();
+  const searchPathOption = `-c search_path=${schemaName}`;
+  parsed.searchParams.set(
+    "options",
+    existingOptions ? `${existingOptions} ${searchPathOption}` : searchPathOption,
+  );
+  return parsed.toString();
+}
+
+function quoteIdentifier(identifier: string): string {
+  if (!/^[a-z0-9_]+$/.test(identifier)) {
+    throw new Error(`Unsafe Postgres identifier: ${identifier}`);
+  }
+  return `"${identifier}"`;
+}
+
+function parsePostgresSslMode(value: string | undefined): PostgresSslMode {
+  if (!value || value === "prefer") return "prefer";
+  if (value === "disable" || value === "require") return value;
+  throw new Error(`Invalid DEVSPACE_POSTGRES_SSL_MODE: ${value}`);
+}
+
+function sslFor(config: PostgresDatabaseConfig): boolean | { rejectUnauthorized: boolean } | undefined {
+  if (config.sslMode === "disable") return false;
+  if (config.sslMode === "require") return { rejectUnauthorized: false };
+  return undefined;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
