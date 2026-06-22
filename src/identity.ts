@@ -16,9 +16,9 @@ export interface DevSpaceIdentity extends WorkspaceIdentity {
   scopes: string[];
 }
 
-export interface DevSpaceAuthInfo extends AuthInfo {
+export type DevSpaceAuthInfo = AuthInfo & {
   devspace?: DevSpaceIdentity;
-}
+};
 
 export interface IdentityConfig {
   deploymentMode: "local" | "production";
