@@ -30,6 +30,7 @@ export interface OidcOAuthConfig {
 
 export interface OAuthConfig {
   mode: "owner-token" | "oidc";
+  stateDir?: string;
   ownerToken?: string;
   accessTokenTtlSeconds: number;
   refreshTokenTtlSeconds: number;
@@ -200,8 +201,9 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     stateDir?: string,
   ) {
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
-    if (config.mode === "owner-token" && stateDir) {
-      this.oauthStore = new SqliteOAuthStore(stateDir);
+    const oauthStateDir = stateDir ?? config.stateDir;
+    if (config.mode === "owner-token" && oauthStateDir) {
+      this.oauthStore = new SqliteOAuthStore(oauthStateDir);
       this.clientsStore = new SqliteOAuthClientsStore(this.oauthStore, config.allowedRedirectHosts);
     } else {
       this.clientsStore = new InMemoryOAuthClientsStore(config.allowedRedirectHosts);
