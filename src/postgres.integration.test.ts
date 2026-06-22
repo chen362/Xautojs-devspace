@@ -183,7 +183,7 @@ async function runPostgresIntegrationTest(
 
     await assert.rejects(
       () =>
-        automationStore.recordEvent({
+        automationStore!.recordEvent({
           owner,
           id: `auto_evt_it_conflict_${randomUUID()}`,
           sourceId,
