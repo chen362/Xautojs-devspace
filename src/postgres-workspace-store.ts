@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import type { PostgresDatabaseConfig } from "./db/types.js";
 import { LOCAL_WORKSPACE_IDENTITY, type WorkspaceIdentity } from "./identity.js";
-import type { WorkspaceMode, WorkspaceSession, WorkspaceStore } from "./workspace-store.js";
+import type { LoadedAgentFile, LoadedAgentFileInput, WorkspaceMode, WorkspaceSession, WorkspaceStore } from "./workspace-store.js";
 
 type QueryValue = string | boolean | null;
 
@@ -53,6 +54,14 @@ interface PostgresWorkspaceSessionRow {
   managed: boolean | string | null;
   created_at: string | Date;
   last_used_at: string | Date;
+}
+
+interface PostgresLoadedAgentFileRow {
+  path: string;
+  content_hash: string;
+  content: string;
+  loaded_at: string | Date;
+  last_seen_at: string | Date;
 }
 
 export class PostgresWorkspaceStoreQueryError extends Error {
@@ -174,6 +183,94 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     return row ? rowToWorkspaceSession(row) : undefined;
   }
 
+  async saveLoadedAgentFiles(input: {
+    owner: WorkspaceIdentity;
+    workspaceSessionId: string;
+    files: LoadedAgentFileInput[];
+  }): Promise<void> {
+    await this.query({
+      text: `
+        delete from loaded_agent_files files
+        using workspace_sessions sessions
+        where files.workspace_session_id = sessions.id
+          and files.workspace_session_id = $1
+          and sessions.tenant_id = $2
+          and sessions.user_id = $3
+      `,
+      values: [input.workspaceSessionId, input.owner.tenantId, input.owner.userId],
+    });
+
+    const now = new Date().toISOString();
+    for (const file of input.files) {
+      await this.query({
+        text: `
+          insert into loaded_agent_files (
+            workspace_session_id,
+            path,
+            content_hash,
+            content,
+            loaded_at,
+            last_seen_at
+          )
+          select
+            $1,
+            $4,
+            $5,
+            $6,
+            $7::timestamptz,
+            $8::timestamptz
+          where exists (
+            select 1
+            from workspace_sessions
+            where id = $1
+              and tenant_id = $2
+              and user_id = $3
+          )
+          on conflict (workspace_session_id, path) do update set
+            content_hash = excluded.content_hash,
+            content = excluded.content,
+            last_seen_at = excluded.last_seen_at
+        `,
+        values: [
+          input.workspaceSessionId,
+          input.owner.tenantId,
+          input.owner.userId,
+          file.path,
+          hashLoadedAgentFileContent(file.content),
+          file.content,
+          now,
+          now,
+        ],
+      });
+    }
+  }
+
+  async getLoadedAgentFiles(
+    workspaceSessionId: string,
+    owner: WorkspaceIdentity,
+  ): Promise<LoadedAgentFile[]> {
+    const result = await this.query<PostgresLoadedAgentFileRow>({
+      text: `
+        select
+          files.path,
+          files.content_hash,
+          files.content,
+          files.loaded_at,
+          files.last_seen_at
+        from loaded_agent_files files
+        inner join workspace_sessions sessions
+          on sessions.id = files.workspace_session_id
+        where files.workspace_session_id = $1
+          and sessions.tenant_id = $2
+          and sessions.user_id = $3
+        order by files.path asc
+      `,
+      values: [workspaceSessionId, owner.tenantId, owner.userId],
+    });
+
+    return result.rows.map(rowToLoadedAgentFile);
+  }
+
   async touchSession(id: string, owner: WorkspaceIdentity): Promise<void> {
     await this.query({
       text: `
@@ -232,9 +329,23 @@ function rowToWorkspaceSession(row: PostgresWorkspaceSessionRow): WorkspaceSessi
   };
 }
 
+function rowToLoadedAgentFile(row: PostgresLoadedAgentFileRow): LoadedAgentFile {
+  return {
+    path: row.path,
+    contentHash: row.content_hash,
+    content: row.content,
+    loadedAt: toIsoString(row.loaded_at),
+    lastSeenAt: toIsoString(row.last_seen_at),
+  };
+}
+
 function toIsoString(value: string | Date): string {
   if (value instanceof Date) return value.toISOString();
   return value;
+}
+
+function hashLoadedAgentFileContent(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 async function createPool(config: PostgresDatabaseConfig): Promise<PgPool> {

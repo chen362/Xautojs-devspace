@@ -91,12 +91,21 @@ try {
     mode: "worktree",
   });
   await firstStore.close();
+  await writeFile(join(root, "AGENTS.md"), "changed root instructions\n");
 
   const secondStore = new SqliteWorkspaceStore(stateDir);
   const restoredRegistry = new WorkspaceRegistry(config, secondStore);
   const restoredWorkspace = await restoredRegistry.getWorkspace(persistentWorkspace.workspace.id);
   assert.equal(restoredWorkspace.root, root);
   assert.equal(restoredWorkspace.mode, "checkout");
+  assert.deepEqual(
+    restoredWorkspace.agentsFiles.map((file) => file.content),
+    ["global instructions\n", "root instructions\n"],
+  );
+  assert.deepEqual(
+    restoredWorkspace.availableAgentsFiles.map((file) => file.path),
+    [join(gitRoot, "AGENTS.md"), join(root, "nested", "AGENTS.md")],
+  );
 
   const restoredWorktree = await restoredRegistry.getWorkspace(persistentWorktree.workspace.id);
   assert.equal(restoredWorktree.mode, "worktree");
