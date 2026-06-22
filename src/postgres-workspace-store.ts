@@ -4,6 +4,9 @@ import { LOCAL_WORKSPACE_IDENTITY, type WorkspaceIdentity } from "./identity.js"
 import type { WorkspaceMode, WorkspaceSession, WorkspaceStore } from "./workspace-store.js";
 
 type QueryValue = string | boolean | null;
+type WorkerPayload<Row> =
+  | { ok: true; rows: Row[]; rowCount: number }
+  | { ok: false; error: string };
 
 export interface PostgresQuery {
   text: string;
@@ -213,9 +216,9 @@ function runPostgresQuery<Row>(
     throw new PostgresWorkspaceStoreQueryError(details);
   }
 
-  let payload: { ok: true; rows: Row[]; rowCount: number } | { ok: false; error: string };
+  let payload: WorkerPayload<Row>;
   try {
-    payload = JSON.parse(output) as typeof payload;
+    payload = JSON.parse(output) as WorkerPayload<Row>;
   } catch {
     throw new PostgresWorkspaceStoreQueryError(output);
   }
