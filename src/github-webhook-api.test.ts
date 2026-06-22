@@ -482,14 +482,14 @@ function sign(body: Buffer, secret = "github-webhook-secret"): string {
 }
 
 function expectAccepted(body: GithubWebhookResponse): GithubWebhookAcceptedResponse {
-  assert.ok(!("error" in body));
-  assert.notEqual(body.status, "ignored");
+  if ("error" in body) assert.fail(`Expected accepted response, got error ${body.error.code}.`);
+  if (body.status === "ignored") assert.fail("Expected queued or duplicate response, got ignored.");
   return body;
 }
 
 function expectIgnored(body: GithubWebhookResponse): GithubWebhookIgnoredResponse {
-  assert.ok(!("error" in body));
-  assert.equal(body.status, "ignored");
+  if ("error" in body) assert.fail(`Expected ignored response, got error ${body.error.code}.`);
+  if (body.status !== "ignored") assert.fail(`Expected ignored response, got ${body.status}.`);
   return body;
 }
 
