@@ -72,6 +72,18 @@ Fake transport tests cover canonical tool routing, context forwarding, workspace
 No real WebSocket, device channel, or cloud gateway server is introduced in this phase.
 ```
 
+Phase 1.3 implementation status:
+
+```text
+src/cloud-routing-contract.ts defines the cloud routing contract records, inputs, and stable errors.
+src/cloud-routing-store.ts adds a CloudRoutingStore interface and in-memory skeleton implementation.
+The store binds deviceId, workspaceId, mcpSessionId, optional conversationSessionId, owner, and toolCallId.
+The store rejects workspaceId reuse across MCP sessions and rejects unknown, expired, or offline routes.
+Tool calls can be resolved idempotently by toolCallId and conflicting reuse returns TOOL_CALL_CONFLICT.
+Tests cover session isolation, owner isolation, unknown workspace errors, offline device routing, expiry, and toolCallId conflicts.
+No real WebSocket gateway, device channel server, or database-backed cloud store is introduced in this phase.
+```
+
 This is correct for self-hosted use. Public customer mode needs an additional split:
 
 ```text
@@ -424,9 +436,11 @@ PAIRING_REQUIRED        retryable=false  The MCP session is not paired with a De
 PAIRING_DENIED          retryable=false  The Desktop user denied the session.
 DEVICE_OFFLINE          retryable=true   The selected Desktop device is not connected.
 DEVICE_BUSY             retryable=true   The device is online but cannot accept the call yet.
+DEVICE_NOT_FOUND        retryable=false  The selected Desktop device is unknown or revoked for this owner.
 WORKSPACE_NOT_FOUND     retryable=false  The workspaceRef or workspaceId is unknown.
 WORKSPACE_FORBIDDEN     retryable=false  The current session cannot access this workspace.
-SESSION_EXPIRED         retryable=false  The conversation or workspace session expired.
+SESSION_EXPIRED         retryable=false  The conversation, device, or workspace route expired.
+TOOL_CALL_CONFLICT      retryable=false  The same toolCallId was reused for a different route or tool.
 TOOL_TIMEOUT            retryable=true   The local agent did not finish before the deadline.
 TOOL_CANCELLED          retryable=false  The call was cancelled by user, gateway, or session close.
 AGENT_DISCONNECTED      retryable=true   The device channel closed while the call was running.
@@ -535,6 +549,14 @@ conversation_sessions:
   completed_at
 ```
 
+Phase 1.3 code skeleton maps these tables into in-memory records first:
+
+```text
+CloudRoutingDeviceRecord -> devices and current routeable device state
+CloudRoutingWorkspaceRouteRecord -> workspace_sessions routing subset
+CloudRoutingToolCallRecord -> tool_calls idempotency/routing subset
+```
+
 `local_path_hash` is optional and for diagnostics only. The local absolute path remains authoritative only on the customer's machine.
 
 ## Desktop Lifecycle Contract
@@ -590,6 +612,32 @@ export interface DevspaceToolExecutor {
 ```
 
 `LocalToolExecutor` should reuse existing `WorkspaceRegistry`, `pi-tools`, and `roots` logic. This keeps self-hosted mode working while preparing cloud routing.
+
+### Phase 1.3: Cloud Routing Contract And Store Skeleton
+
+Before adding a real gateway, cloud routing must be a testable contract:
+
+```text
+src/cloud-routing-contract.ts
+src/cloud-routing-store.ts
+src/cloud-routing-store.test.ts
+```
+
+The store owns the route from owner + MCP session + optional conversation session + workspaceId to a routeable device. It also owns toolCallId idempotency before any transport writes to a future WebSocket or fallback channel.
+
+Required behavior:
+
+```text
+same owner + different mcpSessionId cannot reuse a workspaceId
+unknown workspaceId returns WORKSPACE_NOT_FOUND
+known but wrong-session workspaceId returns WORKSPACE_FORBIDDEN
+offline devices return DEVICE_OFFLINE and retryable=true
+expired routes return SESSION_EXPIRED
+a repeated toolCallId on the same route is idempotent
+a repeated toolCallId on a different route returns TOOL_CALL_CONFLICT
+```
+
+This phase intentionally stops at an in-memory store. A Postgres-backed implementation can use the same interface later, and the gateway executor can depend on that interface without changing tool handlers again.
 
 ### Phase 2: Preserve Self-Hosted Mode
 
