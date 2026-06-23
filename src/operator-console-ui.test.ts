@@ -68,7 +68,7 @@ assert.equal(statusTone("failed"), "danger");
 assert.equal(decisionTone("ask"), "warning");
 assert.equal(decisionTone("deny"), "danger");
 assert.equal(decisionTone("audit_only"), "success");
-assert.equal(compactId("agent_run_1234567890abcdef"), "agent_run_1...abcdef");
+assert.equal(compactId("agent_run_1234567890abcdef"), "agent_run_...abcdef");
 assert.equal(timeAgo("2026-06-23T00:00:00.000Z", Date.parse("2026-06-23T00:05:00.000Z")), "5m ago");
 
 const replay: OperatorReplay = {
