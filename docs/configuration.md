@@ -52,13 +52,13 @@ node dist/cli.js db migrate --json
 
 ## Database
 
-SQLite is the default local database provider. Postgres mode is intended for
-production deployments and requires the schema in `migrations/postgres` to be
-applied before serving traffic.
+SQLite is the default local database provider. Postgres mode is required for
+production deployments, automation sources/events/runs, and native agent
+operator workflows.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DEVSPACE_DATABASE_PROVIDER` | `sqlite` | Set to `postgres` to use Postgres-backed workspace sessions. |
+| `DEVSPACE_DATABASE_PROVIDER` | `sqlite` | Set to `postgres` to use Postgres-backed workspace, automation, and native agent state. |
 | `DEVSPACE_DATABASE_URL` | unset | Required when `DEVSPACE_DATABASE_PROVIDER=postgres`. |
 | `DEVSPACE_POSTGRES_SSL_MODE` | `prefer` | One of `prefer`, `require`, or `disable`. |
 
@@ -166,6 +166,19 @@ MCP clients discover metadata from:
 
 ## Native Agent Operator
 
+Native agent operator workflows require Postgres mode and ready migrations. At a
+minimum, prepare the database before dispatching or replaying native runs:
+
+```bash
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+node dist/cli.js db migrate
+
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
+node dist/cli.js db status --json
+```
+
 Operator HTTP APIs require a bearer token:
 
 | Variable | Purpose |
@@ -173,14 +186,64 @@ Operator HTTP APIs require a bearer token:
 | `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN` | Bearer token required by `/api/native-agent/*` routes. |
 | `DEVSPACE_NATIVE_RUNTIME_HOOKS` | Optional JSON runtime hook rule config. |
 
-Native agent CLI commands use the same Postgres configuration and run locally
-from the same CLI binary:
+CLI commands run locally and do not use `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN`.
+They still require `DEVSPACE_DATABASE_PROVIDER=postgres`, `DEVSPACE_DATABASE_URL`,
+and a ready schema because they access the native agent store directly.
+
+Common CLI checks:
 
 ```bash
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
 node dist/cli.js agent workflows
+
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
 node dist/cli.js agent list
+
+DEVSPACE_DATABASE_PROVIDER="postgres" \
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
 node dist/cli.js agent replay --id <agentRunId>
 ```
+
+Operator API example:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN" \
+  https://devspace.example.com/api/native-agent/runs/<agentRunId>/replay
+```
+
+`DEVSPACE_NATIVE_RUNTIME_HOOKS` is a JSON object. Example:
+
+```bash
+export DEVSPACE_NATIVE_RUNTIME_HOOKS='{
+  "enabled": true,
+  "rules": [
+    {
+      "id": "ask-high-risk-process",
+      "events": ["PreToolUse"],
+      "stages": ["before"],
+      "risks": ["high"],
+      "decision": "ask",
+      "reason": "High-risk native process execution needs operator approval."
+    },
+    {
+      "id": "block-feature-plan",
+      "events": ["WorkflowStep"],
+      "workflowIds": ["feature-dev"],
+      "stepPhases": ["plan"],
+      "decision": "block",
+      "reason": "Feature planning is temporarily disabled by local policy."
+    }
+  ]
+}'
+```
+
+Hook decisions are replayable through `agent_run_events` as
+`run.hook.decision`. The legacy `agent_runtime_hooks` table stores only
+`PreToolUse`, `PostToolUse`, `PermissionRequest`, `PostCompact`, and `Stop`.
+Use replay for `Start` and `WorkflowStep` decisions.
 
 ## Tool Modes
 
