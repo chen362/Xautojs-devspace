@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import express from "express";
+import express, { type Express } from "express";
 import type { Server } from "node:http";
 import { InMemoryNativeAgentStore } from "./native-agent-store.js";
 import { registerNativeAgentApiRoutes } from "./native-agent-api.js";
@@ -83,7 +83,7 @@ try {
   await closeServer(server);
 }
 
-function listen(app: express.Express): Promise<Server> {
+function listen(app: Express): Promise<Server> {
   return new Promise((resolve) => {
     const server = app.listen(0, "127.0.0.1", () => resolve(server));
   });
