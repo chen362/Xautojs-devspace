@@ -1,7 +1,7 @@
 import express, { type Express, type Request, type Response } from "express";
 import type { Server } from "node:http";
 import type { ServerConfig } from "./config.js";
-import { registerNativeAgentApiRoutes, type NativeAgentApiRegistration } from "./native-agent-api.js";
+import { registerNativeAgentApiRoutes } from "./native-agent-api.js";
 import type { NativeAgentStore } from "./native-agent-store.js";
 import { buildHealthReport, buildReadinessReport } from "./readiness.js";
 
