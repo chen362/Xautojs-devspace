@@ -87,7 +87,7 @@ assert.throws(
   assert.equal(result.decision, "block");
   assert.equal(result.continue, false);
   assert.equal(result.ruleId, "block-feature-plan");
-  assert.equal(store.hooks.at(-1)?.hookEventName, "WorkflowStep");
+  assert.equal(String(store.hooks.at(-1)?.hookEventName), "WorkflowStep");
   assert.equal(store.hooks.at(-1)?.decision, "block");
   assert.equal(store.hooks.at(-1)?.result.ruleId, "block-feature-plan");
 }
