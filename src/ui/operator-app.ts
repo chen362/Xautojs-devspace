@@ -49,9 +49,11 @@ interface OperatorState {
 }
 
 const apiBasePath = window.DEVSPACE_OPERATOR_CONFIG?.apiBasePath ?? "/api/native-agent";
-const root = document.querySelector<HTMLElement>("#operator-app");
+const appRoot = document.querySelector<HTMLElement>("#operator-app");
 
-if (!root) throw new Error("Missing #operator-app root element.");
+if (!appRoot) throw new Error("Missing #operator-app root element.");
+
+const root = appRoot;
 
 const state: OperatorState = {
   authenticated: false,
