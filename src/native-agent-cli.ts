@@ -87,8 +87,6 @@ export async function runNativeAgentCommand(args: string[], config: ServerConfig
       }
       return;
     }
-    case "workflows":
-      return;
   }
 }
 
