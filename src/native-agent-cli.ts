@@ -1,12 +1,45 @@
 import type { ServerConfig } from "./config.js";
 import { assertPostgresSchemaReady } from "./db/postgres-migrations.js";
-import { PostgresNativeAgentStore, type NativeAgentRunStatus } from "./native-agent-store.js";
-import { dispatchNativeAgentOnce } from "./native-agent-runtime.js";
+import { PostgresNativeAgentStore, type NativeAgentRunStatus, type NativeAgentToolRisk } from "./native-agent-store.js";
+import { dispatchNativeAgentOnce, dispatchNativeAgentRunOnce } from "./native-agent-runtime.js";
+import {
+  createNativeAgentRetry,
+  listNativeAgentApprovals,
+  replayNativeAgentRun,
+  requestNativeAgentApproval,
+  resolveNativeAgentApproval,
+  type NativeAgentApprovalDecision,
+} from "./native-agent-operator.js";
 import { listNativeWorkflowPacks } from "./native-agent-workflows.js";
 
-const ACTIONS = new Set(["dispatch-once", "list", "events", "cancel", "workflows"]);
+const ACTIONS = new Set([
+  "dispatch-once",
+  "dispatch-run",
+  "list",
+  "events",
+  "replay",
+  "cancel",
+  "retry",
+  "approvals",
+  "request-approval",
+  "approve",
+  "deny",
+  "workflows",
+]);
 
-type AgentAction = "dispatch-once" | "list" | "events" | "cancel" | "workflows";
+type AgentAction =
+  | "dispatch-once"
+  | "dispatch-run"
+  | "list"
+  | "events"
+  | "replay"
+  | "cancel"
+  | "retry"
+  | "approvals"
+  | "request-approval"
+  | "approve"
+  | "deny"
+  | "workflows";
 type FlagValue = string | true;
 
 interface ParsedArgs {
@@ -17,7 +50,7 @@ interface ParsedArgs {
 export async function runNativeAgentCommand(args: string[], config: ServerConfig): Promise<void> {
   const [action, ...rest] = args;
   if (!isAgentAction(action)) {
-    throw new Error("Usage: devspace agent <dispatch-once|list|events|cancel|workflows> [...options]");
+    throw new Error("Usage: devspace agent <dispatch-once|dispatch-run|list|events|replay|cancel|retry|approvals|request-approval|approve|deny|workflows> [...options]");
   }
 
   const parsed = parseArgs(rest);
@@ -39,6 +72,15 @@ export async function runNativeAgentCommand(args: string[], config: ServerConfig
         automationRunId: optionalString(parsed.flags, "automation-run-id"),
         workspaceRoot: optionalString(parsed.flags, "workspace-root"),
         workflowId: optionalString(parsed.flags, "workflow-id"),
+        timeoutMs: optionalNumber(parsed.flags, "timeout-ms"),
+      });
+      printOutput(result, json);
+      return;
+    }
+    case "dispatch-run": {
+      const result = await dispatchNativeAgentRunOnce(config, {
+        agentRunId: requiredString(parsed.flags, "id"),
+        workspaceRoot: optionalString(parsed.flags, "workspace-root"),
         timeoutMs: optionalNumber(parsed.flags, "timeout-ms"),
       });
       printOutput(result, json);
@@ -72,6 +114,15 @@ export async function runNativeAgentCommand(args: string[], config: ServerConfig
       }
       return;
     }
+    case "replay": {
+      const store = new PostgresNativeAgentStore(config.database);
+      try {
+        printOutput(await replayNativeAgentRun(store, { agentRunId: requiredString(parsed.flags, "id") }), json);
+      } finally {
+        await store.close();
+      }
+      return;
+    }
     case "cancel": {
       const agentRunId = requiredString(parsed.flags, "id");
       const store = new PostgresNativeAgentStore(config.database);
@@ -87,6 +138,62 @@ export async function runNativeAgentCommand(args: string[], config: ServerConfig
       }
       return;
     }
+    case "retry": {
+      const store = new PostgresNativeAgentStore(config.database);
+      try {
+        const retry = await createNativeAgentRetry(store, {
+          agentRunId: requiredString(parsed.flags, "id"),
+          reason: optionalString(parsed.flags, "reason"),
+        });
+        printOutput({ retry }, json);
+      } finally {
+        await store.close();
+      }
+      return;
+    }
+    case "approvals": {
+      const store = new PostgresNativeAgentStore(config.database);
+      try {
+        const approvals = await listNativeAgentApprovals(store, { agentRunId: requiredString(parsed.flags, "id") });
+        printOutput({ approvals }, json);
+      } finally {
+        await store.close();
+      }
+      return;
+    }
+    case "request-approval": {
+      const store = new PostgresNativeAgentStore(config.database);
+      try {
+        const approval = await requestNativeAgentApproval(store, {
+          agentRunId: requiredString(parsed.flags, "id"),
+          title: optionalString(parsed.flags, "title") ?? "Approval requested",
+          message: requiredString(parsed.flags, "message"),
+          risk: optionalRisk(parsed.flags),
+          requestedBy: optionalString(parsed.flags, "requested-by"),
+        });
+        printOutput({ approval }, json);
+      } finally {
+        await store.close();
+      }
+      return;
+    }
+    case "approve":
+    case "deny": {
+      const store = new PostgresNativeAgentStore(config.database);
+      try {
+        const approval = await resolveNativeAgentApproval(store, {
+          agentRunId: requiredString(parsed.flags, "id"),
+          approvalId: requiredString(parsed.flags, "approval-id"),
+          decision: action === "approve" ? "approved" : "denied",
+          response: optionalString(parsed.flags, "message") ? { message: optionalString(parsed.flags, "message")! } : undefined,
+          resolvedBy: optionalString(parsed.flags, "resolved-by"),
+        });
+        printOutput({ approval }, json);
+      } finally {
+        await store.close();
+      }
+      return;
+    }
   }
 }
 
@@ -96,9 +203,9 @@ function printOutput(value: unknown, json: boolean): void {
     return;
   }
   if (typeof value === "object" && value !== null && "workflows" in value) {
-    console.log("ID\tPermission\tTitle");
+    console.log("ID\tPermission\tSteps\tTitle");
     for (const workflow of (value as { workflows: ReturnType<typeof listNativeWorkflowPacks> }).workflows) {
-      console.log([workflow.id, workflow.permissionProfile, workflow.title].join("\t"));
+      console.log([workflow.id, workflow.permissionProfile, workflow.steps.length, workflow.title].join("\t"));
     }
     return;
   }
@@ -171,4 +278,11 @@ function optionalStatus(flags: Map<string, FlagValue>): NativeAgentRunStatus | u
     value === "timed_out"
   ) return value;
   throw new Error(`Invalid --status: ${value}`);
+}
+
+function optionalRisk(flags: Map<string, FlagValue>): NativeAgentToolRisk | undefined {
+  const value = optionalString(flags, "risk");
+  if (!value) return undefined;
+  if (value === "low" || value === "medium" || value === "high") return value;
+  throw new Error(`Invalid --risk: ${value}`);
 }
