@@ -3,6 +3,8 @@ import type { ToolResponse } from "./pi-tools.js";
 import type { ReviewChangesResult, ReviewSince } from "./review-checkpoints.js";
 import type { WorkspaceContext } from "./workspaces.js";
 
+export type { ToolResponse };
+
 export interface DevspaceToolExecutionContext {
   mcpSessionId: string;
   owner: WorkspaceIdentity;
