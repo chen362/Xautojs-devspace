@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   isTerminalNativeAgentRunStatus,
   type NativeAgentRun,
@@ -24,6 +24,7 @@ export interface NativeAgentApproval {
   resolvedBy?: string;
   requestedAt: string;
   resolvedAt?: string;
+  expiresAt?: string;
 }
 
 export interface NativeAgentReplay {
@@ -56,6 +57,7 @@ export async function requestNativeAgentApproval(
     request?: JsonObject;
     requestedBy?: string;
     approvalId?: string;
+    expiresAt?: string;
   },
 ): Promise<NativeAgentApproval> {
   const run = await requireRun(store, input.agentRunId);
@@ -70,6 +72,7 @@ export async function requestNativeAgentApproval(
       risk: input.risk ?? "medium",
       request: input.request ?? {},
       requestedBy: input.requestedBy,
+      expiresAt: input.expiresAt,
     }),
   });
   return {
@@ -83,7 +86,57 @@ export async function requestNativeAgentApproval(
     requestedBy: input.requestedBy,
     response: {},
     requestedAt: event.createdAt,
+    expiresAt: input.expiresAt,
   };
+}
+
+export async function ensureNativeAgentPolicyApproval(
+  store: NativeAgentStore,
+  input: {
+    agentRunId: string;
+    title: string;
+    message: string;
+    risk: NativeAgentToolRisk;
+    request: JsonObject;
+    requestedBy?: string;
+    approvalId?: string;
+    timeoutMs?: number;
+    now?: () => Date;
+  },
+): Promise<NativeAgentApproval> {
+  await requireRun(store, input.agentRunId);
+  const now = input.now?.() ?? new Date();
+  const fingerprint = approvalFingerprint({
+    title: input.title,
+    message: input.message,
+    risk: input.risk,
+    request: input.request,
+  });
+  const request = {
+    ...input.request,
+    approvalFingerprint: fingerprint,
+  };
+  const existing = (await listNativeAgentApprovals(store, { agentRunId: input.agentRunId }))
+    .reverse()
+    .find((approval) => stringJson(approval.request.approvalFingerprint) === fingerprint);
+
+  if (existing) {
+    if (existing.status === "pending" && approvalExpired(existing, now)) {
+      return expireNativeAgentApproval(store, existing, now);
+    }
+    return existing;
+  }
+
+  return requestNativeAgentApproval(store, {
+    agentRunId: input.agentRunId,
+    approvalId: input.approvalId,
+    title: input.title,
+    message: input.message,
+    risk: input.risk,
+    request,
+    requestedBy: input.requestedBy,
+    expiresAt: input.timeoutMs && input.timeoutMs > 0 ? new Date(now.getTime() + input.timeoutMs).toISOString() : undefined,
+  });
 }
 
 export async function resolveNativeAgentApproval(
@@ -206,6 +259,7 @@ function approvalsFromEvents(events: NativeAgentRunEvent[]): NativeAgentApproval
         requestedBy: stringJson(event.payload.requestedBy),
         response: {},
         requestedAt: event.createdAt,
+        expiresAt: stringJson(event.payload.expiresAt),
       });
       continue;
     }
@@ -242,6 +296,41 @@ async function requireRun(store: NativeAgentStore, agentRunId: string): Promise<
   const run = await store.getAgentRun(agentRunId);
   if (!run) throw new NativeAgentOperatorError(404, "AGENT_RUN_NOT_FOUND", "Native agent run was not found.", false);
   return run;
+}
+
+async function expireNativeAgentApproval(
+  store: NativeAgentStore,
+  approval: NativeAgentApproval,
+  now: Date,
+): Promise<NativeAgentApproval> {
+  return resolveNativeAgentApproval(store, {
+    agentRunId: approval.agentRunId,
+    approvalId: approval.id,
+    decision: "denied",
+    response: {
+      code: "NATIVE_APPROVAL_TIMEOUT",
+      message: "Native agent approval timed out.",
+      expiredAt: now.toISOString(),
+    },
+    resolvedBy: "system:timeout",
+  });
+}
+
+function approvalExpired(approval: NativeAgentApproval, now: Date): boolean {
+  if (!approval.expiresAt) return false;
+  return Date.parse(approval.expiresAt) <= now.getTime();
+}
+
+function approvalFingerprint(value: JsonObject): string {
+  return createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
+function stableJson(value: JsonValue): string {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key]!)}`).join(",")}}`;
 }
 
 function compactJson(value: Record<string, JsonValue | undefined>): JsonObject {
