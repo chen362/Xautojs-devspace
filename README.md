@@ -48,6 +48,8 @@ execution:
 - browser operator console for run replay, approvals, hook decisions, workflow
   step state, dispatch, resume, retry, and cancel
 - operator CLI commands for dispatch, replay, approvals, retry, and cancel
+- planned Xautojs Desktop operator for a local-first Codex/Claude-style
+  workspace, approval, replay, and workflow UI
 
 Codex and Claude Code are reference systems for good ideas. The runtime, storage,
 policy, hooks, workflow packs, and operator controls are Xautojs-native and do
@@ -318,6 +320,21 @@ scripts.
 See [Native Agent Operator Console](docs/native-agent-operator-console.md) for
 setup, session configuration, UI workflow, and production smoke commands.
 
+## Xautojs Desktop Direction
+
+The planned desktop operator is the local-first default interface for daily
+native-agent work. It should feel closer to a desktop coding assistant than a
+browser admin dashboard: projects and runs on the left, a chat-style run
+workspace in the center, and an operator inspector on the right.
+
+The browser `/operator` console remains the remote, admin, CI, and fallback
+surface. Desktop uses a local loopback daemon and the same operator API contract
+instead of reading Postgres directly.
+
+See [Xautojs Desktop Operator Architecture](docs/xautojs-desktop-operator.md) for
+the daemon contract, Tauri app plan, permission UX, streaming model, roadmap, and
+acceptance criteria.
+
 ## Operator API
 
 The native agent operator API is mounted under:
@@ -383,6 +400,7 @@ node dist/cli.js doctor
 - [Native Agent Runtime](docs/native-agent-runtime.md)
 - [Native Agent Operator Guide](docs/native-agent-operator-guide.md)
 - [Native Agent Operator Console](docs/native-agent-operator-console.md)
+- [Xautojs Desktop Operator Architecture](docs/xautojs-desktop-operator.md)
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)
 
