@@ -26,6 +26,8 @@ retry selected run
 cancel selected run
 hook decision cards from replay.summary.hooks
 workflow step state from replay.summary.workflowSteps
+Tauri bundle configuration for macOS, Windows, and Linux artifacts
+generated app icons for PNG, ICO, and ICNS targets
 ```
 
 Still intentionally deferred:
@@ -34,7 +36,8 @@ Still intentionally deferred:
 OS keychain session storage
 pairing code flow
 desktop notifications
-packaged installers
+signed production installers
+auto-updater channels
 remembered approval policy edits
 ```
 
@@ -81,6 +84,48 @@ npm run desktop:typecheck
 npm run desktop:test
 npm run desktop:build
 ```
+
+## Package Desktop Artifacts
+
+PR42 enables Tauri bundle mode and adds a generated Xautojs Desktop icon set.
+The root npm package remains CLI-first; desktop installers are separate release
+artifacts.
+
+Generate icons only:
+
+```bash
+npm --prefix apps/desktop run icons:generate
+```
+
+Build the current platform bundle from the repository root:
+
+```bash
+npm --prefix apps/desktop install --no-package-lock
+npm run desktop:bundle
+```
+
+Platform-specific bundle commands:
+
+```bash
+npm --prefix apps/desktop run bundle:macos
+npm --prefix apps/desktop run bundle:windows
+npm --prefix apps/desktop run bundle:linux
+```
+
+The manual GitHub artifact workflow is:
+
+```text
+.github/workflows/desktop-release.yml
+```
+
+Artifacts are uploaded from:
+
+```text
+apps/desktop/src-tauri/target/release/bundle/**/*
+```
+
+These artifacts are unsigned smoke or release-candidate artifacts until platform
+signing, checksums, lockfile strategy, and updater policy are completed.
 
 ## Operator Flow
 
