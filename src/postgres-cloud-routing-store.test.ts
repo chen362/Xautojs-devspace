@@ -200,7 +200,7 @@ const runner: PostgresCloudRoutingQueryRunner = async <Row>(
         candidate.tool_call_id === query.values[2],
     );
     if (!row) return { rows: [], rowCount: 0 };
-    if (normalizedSql.includes("completed_at")) {
+    if (normalizedSql.includes("set status")) {
       row.status = toolCallStatusValue(query.values[3]);
       row.last_seen_at = stringValue(query.values[4]);
       row.completed_at = stringValue(query.values[5]);
