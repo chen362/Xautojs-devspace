@@ -127,13 +127,14 @@ allowed.
 The desktop app should avoid hand-entered long-lived tokens during normal local
 use.
 
-Current PR40 scaffold behavior:
+Current PR41 MVP behavior:
 
 ```text
 operator token is entered manually
 raw token stays in renderer memory only
 daemon URL may be remembered in localStorage
 no raw operator token is written to localStorage
+operator actions use Bearer token auth against the local daemon
 ```
 
 Target pairing contract for a later auth polish PR:
@@ -166,24 +167,19 @@ If added, it must be loopback-only, one-time, short-lived, and auditable.
 
 ## Existing Operator API Reuse
 
-The desktop app should reuse the current operator endpoints first:
+The desktop app reuses the current operator endpoints:
 
 ```text
 GET  /healthz
 GET  /readyz
 GET  /api/native-agent/runs
-GET  /api/native-agent/runs/:agentRunId
-GET  /api/native-agent/runs/:agentRunId/events
 GET  /api/native-agent/runs/:agentRunId/replay
 GET  /api/native-agent/runs/:agentRunId/stream
-GET  /api/native-agent/runs/:agentRunId/approvals
-POST /api/native-agent/runs/:agentRunId/approvals
 POST /api/native-agent/runs/:agentRunId/approvals/:approvalId/resolve
 POST /api/native-agent/runs/:agentRunId/resume
 POST /api/native-agent/runs/:agentRunId/retry
 POST /api/native-agent/runs/:agentRunId/cancel
 POST /api/native-agent/dispatch/once
-POST /api/native-agent/dispatch/run
 ```
 
 The key desktop data source is `replay.summary`:
@@ -196,13 +192,14 @@ summary.workflowSteps
 summary.retries
 ```
 
-The UI must not reconstruct normal operator state from raw event JSON when the
+The UI does not reconstruct normal operator state from raw event JSON when the
 summary already exposes it.
 
 ## Streaming Contract
 
-PR39 added a replay SSE stream. Desktop clients should prefer it when available
-and fall back to polling `/replay` or `/events` when SSE is unavailable.
+PR39 added a replay SSE stream. PR41 consumes it from the desktop app through
+`fetch` instead of native `EventSource` because the daemon requires an
+Authorization header.
 
 Endpoint:
 
@@ -213,8 +210,8 @@ GET /api/native-agent/runs/:agentRunId/stream?afterSeq=<number>&pollMs=<ms>&maxE
 Transport:
 
 ```text
-SSE first
-polling fallback through replay/events
+SSE over fetch stream first
+polling fallback through /replay when the stream fails
 ```
 
 SSE event names:
@@ -242,10 +239,11 @@ Every replay snapshot and terminal message includes:
 }
 ```
 
-The desktop app must tolerate reconnects by resuming from the last known
-`nextSeq - 1`.
+The desktop app resumes from the last known `nextSeq - 1` when a selected run is
+opened. If streaming is unavailable, the UI shows a polling fallback notice and
+keeps refreshing the selected replay.
 
-## Current PR40 Scaffold
+## Current PR41 Desktop Operator MVP
 
 Implemented layout:
 
@@ -277,6 +275,16 @@ in-memory operator token input
 health and readiness checks
 runs list from /api/native-agent/runs
 selected run replay from /api/native-agent/runs/:agentRunId/replay
+live replay from /api/native-agent/runs/:agentRunId/stream
+polling replay fallback when stream fails
+dispatch once
+approve pending approval
+deny pending approval
+resume selected run
+retry selected run
+cancel selected run
+hook decision cards from replay.summary.hooks
+workflow step state from replay.summary.workflowSteps
 clear state for daemon unavailable
 clear state for Postgres schema not ready
 clear state for token missing
@@ -284,8 +292,15 @@ clear state for token rejected
 clear state for connected but no runs
 ```
 
-The scaffold intentionally does not implement operator mutations yet. Approve,
-deny, resume, retry, cancel, dispatch, and live SSE replay belong in PR41.
+Still deferred:
+
+```text
+OS keychain-backed session storage
+pairing-code UX
+remembered approval policy edits
+system tray and desktop notifications
+packaged installers and signed release artifacts
+```
 
 ## Desktop Information Architecture
 
@@ -299,22 +314,24 @@ left rail:
   status counts
 
 center workspace:
+  dispatch composer
   selected run replay
+  live stream / polling fallback state
   empty/error states
-  future chat-style run composer
-  future workflow timeline and terminal drawer
+  future terminal drawer
 
 right inspector:
   replay summary
-  pending approval preview
-  hook decision preview
-  workflow step preview
+  pending approval action card
+  resume / retry / cancel controls
+  hook decision cards
+  workflow step cards
   retry lineage later
   raw event toggle later
 ```
 
-The first screen should be the working surface, not a marketing page. Empty
-states should be operational:
+The first screen is the working surface, not a marketing page. Empty states are
+operational:
 
 ```text
 no daemon connected
@@ -329,23 +346,27 @@ selected run waiting_input
 
 ## Approval UX
 
-Approval prompts should be desktop-native and interruptive enough to be useful
-without becoming noisy.
+Approval prompts are visible in the right inspector and can be approved or denied
+without reading raw JSON.
 
-Required states:
+Current MVP approval actions:
+
+```text
+approve once
+ deny once with reason
+show risk
+show title and message
+show request payload behind details
+```
+
+Target future states:
 
 ```text
 ask every time
-approve once
-deny once
 remember for this run
 remember for this workspace policy later
 open policy/config location
 ```
-
-The first MVP may implement only approve/deny/resume through existing APIs. The
-UI must still show where a future remembered decision would live, so the product
-direction is clear.
 
 Approval cards should display:
 
@@ -450,13 +471,12 @@ PR39: Local operator daemon
   /api/native-agent reuse, no /mcp exposure, and replay SSE stream.
 
 PR40: Tauri desktop scaffold
-  Current: apps/desktop with Tauri 2 + React, connection screen, daemon status,
-  token missing/rejected states, schema not ready state, no-runs empty state,
-  runs list, selected replay, and local daemon CORS.
+  Completed: apps/desktop with Tauri 2 + React, connection screen, daemon
+  status, token/schema/no-runs states, selected replay, and local daemon CORS.
 
 PR41: Desktop operator MVP
-  Next: live replay stream, pending approval actions, approve/deny, resume,
-  retry, cancel, dispatch, hook decision cards, and workflow step state.
+  Current: live replay stream, polling fallback, dispatch, approve/deny, resume,
+  retry, cancel, hook decision cards, and workflow step state.
 
 PR42: Desktop packaging
   Add macOS, Windows, and Linux packaging strategy, icons, app id, release
