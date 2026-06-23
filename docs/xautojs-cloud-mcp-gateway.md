@@ -84,6 +84,19 @@ Tests cover session isolation, owner isolation, unknown workspace errors, offlin
 No real WebSocket gateway, device channel server, or database-backed cloud store is introduced in this phase.
 ```
 
+Phase 2 implementation status:
+
+```text
+src/cloud-session-binding.ts binds mcpSessionId + optional conversationSessionId to a validated deviceId.
+src/cloud-device-channel.ts defines the cloud-to-device channel interface without committing to WebSocket yet.
+src/gateway-mcp-tool-executor.ts routes MCP tool calls through CloudRoutingStore and CloudDeviceChannel.
+src/postgres-cloud-routing-store.ts implements the same routing contract with Postgres queries.
+migrations/postgres/0005_cloud_agent_control_plane.sql creates cloud_devices, cloud_workspace_routes, and cloud_tool_calls.
+Tests cover session pairing, device expiry/offline, Postgres route persistence, fake device routing, toolCall completion/failure, and local policy errors.
+The gateway executor does not import pi-tools, resolve local absolute paths, or execute shell commands directly.
+No real WebSocket gateway, cloud HTTP server, or Desktop outbound client is introduced in this phase.
+```
+
 This is correct for self-hosted use. Public customer mode needs an additional split:
 
 ```text
@@ -437,6 +450,7 @@ PAIRING_DENIED          retryable=false  The Desktop user denied the session.
 DEVICE_OFFLINE          retryable=true   The selected Desktop device is not connected.
 DEVICE_BUSY             retryable=true   The device is online but cannot accept the call yet.
 DEVICE_NOT_FOUND        retryable=false  The selected Desktop device is unknown or revoked for this owner.
+DEVICE_FORBIDDEN        retryable=false  The MCP session is paired with another device or the device belongs to another owner.
 WORKSPACE_NOT_FOUND     retryable=false  The workspaceRef or workspaceId is unknown.
 WORKSPACE_FORBIDDEN     retryable=false  The current session cannot access this workspace.
 SESSION_EXPIRED         retryable=false  The conversation, device, or workspace route expired.
@@ -549,12 +563,16 @@ conversation_sessions:
   completed_at
 ```
 
-Phase 1.3 code skeleton maps these tables into in-memory records first:
+Phase 1.3 and Phase 2 code skeletons map the control-plane subset first:
 
 ```text
-CloudRoutingDeviceRecord -> devices and current routeable device state
-CloudRoutingWorkspaceRouteRecord -> workspace_sessions routing subset
-CloudRoutingToolCallRecord -> tool_calls idempotency/routing subset
+CloudRoutingDeviceRecord -> cloud_devices routeable device state
+CloudRoutingWorkspaceRouteRecord -> cloud_workspace_routes workspace-session routing subset
+CloudRoutingToolCallRecord -> cloud_tool_calls idempotency and routing subset
+CloudSessionBindingRecord -> in-memory MCP-session-to-device pairing until a dedicated session table lands
+PostgresCloudRoutingStore -> Postgres implementation of the same CloudRoutingStore contract
+GatewayMcpToolExecutor -> cloud executor that validates route state, then delegates to CloudDeviceChannel
+CloudDeviceChannel -> future WebSocket/SSE/long-poll boundary; currently tested with a fake channel
 ```
 
 `local_path_hash` is optional and for diagnostics only. The local absolute path remains authoritative only on the customer's machine.
@@ -637,9 +655,32 @@ a repeated toolCallId on the same route is idempotent
 a repeated toolCallId on a different route returns TOOL_CALL_CONFLICT
 ```
 
-This phase intentionally stops at an in-memory store. A Postgres-backed implementation can use the same interface later, and the gateway executor can depend on that interface without changing tool handlers again.
+### Phase 2: Cloud Agent Control Plane Skeleton
 
-### Phase 2: Preserve Self-Hosted Mode
+Make cloud mode testable without introducing a real WebSocket gateway yet.
+
+```text
+src/cloud-session-binding.ts
+src/cloud-device-channel.ts
+src/gateway-mcp-tool-executor.ts
+src/postgres-cloud-routing-store.ts
+migrations/postgres/0005_cloud_agent_control_plane.sql
+```
+
+Required behavior:
+
+```text
+MCP session must resolve to exactly one permitted device before open_workspace routes.
+conversationSessionId and mcpSessionId remain part of every forwarded tool call.
+GatewayMcpToolExecutor validates routing state before sending to a device channel.
+GatewayMcpToolExecutor never imports pi-tools and never touches local paths or shell directly.
+PostgresCloudRoutingStore preserves the same behavior as the in-memory CloudRoutingStore contract.
+Fake CloudDeviceChannel tests prove route -> device -> result/error flow without a real transport.
+```
+
+This phase intentionally stops at a fake channel. The production WebSocket client/server can replace `CloudDeviceChannel` later without changing MCP tool handlers again.
+
+### Phase 3: Preserve Self-Hosted Mode
 
 `devspace serve` remains the self-hosted local MCP server:
 
@@ -649,19 +690,19 @@ ChatGPT -> customer tunnel -> local devspace serve -> local files
 
 No customer-visible behavior should break in this phase.
 
-### Phase 3: Add Cloud Gateway Mode
+### Phase 4: Add Cloud Gateway Mode
 
 Add a gateway server mode where MCP tool registration is the same, but executor implementation is remote:
 
 ```text
 src/cloud/gateway-server.ts
-src/cloud/gateway-tool-executor.ts
 src/cloud/device-channel-store.ts
+src/cloud/websocket-device-channel.ts
 ```
 
-`GatewayToolExecutor` validates the MCP session and routes calls to a connected device. It never imports `pi-tools` or touches local file paths.
+The gateway server should use `GatewayMcpToolExecutor`, `CloudSessionBindingService`, and `CloudRoutingStore`. It accepts MCP requests, validates the current session, and sends tool calls to a connected device. It never imports `pi-tools` or touches local file paths.
 
-### Phase 4: Add Local Agent Mode
+### Phase 5: Add Local Agent Mode
 
 Add a local agent process that Desktop can start:
 
@@ -673,7 +714,7 @@ src/local-agent/workspace-registry.ts
 
 The local agent receives tool calls, resolves workspaceRef locally, runs the existing local executor, and returns results.
 
-### Phase 5: Desktop Supervisor
+### Phase 6: Desktop Supervisor
 
 Tauri Desktop should manage the local agent lifecycle:
 
@@ -688,7 +729,7 @@ kill child process on forced quit
 
 The Rust side should own process lifecycle. The renderer should not hold long-lived raw cloud secrets.
 
-### Phase 6: CI And Release
+### Phase 7: CI And Release
 
 CI should produce:
 
@@ -731,4 +772,4 @@ LocalToolExecutor preserves current behavior.
 Tests prove existing MCP local mode still opens workspaces, reads files, edits files, and runs shell commands.
 ```
 
-This is the smallest architectural move that makes the future cloud gateway possible without destabilizing current users.
+This first milestone is now represented by the local executor, remote executor, cloud routing store, gateway executor, and fake channel tests. The next production milestone is replacing the fake device channel with a real outbound Desktop/local-agent channel while keeping the same contracts.
