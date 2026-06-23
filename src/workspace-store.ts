@@ -292,21 +292,6 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         last_used_at text not null
       );
 
-      create index if not exists workspace_sessions_owner_idx
-        on workspace_sessions(tenant_id, user_id, last_used_at desc);
-
-      create index if not exists workspace_sessions_owner_mcp_session_idx
-        on workspace_sessions(tenant_id, user_id, mcp_session_id, last_used_at desc);
-
-      create index if not exists workspace_sessions_owner_root_idx
-        on workspace_sessions(tenant_id, user_id, root, last_used_at desc);
-
-      create index if not exists workspace_sessions_owner_status_idx
-        on workspace_sessions(tenant_id, user_id, status, last_used_at desc);
-
-      create index if not exists workspace_sessions_last_used_idx
-        on workspace_sessions(last_used_at);
-
       create table if not exists loaded_agent_files (
         workspace_session_id text not null,
         path text not null,
