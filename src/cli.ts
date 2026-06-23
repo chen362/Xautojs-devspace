@@ -9,11 +9,12 @@ import { registerAutomationApiRoutes } from "./automation-api.js";
 import { runAutomationCommand } from "./automation-source-cli.js";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { postgresConnectionSummary } from "./db/postgres.js";
-import type { PostgresDatabaseConfig } from "./db/types.js";
+import type { PostgresDatabaseConfig, PostgresSslMode } from "./db/types.js";
 import type { PostgresMigrationStatusJson } from "./db/postgres-migrations.js";
 import { registerGithubWebhookRoutes } from "./github-webhook-api.js";
 import { registerNativeAgentApiRoutes } from "./native-agent-api.js";
 import { runNativeAgentCommand } from "./native-agent-cli.js";
+import { startOperatorServer } from "./operator-server.js";
 import { buildReadinessReport } from "./readiness.js";
 import {
   generateOwnerToken,
@@ -24,13 +25,27 @@ import {
 } from "./user-config.js";
 import { expandHomePath } from "./roots.js";
 
-type Command = "serve" | "init" | "doctor" | "config" | "db" | "automation" | "agent" | "help";
+type Command = "serve" | "init" | "doctor" | "config" | "db" | "automation" | "agent" | "operator" | "help";
 type DbCommand = "migrate" | "status";
+type OperatorCommand = "serve";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
+const DEFAULT_OPERATOR_HOST = "127.0.0.1";
+const DEFAULT_OPERATOR_PORT = 7677;
 
 interface SqliteMemoryDatabaseConstructor {
   new (filename: string): { close(): void };
+}
+
+interface OperatorServeArgs {
+  command: OperatorCommand;
+  host: string;
+  port: number;
+  databaseUrl?: string;
+  postgresSslMode?: PostgresSslMode;
+  operatorToken?: string;
+  sessionTtlSeconds?: number;
+  json: boolean;
 }
 
 interface DoctorReport {
@@ -118,6 +133,9 @@ async function main(argv: string[]): Promise<void> {
     case "agent":
       await runNativeAgentCommand(args, loadConfig());
       return;
+    case "operator":
+      await runOperatorCommand(args);
+      return;
     case "help":
       printHelp();
       return;
@@ -132,7 +150,8 @@ function normalizeCommand(command: string | undefined): Command {
     command === "config" ||
     command === "db" ||
     command === "automation" ||
-    command === "agent"
+    command === "agent" ||
+    command === "operator"
   ) return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   throw new Error(`Unknown command: ${command}`);
@@ -304,6 +323,172 @@ async function serve(): Promise<void> {
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
+}
+
+async function runOperatorCommand(args: string[]): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    printOperatorHelp();
+    return;
+  }
+
+  const parsed = parseOperatorCommandArgs(args);
+  const env = operatorServeEnv(parsed);
+  const config = loadConfig(env);
+  if (config.database.provider !== "postgres") {
+    throw new Error(
+      [
+        "`devspace operator serve` requires DEVSPACE_DATABASE_PROVIDER=postgres.",
+        "Provide DEVSPACE_DATABASE_URL or pass --database-url <postgres-url>.",
+      ].join("\n"),
+    );
+  }
+  const operatorToken = parsed.operatorToken ?? env.DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN;
+  if (!operatorToken) {
+    throw new Error(
+      "`devspace operator serve` requires DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN or --operator-token.",
+    );
+  }
+
+  const { assertPostgresSchemaReady } = await import("./db/postgres-migrations.js");
+  await assertPostgresSchemaReady(config.database);
+  const operatorServer = await startOperatorServer(config, {
+    operatorToken,
+    operatorSessionTtlSeconds: parsed.sessionTtlSeconds,
+  });
+
+  if (parsed.json) {
+    console.log(JSON.stringify({
+      ok: true,
+      mode: "operator",
+      url: operatorServer.url,
+      apiBasePath: operatorServer.apiBasePath,
+      readyUrl: operatorServer.readyUrl,
+      host: config.host,
+      port: config.port,
+      database: config.database.provider,
+    }, null, 2));
+  } else {
+    console.log(`xautojs operator listening on ${operatorServer.url}`);
+    console.log(`operator api: ${operatorServer.url}${operatorServer.apiBasePath}`);
+    console.log(`readiness: ${operatorServer.readyUrl}`);
+    console.log(`database: ${config.database.provider}`);
+  }
+
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void operatorServer.close().finally(() => process.exit(0));
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+}
+
+function parseOperatorCommandArgs(args: string[]): OperatorServeArgs {
+  const positional: string[] = [];
+  let host = DEFAULT_OPERATOR_HOST;
+  let port = DEFAULT_OPERATOR_PORT;
+  let databaseUrl: string | undefined;
+  let postgresSslMode: PostgresSslMode | undefined;
+  let operatorToken: string | undefined;
+  let sessionTtlSeconds: number | undefined;
+  let json = false;
+
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--host") {
+      host = readOptionValue(args, ++index, arg);
+      continue;
+    }
+    if (arg === "--port") {
+      port = parsePortOption(readOptionValue(args, ++index, arg), arg);
+      continue;
+    }
+    if (arg === "--database-url") {
+      databaseUrl = readOptionValue(args, ++index, arg);
+      continue;
+    }
+    if (arg === "--postgres-ssl-mode") {
+      postgresSslMode = parsePostgresSslModeOption(readOptionValue(args, ++index, arg));
+      continue;
+    }
+    if (arg === "--operator-token") {
+      operatorToken = readOptionValue(args, ++index, arg);
+      continue;
+    }
+    if (arg === "--session-ttl-seconds") {
+      sessionTtlSeconds = parseMinimumIntegerOption(readOptionValue(args, ++index, arg), arg, 60);
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`Unexpected devspace operator option: ${arg}`);
+    }
+    positional.push(arg);
+  }
+
+  const [rawSubcommand, ...rest] = positional;
+  if (rest.length > 0) {
+    throw new Error(`Unexpected devspace operator argument: ${rest.join(" ")}`);
+  }
+  const command = normalizeOperatorCommand(rawSubcommand);
+  return { command, host, port, databaseUrl, postgresSslMode, operatorToken, sessionTtlSeconds, json };
+}
+
+function normalizeOperatorCommand(command: string | undefined): OperatorCommand {
+  if (!command || command === "serve") return "serve";
+  throw new Error(`Unknown operator command: ${command}`);
+}
+
+function operatorServeEnv(parsed: OperatorServeArgs): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  env.HOST = parsed.host;
+  env.PORT = String(parsed.port);
+  env.DEVSPACE_PUBLIC_BASE_URL = localHttpBaseUrl(parsed.host, parsed.port);
+  if (parsed.databaseUrl) {
+    env.DEVSPACE_DATABASE_PROVIDER = "postgres";
+    env.DEVSPACE_DATABASE_URL = parsed.databaseUrl;
+  }
+  if (parsed.postgresSslMode) {
+    env.DEVSPACE_POSTGRES_SSL_MODE = parsed.postgresSslMode;
+  }
+  if (parsed.operatorToken) {
+    env.DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN = parsed.operatorToken;
+  }
+  if (parsed.sessionTtlSeconds) {
+    env.DEVSPACE_NATIVE_AGENT_OPERATOR_SESSION_TTL_SECONDS = String(parsed.sessionTtlSeconds);
+  }
+  return env;
+}
+
+function readOptionValue(args: string[], index: number, option: string): string {
+  const value = args[index];
+  if (!value || value.startsWith("--")) throw new Error(`Missing value for ${option}.`);
+  return value;
+}
+
+function parsePortOption(value: string, option: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(`${option} must be a port between 1 and 65535.`);
+  }
+  return parsed;
+}
+
+function parseMinimumIntegerOption(value: string, option: string, minimum: number): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum) {
+    throw new Error(`${option} must be an integer greater than or equal to ${minimum}.`);
+  }
+  return parsed;
+}
+
+function parsePostgresSslModeOption(value: string): PostgresSslMode {
+  if (value === "prefer" || value === "require" || value === "disable") return value;
+  throw new Error("--postgres-ssl-mode must be one of prefer, require, or disable.");
 }
 
 async function runDoctor(args: string[]): Promise<void> {
@@ -598,9 +783,34 @@ function printHelp(): void {
       "  devspace agent approve --id <agentRunId> --approval-id <approvalId>",
       "  devspace agent deny --id <agentRunId> --approval-id <approvalId>",
       "  devspace agent cancel --id <agentRunId>",
+      "  devspace operator serve  Start the local native-agent operator daemon",
       "",
       "For temporary tunnels:",
       "  DEVSPACE_PUBLIC_BASE_URL=https://example.trycloudflare.com devspace serve",
+    ].join("\n"),
+  );
+}
+
+function printOperatorHelp(): void {
+  console.log(
+    [
+      "DevSpace operator",
+      "",
+      "Usage:",
+      "  devspace operator serve [options]",
+      "",
+      "Options:",
+      "  --host <host>                         Bind host. Defaults to 127.0.0.1.",
+      "  --port <port>                         Bind port. Defaults to 7677.",
+      "  --database-url <postgres-url>         Postgres URL. Also sets DEVSPACE_DATABASE_PROVIDER=postgres.",
+      "  --postgres-ssl-mode <mode>            prefer, require, or disable.",
+      "  --operator-token <token>              Native agent operator token.",
+      "  --session-ttl-seconds <seconds>       Operator session TTL. Minimum 60.",
+      "  --json                                Print daemon metadata as JSON.",
+      "",
+      "Required:",
+      "  Postgres schema must be ready.",
+      "  DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN or --operator-token must be set.",
     ].join("\n"),
   );
 }
@@ -619,6 +829,11 @@ function normalizePublicBaseUrl(value: string): string {
   parsed.search = "";
   parsed.pathname = parsed.pathname.replace(/\/+$/, "");
   return parsed.toString().replace(/\/$/, "");
+}
+
+function localHttpBaseUrl(host: string, port: number): string {
+  const formattedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `http://${formattedHost}:${port}`;
 }
 
 type TextPromptOptions = Omit<Parameters<typeof prompts.text>[0], "validate"> & {
