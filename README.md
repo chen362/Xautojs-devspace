@@ -13,9 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@waishnav/devspace"><img alt="npm" src="https://img.shields.io/npm/v/%40waishnav%2Fdevspace?style=flat-square" /></a>
+  <img alt="Package" src="https://img.shields.io/badge/package-xautojs--devspace-blue?style=flat-square" />
   <a href="https://github.com/chen362/Xautojs-devspace/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/chen362/Xautojs-devspace/ci.yml?style=flat-square&branch=Xautojs-devspace" /></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/npm/l/%40waishnav%2Fdevspace?style=flat-square" /></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green?style=flat-square" /></a>
 </p>
 
 [![DevSpace connected to ChatGPT](docs/assets/devspace-screenshot.png)](docs/assets/devspace-screenshot.png)
@@ -51,12 +51,19 @@ Codex and Claude Code are reference systems for good ideas. The runtime, storage
 policy, hooks, workflow packs, and operator controls are Xautojs-native and do
 not require a Codex or Claude Code binary.
 
-## Package Note
+## Package Name
 
-This repository currently keeps the upstream CLI package name:
+This fork is moving off the upstream package identity. The local package metadata
+uses:
 
-```bash
-@waishnav/devspace
+```text
+xautojs-devspace
+```
+
+The CLI binary remains:
+
+```text
+devspace
 ```
 
 The default development branch is:
@@ -65,31 +72,28 @@ The default development branch is:
 Xautojs-devspace
 ```
 
-Use the default branch documentation as the source of truth for the Xautojs
-runtime features.
+Until a public npm release is published under the new package name, use the
+source checkout workflow below.
 
-## Quick Start
+## Quick Start From Source
 
 DevSpace requires Node `>=20.12 <27`. Node 22 LTS is recommended.
 
-Install the CLI:
+Clone and build this repository:
 
 ```bash
-npm install -g @waishnav/devspace
+git clone https://github.com/chen362/Xautojs-devspace.git
+cd Xautojs-devspace
+git checkout Xautojs-devspace
+npm install --include=dev
+npm run build
 ```
 
-Initialize and start the server:
+Initialize and start the server from the built CLI:
 
 ```bash
-devspace init
-devspace serve
-```
-
-Or run it without a global install:
-
-```bash
-npx @waishnav/devspace init
-npx @waishnav/devspace serve
+node dist/cli.js init
+node dist/cli.js serve
 ```
 
 During setup, DevSpace asks for:
@@ -112,7 +116,7 @@ https://your-tunnel-host.example.com/mcp
 ```
 
 When the client connects, DevSpace opens an Owner password approval page. Enter
-the Owner password printed by `devspace init`. It is also stored in:
+the Owner password printed by `node dist/cli.js init`. It is also stored in:
 
 ```text
 ~/.devspace/auth.json
@@ -132,7 +136,7 @@ that part of your machine.
 For a normal ChatGPT coding session:
 
 1. Start your tunnel.
-2. Run `devspace serve`.
+2. Run `node dist/cli.js serve`.
 3. Connect the MCP client to your public `/mcp` URL.
 4. Approve the connection with the Owner password.
 5. Ask ChatGPT to open one of your allowed project folders.
@@ -152,7 +156,7 @@ DEVSPACE_OIDC_AUDIENCE="https://devspace.example.com/mcp" \
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
 DEVSPACE_POSTGRES_SSL_MODE="require" \
-npx @waishnav/devspace db migrate
+node dist/cli.js db migrate
 ```
 
 Check schema readiness with JSON output:
@@ -160,7 +164,7 @@ Check schema readiness with JSON output:
 ```bash
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
-npx @waishnav/devspace db status --json
+node dist/cli.js db status --json
 ```
 
 Then start the server with the same database settings. `devspace serve` checks
@@ -184,9 +188,9 @@ event as audit-only ignored work.
 Source tokens are managed with:
 
 ```bash
-devspace automation source create
-devspace automation source list
-devspace automation source rotate-token
+node dist/cli.js automation source create
+node dist/cli.js automation source list
+node dist/cli.js automation source rotate-token
 ```
 
 ## Native Agent Runtime
@@ -245,22 +249,22 @@ DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN
 Common CLI flow:
 
 ```bash
-devspace agent workflows
-devspace agent dispatch-once --workspace-root /path/to/workspace
-devspace agent list
-devspace agent replay --id <agentRunId>
-devspace agent approvals --id <agentRunId>
-devspace agent approve --id <agentRunId> --approval-id <approvalId>
-devspace agent deny --id <agentRunId> --approval-id <approvalId>
-devspace agent resume --id <agentRunId> --workspace-root /path/to/workspace
-devspace agent retry --id <agentRunId>
-devspace agent cancel --id <agentRunId>
+node dist/cli.js agent workflows
+node dist/cli.js agent dispatch-once --workspace-root /path/to/workspace
+node dist/cli.js agent list
+node dist/cli.js agent replay --id <agentRunId>
+node dist/cli.js agent approvals --id <agentRunId>
+node dist/cli.js agent approve --id <agentRunId> --approval-id <approvalId>
+node dist/cli.js agent deny --id <agentRunId> --approval-id <approvalId>
+node dist/cli.js agent resume --id <agentRunId> --workspace-root /path/to/workspace
+node dist/cli.js agent retry --id <agentRunId>
+node dist/cli.js agent cancel --id <agentRunId>
 ```
 
-`devspace agent replay --id <agentRunId>` now prints an operator-focused summary
-by default: status, workflow, approval counts, hook decision counts, workflow
-step state, pending approval, blocking hooks, and retry links. Use `--json` for
-the full machine-readable event stream.
+`node dist/cli.js agent replay --id <agentRunId>` now prints an operator-focused
+summary by default: status, workflow, approval counts, hook decision counts,
+workflow step state, pending approval, blocking hooks, and retry links. Use
+`--json` for the full machine-readable event stream.
 
 ## Operator API
 
@@ -308,7 +312,7 @@ DevSpace supports Linux, macOS, and Windows environments.
 Run this to inspect your local setup:
 
 ```bash
-devspace doctor
+node dist/cli.js doctor
 ```
 
 ## Documentation
