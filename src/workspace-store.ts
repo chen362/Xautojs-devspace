@@ -11,10 +11,15 @@ import { PostgresWorkspaceStore } from "./postgres-workspace-store.js";
 
 export type WorkspaceMode = "checkout" | "worktree";
 
+export interface WorkspaceSessionScope {
+  mcpSessionId?: string;
+}
+
 export interface WorkspaceSession {
   id: string;
   tenantId: string;
   userId: string;
+  mcpSessionId?: string;
   root: string;
   status: string;
   mode: WorkspaceMode;
@@ -52,22 +57,36 @@ export interface WorkspaceStore {
     owner: WorkspaceIdentity;
     id: string;
     root: string;
+    mcpSessionId?: string;
     mode?: WorkspaceMode;
     sourceRoot?: string;
     baseRef?: string;
     baseSha?: string;
     managed?: boolean;
   }): Promise<WorkspaceSession>;
-  getSession(id: string, owner: WorkspaceIdentity): Promise<WorkspaceSession | undefined>;
+  getSession(
+    id: string,
+    owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
+  ): Promise<WorkspaceSession | undefined>;
   saveLoadedAgentFiles(input: {
     owner: WorkspaceIdentity;
     workspaceSessionId: string;
     files: LoadedAgentFileInput[];
+    scope?: WorkspaceSessionScope;
   }): Promise<void>;
-  getLoadedAgentFiles(workspaceSessionId: string, owner: WorkspaceIdentity): Promise<LoadedAgentFile[]>;
-  deleteSession(id: string, owner: WorkspaceIdentity): Promise<boolean>;
+  getLoadedAgentFiles(
+    workspaceSessionId: string,
+    owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
+  ): Promise<LoadedAgentFile[]>;
+  deleteSession(
+    id: string,
+    owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
+  ): Promise<boolean>;
   deleteExpiredSessions(cutoff: string): Promise<number>;
-  touchSession(id: string, owner: WorkspaceIdentity): Promise<void>;
+  touchSession(id: string, owner: WorkspaceIdentity, scope?: WorkspaceSessionScope): Promise<void>;
   close?(): Promise<void>;
 }
 
@@ -83,6 +102,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     owner: WorkspaceIdentity;
     id: string;
     root: string;
+    mcpSessionId?: string;
     mode?: WorkspaceMode;
     sourceRoot?: string;
     baseRef?: string;
@@ -94,6 +114,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       id: input.id,
       tenantId: input.owner.tenantId,
       userId: input.owner.userId,
+      mcpSessionId: input.mcpSessionId,
       root: input.root,
       status: "active",
       mode: input.mode ?? "checkout",
@@ -111,6 +132,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         id: session.id,
         tenantId: session.tenantId,
         userId: session.userId,
+        mcpSessionId: session.mcpSessionId ?? null,
         root: session.root,
         status: session.status,
         mode: session.mode,
@@ -126,11 +148,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return session;
   }
 
-  async getSession(id: string, owner: WorkspaceIdentity): Promise<WorkspaceSession | undefined> {
+  async getSession(
+    id: string,
+    owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
+  ): Promise<WorkspaceSession | undefined> {
     const row = this.database.db
       .select()
       .from(workspaceSessions)
-      .where(ownerSessionFilter(id, owner))
+      .where(ownerSessionFilter(id, owner, scope))
       .get();
 
     return row ? rowToWorkspaceSession(row) : undefined;
@@ -140,8 +166,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     owner: WorkspaceIdentity;
     workspaceSessionId: string;
     files: LoadedAgentFileInput[];
+    scope?: WorkspaceSessionScope;
   }): Promise<void> {
-    const session = await this.getSession(input.workspaceSessionId, input.owner);
+    const session = await this.getSession(input.workspaceSessionId, input.owner, input.scope);
     if (!session) return;
 
     const now = new Date().toISOString();
@@ -179,7 +206,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   async getLoadedAgentFiles(
     workspaceSessionId: string,
     owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
   ): Promise<LoadedAgentFile[]> {
+    const mcpSessionId = scope?.mcpSessionId ?? null;
     const rows = this.database.sqlite
       .prepare(`
         select
@@ -194,22 +223,29 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         where files.workspace_session_id = ?
           and sessions.tenant_id = ?
           and sessions.user_id = ?
+          and (? is null or sessions.mcp_session_id = ?)
         order by files.path asc
       `)
-      .all(workspaceSessionId, owner.tenantId, owner.userId) as StoredLoadedAgentFileRow[];
+      .all(workspaceSessionId, owner.tenantId, owner.userId, mcpSessionId, mcpSessionId) as StoredLoadedAgentFileRow[];
 
     return rows.map(rowToLoadedAgentFile);
   }
 
-  async deleteSession(id: string, owner: WorkspaceIdentity): Promise<boolean> {
+  async deleteSession(
+    id: string,
+    owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
+  ): Promise<boolean> {
+    const mcpSessionId = scope?.mcpSessionId ?? null;
     const result = this.database.sqlite
       .prepare(`
         delete from workspace_sessions
         where id = ?
           and tenant_id = ?
           and user_id = ?
+          and (? is null or mcp_session_id = ?)
       `)
-      .run(id, owner.tenantId, owner.userId);
+      .run(id, owner.tenantId, owner.userId, mcpSessionId, mcpSessionId);
 
     return result.changes > 0;
   }
@@ -222,11 +258,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return result.changes;
   }
 
-  async touchSession(id: string, owner: WorkspaceIdentity): Promise<void> {
+  async touchSession(
+    id: string,
+    owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
+  ): Promise<void> {
     this.database.db
       .update(workspaceSessions)
       .set({ lastUsedAt: new Date().toISOString() })
-      .where(ownerSessionFilter(id, owner))
+      .where(ownerSessionFilter(id, owner, scope))
       .run();
   }
 
@@ -240,6 +280,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         id text primary key,
         tenant_id text not null default 'local',
         user_id text not null default 'owner',
+        mcp_session_id text,
         root text not null,
         status text not null default 'active',
         mode text not null default 'checkout',
@@ -253,6 +294,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
       create index if not exists workspace_sessions_owner_idx
         on workspace_sessions(tenant_id, user_id, last_used_at desc);
+
+      create index if not exists workspace_sessions_owner_mcp_session_idx
+        on workspace_sessions(tenant_id, user_id, mcp_session_id, last_used_at desc);
 
       create index if not exists workspace_sessions_owner_root_idx
         on workspace_sessions(tenant_id, user_id, root, last_used_at desc);
@@ -282,6 +326,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
     this.addColumnIfMissing("workspace_sessions", "tenant_id", "text not null default 'local'");
     this.addColumnIfMissing("workspace_sessions", "user_id", "text not null default 'owner'");
+    this.addColumnIfMissing("workspace_sessions", "mcp_session_id", "text");
     this.addColumnIfMissing("workspace_sessions", "mode", "text not null default 'checkout'");
     this.addColumnIfMissing("workspace_sessions", "source_root", "text");
     this.addColumnIfMissing("workspace_sessions", "base_ref", "text");
@@ -290,6 +335,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.database.sqlite.exec(`
       create index if not exists workspace_sessions_owner_idx
         on workspace_sessions(tenant_id, user_id, last_used_at desc);
+
+      create index if not exists workspace_sessions_owner_mcp_session_idx
+        on workspace_sessions(tenant_id, user_id, mcp_session_id, last_used_at desc);
 
       create index if not exists workspace_sessions_owner_root_idx
         on workspace_sessions(tenant_id, user_id, root, last_used_at desc);
@@ -318,7 +366,20 @@ export function createWorkspaceStore(config: string | DatabaseConfig): Workspace
   return new SqliteWorkspaceStore(config.stateDir);
 }
 
-function ownerSessionFilter(id: string, owner: WorkspaceIdentity) {
+function ownerSessionFilter(
+  id: string,
+  owner: WorkspaceIdentity,
+  scope: WorkspaceSessionScope | undefined,
+) {
+  if (scope?.mcpSessionId) {
+    return and(
+      eq(workspaceSessions.id, id),
+      eq(workspaceSessions.tenantId, owner.tenantId),
+      eq(workspaceSessions.userId, owner.userId),
+      eq(workspaceSessions.mcpSessionId, scope.mcpSessionId),
+    );
+  }
+
   return and(
     eq(workspaceSessions.id, id),
     eq(workspaceSessions.tenantId, owner.tenantId),
@@ -331,6 +392,7 @@ function rowToWorkspaceSession(row: WorkspaceSessionRow): WorkspaceSession {
     id: row.id,
     tenantId: row.tenantId ?? LOCAL_WORKSPACE_IDENTITY.tenantId,
     userId: row.userId ?? LOCAL_WORKSPACE_IDENTITY.userId,
+    mcpSessionId: row.mcpSessionId ?? undefined,
     root: row.root,
     status: row.status,
     mode: row.mode === "worktree" ? "worktree" : "checkout",
