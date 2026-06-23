@@ -126,6 +126,11 @@ export class InMemoryCloudSessionBindingService implements CloudSessionBindingSe
         details: { deviceId: existing.deviceId },
       });
     }
+    if (isCloudRouteExpired(device.expiresAt, now)) {
+      throw new CloudRoutingError("SESSION_EXPIRED", "Device route is expired.", {
+        details: { deviceId: existing.deviceId },
+      });
+    }
     if (device.status !== "online") {
       throw new CloudRoutingError("DEVICE_OFFLINE", "Device is offline.", {
         retryable: true,
