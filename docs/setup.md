@@ -1,7 +1,7 @@
 # Setup Guide
 
 This guide is for users who want ChatGPT or another MCP host to work in local
-projects through DevSpace.
+projects through Xautojs DevSpace.
 
 ## Requirements
 
@@ -14,12 +14,25 @@ projects through DevSpace.
 DevSpace does not create the public tunnel for you. Use Cloudflare Tunnel,
 ngrok, Pinggy, Tailscale Funnel, or your own HTTPS reverse proxy.
 
-## Install And Configure
+## Install From Source
+
+Until a public npm release is published under the Xautojs package name, run from
+this repository checkout:
+
+```bash
+git clone https://github.com/chen362/Xautojs-devspace.git
+cd Xautojs-devspace
+git checkout Xautojs-devspace
+npm install --include=dev
+npm run build
+```
+
+## Configure
 
 Run:
 
 ```bash
-npx @waishnav/devspace init
+node dist/cli.js init
 ```
 
 The setup flow asks one question at a time.
@@ -79,20 +92,20 @@ https://your-tunnel-host.example.com/mcp
 Run:
 
 ```bash
-npx @waishnav/devspace serve
+node dist/cli.js serve
 ```
 
 If your tunnel URL changes for one run, override it without rewriting config:
 
 ```bash
-DEVSPACE_PUBLIC_BASE_URL="https://new-tunnel.example.com" npx @waishnav/devspace serve
+DEVSPACE_PUBLIC_BASE_URL="https://new-tunnel.example.com" node dist/cli.js serve
 ```
 
 For a stable public URL, persist it:
 
 ```bash
-npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
-npx @waishnav/devspace serve
+node dist/cli.js config set publicBaseUrl https://devspace.example.com
+node dist/cli.js serve
 ```
 
 ## Approve The Client
@@ -114,7 +127,7 @@ Keep `auth.json` private.
 Run:
 
 ```bash
-npx @waishnav/devspace doctor
+node dist/cli.js doctor
 ```
 
 The doctor command reports the resolved config, Node version, Node ABI, platform,
@@ -124,12 +137,12 @@ Postgres mode, it also reports schema migration readiness.
 For automation and deployment smoke checks, use JSON output:
 
 ```bash
-npx @waishnav/devspace doctor --json
+node dist/cli.js doctor --json
 ```
 
-## Running From A Local Checkout
+## Running During Development
 
-If you are developing DevSpace itself instead of using the published package:
+For active development, use the dev server script:
 
 ```bash
 npm install --include=dev
