@@ -81,6 +81,42 @@ npm run build
 This means `npm publish` should fail before upload if package identity, lockfile
 metadata, tests, or build output are not ready.
 
+## GitHub Lockfile Sync
+
+If you do not want to run the lockfile sync locally, use the GitHub workflow:
+
+```text
+Sync Package Lock Release Identity
+```
+
+It can be triggered manually from the Actions tab. It also runs automatically on
+`Xautojs-devspace` when package metadata, release scripts, or the workflow itself
+changes.
+
+The workflow:
+
+```text
+1. checks out the selected base branch
+2. runs npm run release:sync-lockfile
+3. runs npm run release:check
+4. commits package-lock.json to automation/package-lock-release-identity if needed
+5. opens or updates a PR titled Fix package-lock release identity
+```
+
+This avoids editing a large `package-lock.json` by hand and keeps the generated
+lockfile diff isolated in a normal PR with CI.
+
+Manual inputs:
+
+| Input | Default | Purpose |
+| --- | --- | --- |
+| `base_branch` | `Xautojs-devspace` | Branch to sync from. |
+| `work_branch` | `automation/package-lock-release-identity` | Branch that receives the generated lockfile commit. |
+| `commit_message` | `Fix package-lock release identity` | Commit message for the generated lockfile update. |
+
+If the workflow reports that no diff is needed, the lockfile root metadata is
+already aligned with `package.json`.
+
 ## Versioning
 
 Use semver:
