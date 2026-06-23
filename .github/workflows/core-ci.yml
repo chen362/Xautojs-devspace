@@ -1,5 +1,6 @@
 name: Core CI
 
+# Validates the npm package, CLI, service APIs, and native-agent API contract.
 on:
   push:
     branches:
