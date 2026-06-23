@@ -3,7 +3,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { ServerConfig } from "./config.js";
 import { isPostgresDatabaseConfig } from "./db/types.js";
-import { PostgresNativeAgentStore, type NativeAgentRunStatus, type NativeAgentStore, type NativeAgentToolRisk } from "./native-agent-store.js";
+import { PostgresNativeAgentStore, type NativeAgentRunEvent, type NativeAgentRunStatus, type NativeAgentStore, type NativeAgentToolRisk } from "./native-agent-store.js";
 import { dispatchNativeAgentOnce, dispatchNativeAgentRunOnce } from "./native-agent-runtime.js";
 import {
   createNativeAgentRetry,
@@ -22,6 +22,9 @@ const OPERATOR_CONSOLE_ROUTE = "/operator";
 const OPERATOR_APP_MANIFEST_ENTRY = "operator-app.html";
 const OPERATOR_SESSION_COOKIE = "devspace_operator_session";
 const DEFAULT_OPERATOR_SESSION_TTL_SECONDS = 8 * 60 * 60;
+const DEFAULT_STREAM_POLL_MS = 1_000;
+const MIN_STREAM_POLL_MS = 50;
+const MAX_STREAM_POLL_MS = 30_000;
 const RUN_STATUSES = new Set<NativeAgentRunStatus>([
   "queued",
   "claiming",
@@ -204,6 +207,111 @@ export function registerNativeAgentApiRoutes(
       if (!store) throw unavailable();
       const replay = await replayNativeAgentRun(store, { agentRunId: routeParam(request.params.agentRunId) });
       response.json({ replay, requestId });
+    } catch (error) {
+      sendError(response, requestId, error);
+    }
+  });
+
+  app.get(`${ROUTE_PREFIX}/runs/:agentRunId/stream`, async (request, response) => {
+    const requestId = requestIdFor(request, response);
+    try {
+      requireOperator(request, operatorAuth);
+      if (!store) throw unavailable();
+      const agentRunId = routeParam(request.params.agentRunId);
+      const afterSeq = optionalPositiveInt(request.query.afterSeq, 0);
+      const maxEvents = optionalPositiveInt(request.query.maxEvents, 100);
+      const pollMs = optionalPollingInterval(request.query.pollMs);
+      const replay = await replayNativeAgentRun(store, { agentRunId });
+      let cursor = Math.max(afterSeq, replay.nextSeq - 1);
+      let closed = false;
+
+      startSse(response);
+      writeSse(response, "replay.snapshot", {
+        agentRunId,
+        events: replay.events.filter((event) => event.seq > afterSeq),
+        approvals: replay.approvals,
+        summary: replay.summary,
+        nextSeq: replay.nextSeq,
+        terminal: replay.terminal,
+        requestId,
+      });
+
+      if (replay.terminal) {
+        writeSse(response, "run.terminal", {
+          agentRunId,
+          summary: replay.summary,
+          nextSeq: replay.nextSeq,
+          terminal: true,
+          requestId,
+        });
+        response.end();
+        return;
+      }
+
+      const closeStream = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(interval);
+      };
+
+      const poll = async () => {
+        if (closed) return;
+        try {
+          const events = await store.readRunEvents({ agentRunId, afterSeq: cursor, maxEvents });
+          if (events.length === 0) {
+            writeSse(response, "heartbeat", {
+              agentRunId,
+              nextSeq: cursor + 1,
+              terminal: false,
+              requestId,
+            });
+            return;
+          }
+
+          cursor = events[events.length - 1]!.seq;
+          const updatedReplay = await replayNativeAgentRun(store, { agentRunId });
+          for (const event of events) {
+            writeSse(response, sseEventNameForRunEvent(event), {
+              agentRunId,
+              event,
+              summary: updatedReplay.summary,
+              nextSeq: cursor + 1,
+              terminal: updatedReplay.terminal,
+              requestId,
+            });
+          }
+
+          if (updatedReplay.terminal && cursor >= updatedReplay.nextSeq - 1) {
+            writeSse(response, "run.terminal", {
+              agentRunId,
+              summary: updatedReplay.summary,
+              nextSeq: updatedReplay.nextSeq,
+              terminal: true,
+              requestId,
+            });
+            closeStream();
+            response.end();
+          }
+        } catch (error) {
+          writeSse(response, "error", {
+            agentRunId,
+            error: {
+              code: "NATIVE_AGENT_STREAM_FAILED",
+              message: error instanceof Error ? error.message : String(error),
+              requestId,
+              retryable: true,
+            },
+          });
+          closeStream();
+          response.end();
+        }
+      };
+
+      const interval = setInterval(() => {
+        void poll();
+      }, pollMs);
+      interval.unref();
+      request.on("close", closeStream);
     } catch (error) {
       sendError(response, requestId, error);
     }
@@ -512,6 +620,39 @@ function optionalPositiveInt(value: unknown, fallback: number): number {
   if (value === undefined) return fallback;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function optionalPollingInterval(value: unknown): number {
+  const parsed = optionalPositiveInt(value, DEFAULT_STREAM_POLL_MS);
+  return Math.min(Math.max(parsed, MIN_STREAM_POLL_MS), MAX_STREAM_POLL_MS);
+}
+
+function startSse(response: Response): void {
+  response.status(200);
+  response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  response.setHeader("Cache-Control", "no-cache, no-transform");
+  response.setHeader("Connection", "keep-alive");
+  response.setHeader("X-Accel-Buffering", "no");
+  response.flushHeaders();
+}
+
+function writeSse(response: Response, event: string, data: unknown): void {
+  response.write(`event: ${event}\n`);
+  response.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function sseEventNameForRunEvent(event: NativeAgentRunEvent): string {
+  if (event.type === "run.approval.requested") return "approval.pending";
+  if (event.type === "run.approval.resolved") return "approval.resolved";
+  if (event.type === "run.hook.decision") return "hook.decision";
+  if (event.type === "run.loop.step") return "workflow.step";
+  if (
+    event.type === "run.succeeded" ||
+    event.type === "run.failed" ||
+    event.type === "run.cancelled" ||
+    event.type === "run.timed_out"
+  ) return "run.terminal";
+  return "run.event";
 }
 
 function bodyString(body: unknown, key: string): string | undefined {
