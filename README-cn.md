@@ -13,9 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@waishnav/devspace"><img alt="npm" src="https://img.shields.io/npm/v/%40waishnav%2Fdevspace?style=flat-square" /></a>
+  <img alt="Package" src="https://img.shields.io/badge/package-xautojs--devspace-blue?style=flat-square" />
   <a href="https://github.com/chen362/Xautojs-devspace/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/chen362/Xautojs-devspace/ci.yml?style=flat-square&branch=Xautojs-devspace" /></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/npm/l/%40waishnav%2Fdevspace?style=flat-square" /></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green?style=flat-square" /></a>
 </p>
 
 [![DevSpace connected to ChatGPT](docs/assets/devspace-screenshot.png)](docs/assets/devspace-screenshot.png)
@@ -51,10 +51,16 @@ Claude Code 二进制。
 
 ## 包名说明
 
-当前仓库仍沿用上游 CLI 包名：
+这个 fork 正在脱离上游包身份。当前本地 package metadata 使用：
 
-```bash
-@waishnav/devspace
+```text
+xautojs-devspace
+```
+
+CLI 二进制命令仍然是：
+
+```text
+devspace
 ```
 
 当前默认开发分支是：
@@ -63,30 +69,27 @@ Claude Code 二进制。
 Xautojs-devspace
 ```
 
-请以默认分支上的文档作为 Xautojs runtime 功能的准确信息来源。
+在新的 npm 包名公开发布前，请使用下面的源码运行方式。
 
-## 快速开始
+## 从源码快速开始
 
 DevSpace 需要 Node `>=20.12 <27`。推荐使用 Node 22 LTS。
 
-安装 CLI：
+克隆并构建本仓库：
 
 ```bash
-npm install -g @waishnav/devspace
+git clone https://github.com/chen362/Xautojs-devspace.git
+cd Xautojs-devspace
+git checkout Xautojs-devspace
+npm install --include=dev
+npm run build
 ```
 
-初始化并启动服务：
+用构建后的 CLI 初始化并启动服务：
 
 ```bash
-devspace init
-devspace serve
-```
-
-也可以不全局安装，直接使用 npx：
-
-```bash
-npx @waishnav/devspace init
-npx @waishnav/devspace serve
+node dist/cli.js init
+node dist/cli.js serve
 ```
 
 初始化时会询问：
@@ -107,7 +110,7 @@ MCP 客户端里配置完整的 `/mcp` 地址：
 https://your-tunnel-host.example.com/mcp
 ```
 
-当客户端连接时，DevSpace 会打开 Owner password 审批页。输入 `devspace init`
+当客户端连接时，DevSpace 会打开 Owner password 审批页。输入 `node dist/cli.js init`
 打印的 Owner password。它也会保存在：
 
 ```text
@@ -126,7 +129,7 @@ DevSpace 本质上是对选定本地目录的远程访问。
 一次普通 ChatGPT 编码会话通常是：
 
 1. 启动 tunnel。
-2. 运行 `devspace serve`。
+2. 运行 `node dist/cli.js serve`。
 3. 在 MCP 客户端里连接公网 `/mcp` 地址。
 4. 用 Owner password 批准连接。
 5. 让 ChatGPT 打开 allowed roots 里的某个项目目录。
@@ -146,7 +149,7 @@ DEVSPACE_OIDC_AUDIENCE="https://devspace.example.com/mcp" \
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
 DEVSPACE_POSTGRES_SSL_MODE="require" \
-npx @waishnav/devspace db migrate
+node dist/cli.js db migrate
 ```
 
 用 JSON 输出检查 schema 是否 ready：
@@ -154,7 +157,7 @@ npx @waishnav/devspace db migrate
 ```bash
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
-npx @waishnav/devspace db status --json
+node dist/cli.js db status --json
 ```
 
 然后用相同的数据库配置启动服务。`devspace serve` 会在接受流量前检查迁移状态。
@@ -176,9 +179,9 @@ routing policy，然后把事件排队成 automation work，或作为 audit-only
 Source token 通过这些命令管理：
 
 ```bash
-devspace automation source create
-devspace automation source list
-devspace automation source rotate-token
+node dist/cli.js automation source create
+node dist/cli.js automation source list
+node dist/cli.js automation source rotate-token
 ```
 
 ## Native Agent Runtime
@@ -238,19 +241,19 @@ DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN
 常见 CLI 流程：
 
 ```bash
-devspace agent workflows
-devspace agent dispatch-once --workspace-root /path/to/workspace
-devspace agent list
-devspace agent replay --id <agentRunId>
-devspace agent approvals --id <agentRunId>
-devspace agent approve --id <agentRunId> --approval-id <approvalId>
-devspace agent deny --id <agentRunId> --approval-id <approvalId>
-devspace agent resume --id <agentRunId> --workspace-root /path/to/workspace
-devspace agent retry --id <agentRunId>
-devspace agent cancel --id <agentRunId>
+node dist/cli.js agent workflows
+node dist/cli.js agent dispatch-once --workspace-root /path/to/workspace
+node dist/cli.js agent list
+node dist/cli.js agent replay --id <agentRunId>
+node dist/cli.js agent approvals --id <agentRunId>
+node dist/cli.js agent approve --id <agentRunId> --approval-id <approvalId>
+node dist/cli.js agent deny --id <agentRunId> --approval-id <approvalId>
+node dist/cli.js agent resume --id <agentRunId> --workspace-root /path/to/workspace
+node dist/cli.js agent retry --id <agentRunId>
+node dist/cli.js agent cancel --id <agentRunId>
 ```
 
-`devspace agent replay --id <agentRunId>` 默认输出面向 operator 的摘要：run 状态、
+`node dist/cli.js agent replay --id <agentRunId>` 默认输出面向 operator 的摘要：run 状态、
 workflow、approval 计数、hook decision 计数、workflow step 状态、最新 pending
 approval、blocking hooks 和 retry 链接。需要完整机器可读事件流时使用 `--json`。
 
@@ -300,7 +303,7 @@ DevSpace 支持 Linux、macOS 和 Windows 环境。
 检查本地环境：
 
 ```bash
-devspace doctor
+node dist/cli.js doctor
 ```
 
 ## 文档
