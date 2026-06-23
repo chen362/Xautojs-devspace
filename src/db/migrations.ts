@@ -17,6 +17,11 @@ const migrations: Migration[] = [
     name: "oauth-state",
     up: migrateOAuthState,
   },
+  {
+    version: 3,
+    name: "mcp-session-scoped-workspaces",
+    up: migrateMcpSessionScopedWorkspaces,
+  },
 ];
 
 export function migrateDatabase(sqlite: SqliteDatabase): void {
@@ -56,6 +61,7 @@ function migrateWorkspaceState(sqlite: SqliteDatabase): void {
       id text primary key,
       tenant_id text not null default 'local',
       user_id text not null default 'owner',
+      mcp_session_id text,
       root text not null,
       status text not null default 'active',
       mode text not null default 'checkout',
@@ -86,6 +92,7 @@ function migrateWorkspaceState(sqlite: SqliteDatabase): void {
 
   addColumnIfMissing(sqlite, "workspace_sessions", "tenant_id", "text not null default 'local'");
   addColumnIfMissing(sqlite, "workspace_sessions", "user_id", "text not null default 'owner'");
+  addColumnIfMissing(sqlite, "workspace_sessions", "mcp_session_id", "text");
   addColumnIfMissing(sqlite, "workspace_sessions", "mode", "text not null default 'checkout'");
   addColumnIfMissing(sqlite, "workspace_sessions", "source_root", "text");
   addColumnIfMissing(sqlite, "workspace_sessions", "base_ref", "text");
@@ -95,6 +102,9 @@ function migrateWorkspaceState(sqlite: SqliteDatabase): void {
   sqlite.exec(`
     create index if not exists workspace_sessions_owner_idx
       on workspace_sessions(tenant_id, user_id, last_used_at desc);
+
+    create index if not exists workspace_sessions_owner_mcp_session_idx
+      on workspace_sessions(tenant_id, user_id, mcp_session_id, last_used_at desc);
 
     create index if not exists workspace_sessions_owner_root_idx
       on workspace_sessions(tenant_id, user_id, root, last_used_at desc);
@@ -147,6 +157,15 @@ function migrateOAuthState(sqlite: SqliteDatabase): void {
 
     create index if not exists oauth_refresh_tokens_expires_at_idx
       on oauth_refresh_tokens(expires_at);
+  `);
+}
+
+function migrateMcpSessionScopedWorkspaces(sqlite: SqliteDatabase): void {
+  addColumnIfMissing(sqlite, "workspace_sessions", "mcp_session_id", "text");
+
+  sqlite.exec(`
+    create index if not exists workspace_sessions_owner_mcp_session_idx
+      on workspace_sessions(tenant_id, user_id, mcp_session_id, last_used_at desc);
   `);
 }
 
