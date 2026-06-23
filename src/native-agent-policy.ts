@@ -8,6 +8,8 @@ export interface NativePolicyResult {
   decision: NativePolicyDecision;
   risk: NativeAgentToolRisk;
   reason: string;
+  approvalTitle?: string;
+  approvalMessage?: string;
 }
 
 export interface NativeCommandPolicyInput {
@@ -85,11 +87,17 @@ export function evaluateNativeCommandPolicy(input: NativeCommandPolicyInput): Na
   }
 
   if (risk === "high") {
-    return block(`workspace_write blocks high-risk command: ${command}`, risk);
+    return ask(`workspace_write requires approval for high-risk command: ${command}`, risk, {
+      approvalTitle: "Approve high-risk native command",
+      approvalMessage: `Allow Xautojs to run high-risk command '${command}' inside the workspace?`,
+    });
   }
 
   if (input.network) {
-    return block("workspace_write blocks network-enabled commands unless the workflow is trusted_local.", "high");
+    return ask("workspace_write requires approval for network-enabled commands.", "high", {
+      approvalTitle: "Approve network-enabled native command",
+      approvalMessage: "Allow Xautojs to run a network-enabled command inside the workspace?",
+    });
   }
 
   return allow("workspace_write permits low and medium risk local commands inside the workspace.", risk);
@@ -124,6 +132,10 @@ function looksDangerous(command: string): boolean {
 
 function allow(reason: string, risk: NativeAgentToolRisk): NativePolicyResult {
   return { decision: "allow", risk, reason };
+}
+
+function ask(reason: string, risk: NativeAgentToolRisk, approval: Pick<NativePolicyResult, "approvalTitle" | "approvalMessage">): NativePolicyResult {
+  return { decision: "ask", risk, reason, ...approval };
 }
 
 function block(reason: string, risk: NativeAgentToolRisk): NativePolicyResult {
