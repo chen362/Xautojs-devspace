@@ -7,6 +7,7 @@ export type CloudRoutingToolCallStatus = "routed" | "completed" | "failed" | "ca
 
 export type CloudRoutingErrorCode =
   | "INVALID_ROUTE_INPUT"
+  | "PAIRING_REQUIRED"
   | "DEVICE_NOT_FOUND"
   | "DEVICE_OFFLINE"
   | "DEVICE_FORBIDDEN"
@@ -73,6 +74,16 @@ export interface CloudRoutingToolCallRecord {
   completedAt?: string;
 }
 
+export interface CloudSessionBindingRecord {
+  owner: WorkspaceIdentity;
+  mcpSessionId: string;
+  conversationSessionId?: string;
+  deviceId: string;
+  boundAt: string;
+  lastSeenAt: string;
+  expiresAt?: string;
+}
+
 export interface ResolvedCloudWorkspaceRoute {
   workspace: CloudRoutingWorkspaceRouteRecord;
   device: CloudRoutingDeviceRecord;
@@ -126,6 +137,23 @@ export interface CompleteCloudToolCallRouteInput {
   now?: string;
 }
 
+export interface BindCloudSessionToDeviceInput {
+  owner: WorkspaceIdentity;
+  mcpSessionId: string;
+  conversationSessionId?: string;
+  deviceId: string;
+  now?: string;
+  expiresAt?: string;
+}
+
+export interface ResolveCloudSessionDeviceInput {
+  owner: WorkspaceIdentity;
+  mcpSessionId: string;
+  conversationSessionId?: string;
+  deviceId?: string;
+  now?: string;
+}
+
 export function normalizeCloudRouteOwner(owner: WorkspaceIdentity): WorkspaceIdentity {
   return {
     tenantId: normalizeRequiredCloudRoutingId(owner.tenantId, "owner.tenantId"),
@@ -166,4 +194,16 @@ export function normalizeCloudRouteCapabilities(capabilities: readonly string[] 
     if (value) normalized.add(value);
   }
   return [...normalized].sort();
+}
+
+export function isCloudRouteExpired(expiresAt: string | undefined, now: string): boolean {
+  if (!expiresAt) return false;
+  const expiresTime = Date.parse(expiresAt);
+  const nowTime = Date.parse(now);
+  if (Number.isNaN(expiresTime) || Number.isNaN(nowTime)) return expiresAt <= now;
+  return expiresTime <= nowTime;
+}
+
+export function cloudRouteNow(now: string | undefined): string {
+  return normalizeOptionalCloudRoutingId(now, "now") ?? new Date().toISOString();
 }
