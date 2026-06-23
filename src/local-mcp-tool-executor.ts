@@ -1,5 +1,6 @@
 import type { ServerConfig } from "./config.js";
 import type {
+  DevspaceToolExecutionContext,
   DevspaceToolExecutor,
   EditFileToolDetails,
   EditFileToolInput,
@@ -31,24 +32,33 @@ export class LocalMcpToolExecutor implements DevspaceToolExecutor {
     private readonly reviewCheckpoints: ReviewCheckpointManager,
   ) {}
 
-  async openWorkspace(input: {
-    path: string;
-    mode?: "checkout" | "worktree";
-    baseRef?: string;
-  }): Promise<WorkspaceContext> {
-    const context = await this.workspaces.openWorkspace(input);
+  async openWorkspace(
+    context: DevspaceToolExecutionContext,
+    input: {
+      path: string;
+      mode?: "checkout" | "worktree";
+      baseRef?: string;
+    },
+  ): Promise<WorkspaceContext> {
+    this.assertExecutionContext(context);
+    const workspaceContext = await this.workspaces.openWorkspace(input);
 
     if (this.config.widgets === "changes") {
       void this.reviewCheckpoints.initializeWorkspace({
-        workspaceId: context.workspace.id,
-        root: context.workspace.root,
+        workspaceId: workspaceContext.workspace.id,
+        root: workspaceContext.workspace.root,
       });
     }
 
-    return context;
+    return workspaceContext;
   }
 
-  async readFile(workspaceId: string, input: ReadFileToolInput): Promise<ToolResponse> {
+  async readFile(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: ReadFileToolInput,
+  ): Promise<ToolResponse> {
+    this.assertExecutionContext(context);
     const workspace = await this.workspaces.getWorkspace(workspaceId);
     const readPath = this.workspaces.resolveReadPath(workspace, input.path);
     const response = await readFileTool(
@@ -67,7 +77,12 @@ export class LocalMcpToolExecutor implements DevspaceToolExecutor {
     return response;
   }
 
-  async writeFile(workspaceId: string, input: WriteFileToolInput): Promise<ToolResponse> {
+  async writeFile(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: WriteFileToolInput,
+  ): Promise<ToolResponse> {
+    this.assertExecutionContext(context);
     const workspace = await this.workspaces.getWorkspace(workspaceId);
     this.workspaces.resolvePath(workspace, input.path);
 
@@ -78,9 +93,11 @@ export class LocalMcpToolExecutor implements DevspaceToolExecutor {
   }
 
   async editFile(
+    context: DevspaceToolExecutionContext,
     workspaceId: string,
     input: EditFileToolInput,
   ): Promise<ToolResponse<EditFileToolDetails>> {
+    this.assertExecutionContext(context);
     const workspace = await this.workspaces.getWorkspace(workspaceId);
     this.workspaces.resolvePath(workspace, input.path);
 
@@ -90,7 +107,12 @@ export class LocalMcpToolExecutor implements DevspaceToolExecutor {
     }) as Promise<ToolResponse<EditFileToolDetails>>;
   }
 
-  async grepFiles(workspaceId: string, input: GrepFilesToolInput): Promise<ToolResponse> {
+  async grepFiles(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: GrepFilesToolInput,
+  ): Promise<ToolResponse> {
+    this.assertExecutionContext(context);
     const workspace = await this.workspaces.getWorkspace(workspaceId);
     if (input.path) this.workspaces.resolvePath(workspace, input.path);
 
@@ -100,7 +122,12 @@ export class LocalMcpToolExecutor implements DevspaceToolExecutor {
     });
   }
 
-  async findFiles(workspaceId: string, input: FindFilesToolInput): Promise<ToolResponse> {
+  async findFiles(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: FindFilesToolInput,
+  ): Promise<ToolResponse> {
+    this.assertExecutionContext(context);
     const workspace = await this.workspaces.getWorkspace(workspaceId);
     if (input.path) this.workspaces.resolvePath(workspace, input.path);
 
@@ -110,7 +137,12 @@ export class LocalMcpToolExecutor implements DevspaceToolExecutor {
     });
   }
 
-  async listDirectory(workspaceId: string, input: ListDirectoryToolInput): Promise<ToolResponse> {
+  async listDirectory(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: ListDirectoryToolInput,
+  ): Promise<ToolResponse> {
+    this.assertExecutionContext(context);
     const workspace = await this.workspaces.getWorkspace(workspaceId);
     this.workspaces.resolvePath(workspace, input.path);
 
@@ -120,7 +152,12 @@ export class LocalMcpToolExecutor implements DevspaceToolExecutor {
     });
   }
 
-  async runShell(workspaceId: string, input: RunShellToolInput): Promise<ToolResponse> {
+  async runShell(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: RunShellToolInput,
+  ): Promise<ToolResponse> {
+    this.assertExecutionContext(context);
     const workspace = await this.workspaces.getWorkspace(workspaceId);
     const cwd = this.workspaces.resolveWorkingDirectory(
       workspace,
@@ -139,7 +176,11 @@ export class LocalMcpToolExecutor implements DevspaceToolExecutor {
     );
   }
 
-  async showChanges(input: ShowChangesToolInput): Promise<ReviewChangesResult> {
+  async showChanges(
+    context: DevspaceToolExecutionContext,
+    input: ShowChangesToolInput,
+  ): Promise<ReviewChangesResult> {
+    this.assertExecutionContext(context);
     const workspace = await this.workspaces.getWorkspace(input.workspaceId);
 
     return this.reviewCheckpoints.reviewChanges({
@@ -148,5 +189,11 @@ export class LocalMcpToolExecutor implements DevspaceToolExecutor {
       since: input.since ?? "last_shown",
       markReviewed: input.markReviewed ?? true,
     });
+  }
+
+  private assertExecutionContext(context: DevspaceToolExecutionContext): void {
+    if (!context.mcpSessionId.trim()) {
+      throw new Error("Missing MCP session execution context.");
+    }
   }
 }
