@@ -2,8 +2,12 @@
 
 Xautojs owns a first-party native local agent runtime. Codex and Claude Code
 remain reference systems for ideas, but the runtime contract, storage, policy,
-workflow mapping, approval flow, replay model, and operator controls are
+workflow mapping, approval flow, replay model, hooks, and operator controls are
 Xautojs-native.
+
+The examples below assume a source checkout that has already run `npm run build`.
+Use `node dist/cli.js ...` from the repository root. A future global package can
+expose the same commands through the `devspace` binary.
 
 ## Goals
 
@@ -26,6 +30,7 @@ configurable before/after runtime hook pipeline
 workflow packs with stable plan/execute/verify/handoff steps
 event-sourced approval request/resolve records
 terminal-run retry creation
+operator-focused replay summaries
 operator HTTP APIs
 operator CLI commands
 ```
@@ -73,7 +78,8 @@ corresponding terminal automation state.
 
 `agent_run_events` is append-only and cursor-readable by `afterSeq`. Operators
 can safely replay a run from sequence `0`, tail new events from the latest
-`nextSeq` value, and reconstruct approval state from the event stream.
+`nextSeq` value, and reconstruct approval, hook, workflow-step, and retry state
+from the event stream.
 
 ## Loop Contract
 
@@ -83,16 +89,22 @@ Every dispatched run writes structured loop events around raw process output:
 run.started
 run.loop.started
 run.loop.step
+run.hook.decision
 run.waiting_input
+run.approval.requested
+run.approval.resolved
 run.approval.accepted
 run.resumed
 run.output_delta
 run.loop.completed | run.loop.failed
+run.retry.created
+run.retry.source
 run.succeeded | run.failed | run.cancelled | run.timed_out
 ```
 
-`run.waiting_input`, `run.approval.accepted`, and `run.resumed` are present only
-when policy or hooks require operator approval.
+`run.waiting_input`, `run.approval.*`, and `run.resumed` are present only when
+policy or hooks require operator approval. Retry events are present only when an
+operator creates a retry from a terminal native run.
 
 Workflow packs define the stable step list and execution plan. This gives
 operators a replayable view of intent, phase, expected output, and acceptance
@@ -101,13 +113,13 @@ criteria even before a richer model-driven agent loop is plugged in.
 Queued native runs can be dispatched directly:
 
 ```bash
-devspace agent dispatch-run --id <agentRunId> --workspace-root <path>
+node dist/cli.js agent dispatch-run --id <agentRunId> --workspace-root <path>
 ```
 
 A waiting run is resumed through the same execution pipeline:
 
 ```bash
-devspace agent resume --id <agentRunId> --workspace-root <path>
+node dist/cli.js agent resume --id <agentRunId> --workspace-root <path>
 ```
 
 This is separate from automation claiming. It lets retry-created runs, waiting
@@ -119,7 +131,7 @@ process, and event pipeline.
 The automation dispatcher claims queued automation work exactly once:
 
 ```bash
-devspace agent dispatch-once --automation-run-id <automationRunId> --workspace-root <path>
+node dist/cli.js agent dispatch-once --automation-run-id <automationRunId> --workspace-root <path>
 ```
 
 If `--automation-run-id` is omitted, the dispatcher claims the oldest queued run.
@@ -196,6 +208,7 @@ Policy and hooks can return these decisions:
 allow       execute immediately
 ask         pause the run and request approval
 block       fail the run before execution
+deny        fail or deny the requested permission path
 audit_only  execute but record the high-risk decision
 ```
 
@@ -294,10 +307,34 @@ PostCompact
 Stop
 ```
 
-Hook records are stored in `agent_runtime_hooks`. Default hooks remain enabled
-for safety: they turn high-risk pre-tool decisions into `ask`, block policy-denied
-actions, and audit lifecycle events. Configured rules extend the pipeline; they
-are not an escape hatch around command policy.
+Every hook decision is appended to `agent_run_events` as:
+
+```text
+run.hook.decision
+```
+
+This event is the durable replay source for all hook decisions, including
+lifecycle hooks such as `Start` and workflow-step hooks such as `WorkflowStep`.
+Operator replay and `replay.summary.hooks` should be built from this event stream.
+
+`agent_runtime_hooks` is a legacy/audit table for this stable subset only:
+
+```text
+PreToolUse
+PostToolUse
+PermissionRequest
+PostCompact
+Stop
+```
+
+`Start` and `WorkflowStep` are intentionally not written to `agent_runtime_hooks`
+because the current Postgres check constraint for `agent_runtime_hooks.hook_event_name`
+only accepts the legacy subset above. Use `run.hook.decision` to inspect lifecycle
+and workflow-step hook decisions.
+
+Default hooks remain enabled for safety: they turn high-risk pre-tool decisions
+into `ask`, block policy-denied actions, and audit lifecycle events. Configured
+rules extend the pipeline; they are not an escape hatch around command policy.
 
 The runtime binds workflow packs into the hook payloads:
 
@@ -414,8 +451,54 @@ run.retry.created
 run.retry.source
 ```
 
-Replay returns the full event stream, folded approvals, next sequence cursor,
-and terminal flag.
+Replay returns the raw event stream, folded approvals, next sequence cursor,
+terminal flag, and an operator-focused summary:
+
+```text
+replay.agentRunId
+replay.events[]
+replay.approvals[]
+replay.nextSeq
+replay.terminal
+replay.summary
+```
+
+The stable summary shape includes:
+
+```text
+replay.summary.agentRunId
+replay.summary.workflowId
+replay.summary.status
+replay.summary.attempt
+replay.summary.permissionProfile
+replay.summary.terminal
+replay.summary.eventCount
+replay.summary.nextSeq
+replay.summary.approvals.total
+replay.summary.approvals.pending
+replay.summary.approvals.approved
+replay.summary.approvals.denied
+replay.summary.approvals.latestPending
+replay.summary.hooks.total
+replay.summary.hooks.allow
+replay.summary.hooks.ask
+replay.summary.hooks.block
+replay.summary.hooks.deny
+replay.summary.hooks.auditOnly
+replay.summary.hooks.blocking[]
+replay.summary.hooks.latest[]
+replay.summary.workflowSteps[]
+replay.summary.retries.retryOfAgentRunId
+replay.summary.retries.retryAgentRunIds[]
+```
+
+`summary.workflowSteps[]` folds `run.loop.step` and matching `run.hook.decision`
+events so operators can see step phase/action, hook decision, rule id, reason,
+and whether the step was recorded or blocked.
+
+`summary.hooks.blocking[]` contains hook decisions where the hook blocked or
+denied progress. `summary.hooks.latest[]` gives recent hook decisions for quick
+inspection without reading the entire raw event stream.
 
 ## Operator API
 
@@ -430,6 +513,10 @@ It requires:
 ```text
 Authorization: Bearer <DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN>
 ```
+
+Operator APIs require Postgres mode with ready migrations. In local source
+checkouts, use `node dist/cli.js db status --json` and `node dist/cli.js db migrate`
+to prepare the schema.
 
 Available endpoints:
 
@@ -491,19 +578,19 @@ Stable error response shape:
 Native agent commands:
 
 ```bash
-devspace agent workflows
-devspace agent dispatch-once --workspace-root <path>
-devspace agent dispatch-run --id <agentRunId> --workspace-root <path>
-devspace agent resume --id <agentRunId> --workspace-root <path>
-devspace agent list
-devspace agent events --id <agentRunId>
-devspace agent replay --id <agentRunId>
-devspace agent retry --id <agentRunId>
-devspace agent approvals --id <agentRunId>
-devspace agent request-approval --id <agentRunId> --message <text>
-devspace agent approve --id <agentRunId> --approval-id <approvalId>
-devspace agent deny --id <agentRunId> --approval-id <approvalId>
-devspace agent cancel --id <agentRunId>
+node dist/cli.js agent workflows
+node dist/cli.js agent dispatch-once --workspace-root <path>
+node dist/cli.js agent dispatch-run --id <agentRunId> --workspace-root <path>
+node dist/cli.js agent resume --id <agentRunId> --workspace-root <path>
+node dist/cli.js agent list
+node dist/cli.js agent events --id <agentRunId>
+node dist/cli.js agent replay --id <agentRunId>
+node dist/cli.js agent retry --id <agentRunId>
+node dist/cli.js agent approvals --id <agentRunId>
+node dist/cli.js agent request-approval --id <agentRunId> --message <text>
+node dist/cli.js agent approve --id <agentRunId> --approval-id <approvalId>
+node dist/cli.js agent deny --id <agentRunId> --approval-id <approvalId>
+node dist/cli.js agent cancel --id <agentRunId>
 ```
 
 Dispatch and resume support:
@@ -514,6 +601,9 @@ Dispatch and resume support:
 ```
 
 Most commands support `--json` for automation-friendly output.
+
+`node dist/cli.js agent replay --id <agentRunId>` prints an operator-focused
+summary by default. Use `--json` when an integration needs the full replay shape.
 
 ## Three-Platform Compatibility
 
