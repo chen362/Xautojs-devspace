@@ -1,6 +1,15 @@
+import type { WorkspaceIdentity } from "./identity.js";
 import type { ToolResponse } from "./pi-tools.js";
 import type { ReviewChangesResult, ReviewSince } from "./review-checkpoints.js";
 import type { WorkspaceContext } from "./workspaces.js";
+
+export interface DevspaceToolExecutionContext {
+  mcpSessionId: string;
+  owner: WorkspaceIdentity;
+  conversationSessionId?: string;
+  deviceId?: string;
+  toolCallId?: string;
+}
 
 export interface ReadFileToolInput {
   path: string;
@@ -54,20 +63,51 @@ export interface ShowChangesToolInput {
 }
 
 export interface DevspaceToolExecutor {
-  openWorkspace(input: {
-    path: string;
-    mode?: "checkout" | "worktree";
-    baseRef?: string;
-  }): Promise<WorkspaceContext>;
-  readFile(workspaceId: string, input: ReadFileToolInput): Promise<ToolResponse>;
-  writeFile(workspaceId: string, input: WriteFileToolInput): Promise<ToolResponse>;
+  openWorkspace(
+    context: DevspaceToolExecutionContext,
+    input: {
+      path: string;
+      mode?: "checkout" | "worktree";
+      baseRef?: string;
+    },
+  ): Promise<WorkspaceContext>;
+  readFile(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: ReadFileToolInput,
+  ): Promise<ToolResponse>;
+  writeFile(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: WriteFileToolInput,
+  ): Promise<ToolResponse>;
   editFile(
+    context: DevspaceToolExecutionContext,
     workspaceId: string,
     input: EditFileToolInput,
   ): Promise<ToolResponse<EditFileToolDetails>>;
-  grepFiles(workspaceId: string, input: GrepFilesToolInput): Promise<ToolResponse>;
-  findFiles(workspaceId: string, input: FindFilesToolInput): Promise<ToolResponse>;
-  listDirectory(workspaceId: string, input: ListDirectoryToolInput): Promise<ToolResponse>;
-  runShell(workspaceId: string, input: RunShellToolInput): Promise<ToolResponse>;
-  showChanges(input: ShowChangesToolInput): Promise<ReviewChangesResult>;
+  grepFiles(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: GrepFilesToolInput,
+  ): Promise<ToolResponse>;
+  findFiles(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: FindFilesToolInput,
+  ): Promise<ToolResponse>;
+  listDirectory(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: ListDirectoryToolInput,
+  ): Promise<ToolResponse>;
+  runShell(
+    context: DevspaceToolExecutionContext,
+    workspaceId: string,
+    input: RunShellToolInput,
+  ): Promise<ToolResponse>;
+  showChanges(
+    context: DevspaceToolExecutionContext,
+    input: ShowChangesToolInput,
+  ): Promise<ReviewChangesResult>;
 }
