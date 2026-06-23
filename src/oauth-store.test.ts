@@ -45,6 +45,7 @@ async function testDatabaseConfiguration(stateDir: string): Promise<void> {
     assert.deepEqual(migrations, [
       { version: 1, name: "workspace-state" },
       { version: 2, name: "oauth-state" },
+      { version: 3, name: "mcp-session-scoped-workspaces" },
     ]);
 
     const workspaceColumns = database.sqlite
@@ -53,6 +54,7 @@ async function testDatabaseConfiguration(stateDir: string): Promise<void> {
     const workspaceColumnNames = workspaceColumns.map((column) => column.name);
     assert.ok(workspaceColumnNames.includes("tenant_id"));
     assert.ok(workspaceColumnNames.includes("user_id"));
+    assert.ok(workspaceColumnNames.includes("mcp_session_id"));
   } finally {
     database.close();
   }
