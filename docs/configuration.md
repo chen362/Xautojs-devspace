@@ -3,6 +3,10 @@
 DevSpace can be configured through `devspace init`, persisted config files, or
 environment variables.
 
+The examples below assume a source checkout that has already run `npm run build`.
+Use `node dist/cli.js ...` from the repository root. If you install a future
+published package globally, the equivalent binary remains `devspace`.
+
 The default files are:
 
 ```text
@@ -13,22 +17,22 @@ The default files are:
 Use another config directory with:
 
 ```bash
-DEVSPACE_CONFIG_DIR=/path/to/config npx @waishnav/devspace serve
+DEVSPACE_CONFIG_DIR=/path/to/config node dist/cli.js serve
 ```
 
 ## Commands
 
 ```bash
-npx @waishnav/devspace init
-npx @waishnav/devspace serve
-npx @waishnav/devspace doctor
-npx @waishnav/devspace doctor --json
-npx @waishnav/devspace config get
-npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
-npx @waishnav/devspace db status
-npx @waishnav/devspace db status --json
-npx @waishnav/devspace db migrate
-npx @waishnav/devspace db migrate --json
+node dist/cli.js init
+node dist/cli.js serve
+node dist/cli.js doctor
+node dist/cli.js doctor --json
+node dist/cli.js config get
+node dist/cli.js config set publicBaseUrl https://devspace.example.com
+node dist/cli.js db status
+node dist/cli.js db status --json
+node dist/cli.js db migrate
+node dist/cli.js db migrate --json
 ```
 
 ## Core Environment Variables
@@ -72,15 +76,15 @@ pending files in lexical order:
 ```bash
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
-npx @waishnav/devspace db status
+node dist/cli.js db status
 
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
-npx @waishnav/devspace db status --json
+node dist/cli.js db status --json
 
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
-npx @waishnav/devspace db migrate
+node dist/cli.js db migrate
 ```
 
 `devspace db status --json` returns a stable machine-readable object with
@@ -109,7 +113,7 @@ Use JSON output for deployment smoke checks:
 ```bash
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
-npx @waishnav/devspace doctor --json
+node dist/cli.js doctor --json
 ```
 
 `devspace serve` checks the Postgres schema before starting and exits with a
@@ -126,7 +130,7 @@ DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS="2592000" \
 DEVSPACE_WORKSPACE_SESSION_CLEANUP_INTERVAL_SECONDS="3600" \
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
-npx @waishnav/devspace serve
+node dist/cli.js serve
 ```
 
 Example:
@@ -135,7 +139,7 @@ Example:
 DEVSPACE_DATABASE_PROVIDER="postgres" \
 DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" \
 DEVSPACE_POSTGRES_SSL_MODE="require" \
-npx @waishnav/devspace serve
+node dist/cli.js serve
 ```
 
 For a full Ubuntu/Linux, macOS, and Windows production smoke flow, see
@@ -158,6 +162,24 @@ MCP clients discover metadata from:
 ```text
 /.well-known/oauth-protected-resource/mcp
 /.well-known/oauth-authorization-server
+```
+
+## Native Agent Operator
+
+Operator HTTP APIs require a bearer token:
+
+| Variable | Purpose |
+| --- | --- |
+| `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN` | Bearer token required by `/api/native-agent/*` routes. |
+| `DEVSPACE_NATIVE_RUNTIME_HOOKS` | Optional JSON runtime hook rule config. |
+
+Native agent CLI commands use the same Postgres configuration and run locally
+from the same CLI binary:
+
+```bash
+node dist/cli.js agent workflows
+node dist/cli.js agent list
+node dist/cli.js agent replay --id <agentRunId>
 ```
 
 ## Tool Modes
@@ -198,7 +220,7 @@ Example:
 
 ```bash
 DEVSPACE_SKILL_PATHS="$HOME/.codex/skills,$HOME/.claude/skills" \
-npx @waishnav/devspace serve
+node dist/cli.js serve
 ```
 
 ## Logging
@@ -228,7 +250,7 @@ DEVSPACE_WORKTREE_ROOT="$HOME/.devspace/worktrees" \
 DEVSPACE_TOOL_MODE="minimal" \
 DEVSPACE_TOOL_NAMING="short" \
 DEVSPACE_WIDGETS="full" \
-npx @waishnav/devspace serve
+node dist/cli.js serve
 ```
 
 The environment assignments must be part of the same command invocation, or
