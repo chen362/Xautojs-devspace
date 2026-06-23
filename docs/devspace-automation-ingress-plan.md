@@ -6,8 +6,8 @@ Last updated: 2026-06-23
 
 Xautojs DevSpace is no longer just an automation-ingress plan. The default branch
 now contains the local MCP workspace bridge, production identity/state
-foundations, Postgres-backed automation ingress, and a first-party native local
-agent runtime with operator controls.
+foundations, Postgres-backed automation ingress, first-party native local agent
+runtime, browser operator console, operator docs, and release-packaging guardrails.
 
 Current state:
 
@@ -26,7 +26,11 @@ Permission profiles and approval pause/resume: done
 Workflow packs and execution plans: done
 Runtime hook pipeline: done
 Operator replay/approval/retry UX: done
+Browser operator console: done
+Operator docs and production smoke guidance: done
 README/package identity split from upstream DevSpace: done
+Release packaging lockfile guardrails: done
+Desktop operator line: next
 ```
 
 The important product decision remains:
@@ -149,19 +153,6 @@ normalizes eventType as github.<event>.<action>
 extracts repository, sender, and branch metadata when present
 ```
 
-Routing policy example:
-
-```json
-{
-  "events": {
-    "pull_request": ["opened", "synchronize", "closed"],
-    "release": ["published"]
-  },
-  "repositories": ["chen362/Xautojs-devspace"],
-  "branches": ["Xautojs-devspace"]
-}
-```
-
 Delivery outcomes:
 
 ```text
@@ -179,7 +170,7 @@ duplicate:
   return 409 IDEMPOTENCY_CONFLICT when the same delivery/key has a new fingerprint
 ```
 
-### 1.4 Native Agent Runtime
+### 1.4 Native Agent Runtime And Operator Surface
 
 Implemented native runtime storage:
 
@@ -203,7 +194,7 @@ cancelled
 timed_out
 ```
 
-Runtime capabilities now include:
+Runtime and operator capabilities now include:
 
 ```text
 queued automation run claiming
@@ -219,6 +210,9 @@ terminal-run retry creation
 operator HTTP APIs
 operator CLI commands
 operator-focused replay summaries
+browser operator console
+browser session cookie auth from operator token
+release packaging checks for xautojs-devspace identity
 ```
 
 ## 2. Native Agent Contract
@@ -263,6 +257,9 @@ Authorization: Bearer <DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN>
 Core operator API routes:
 
 ```text
+POST /api/native-agent/operator/session
+GET  /api/native-agent/operator/session
+DELETE /api/native-agent/operator/session
 GET  /api/native-agent/runs
 GET  /api/native-agent/runs/:agentRunId
 GET  /api/native-agent/runs/:agentRunId/events
@@ -295,9 +292,13 @@ devspace agent deny --id <agentRunId> --approval-id <approvalId>
 devspace agent cancel --id <agentRunId>
 ```
 
-`replay` now returns raw events plus an operator summary. The summary folds
-status, approval counts, hook decisions, workflow step state, and retry links so
+`replay` returns raw events plus an operator summary. The summary folds status,
+approval counts, hook decisions, workflow step state, and retry links so
 operators can understand the run without manually reading every event.
+
+The browser console remains useful for remote/admin/CI/fallback operations. The
+next product line is a local-first Xautojs Desktop operator that reuses the same
+API through a loopback daemon.
 
 ## 4. Completed PR Line
 
@@ -319,37 +320,46 @@ PR28: Runtime hooks and workflow-step hook pipeline
 PR29: Operator UX replay summaries for run replay, approvals, hooks, workflow steps, and retries
 PR30: README and Chinese README refresh
 PR31: Package identity renamed away from upstream DevSpace
+PR32: Native agent operator docs/config refresh
+PR33: Operator console authentication hardening
+PR34: Browser operator console UI MVP
+PR35: Release packaging guardrails
+PR36: GitHub Action for package-lock release identity sync
+PR37: Generated package-lock release identity sync
 ```
 
 ## 5. Recommended Next PRs
 
-Recommended next work should now focus on operator maturity, documentation,
-source-to-workflow mapping, and release hygiene rather than building the already
-landed runtime foundation.
+Recommended next work should focus on turning Xautojs into a local-first desktop
+operator product while keeping the browser console as a remote fallback.
 
 ```text
-PR32: Native Agent Operator Documentation Refresh
-  Update runtime docs, configuration reference, and operator runbook.
-  Document replay.summary and run.hook.decision semantics.
-  Add copyable operator CLI/API workflows.
+PR38: Desktop UX And Architecture Spec
+  Define Xautojs Desktop, local daemon, auth/pairing, streaming, permission UX,
+  packaging boundaries, and acceptance criteria.
 
-PR33: Automation Source To Workflow Mapping
-  Make source config select workflowId, permissionProfile, and workspace policy
-  through a stable documented contract.
-  Validate unknown workflow/profile values fail closed or fall back explicitly.
+PR39: Local Operator Daemon
+  Add `devspace operator serve` / `node dist/cli.js operator serve`.
+  Bind to 127.0.0.1 by default, check Postgres readiness, expose operator APIs,
+  and add SSE replay streaming or a formal polling fallback.
 
-PR34: Operator Tail And Runbook Polish
-  Add or document a practical tail/poll loop around afterSeq/nextSeq.
-  Improve pending approval and blocking hook inspection workflows.
+PR40: Tauri Desktop Scaffold
+  Add apps/desktop with Tauri 2 + React.
+  Implement daemon connection, session readiness, token/pairing empty states,
+  and a native shell that does not duplicate runtime logic.
 
-PR35: Package Release Hygiene
-  Decide final npm scope/name.
-  Regenerate package-lock metadata under the new package name.
-  Add release notes and package publish checklist.
+PR41: Desktop Operator MVP
+  Implement project/run navigation, replay summary, pending approval cards,
+  approve/deny, resume, retry, cancel, hook decisions, workflow step state, and
+  a terminal/output drawer.
 
-PR36: Native Agent Worker Mode
-  Add a long-running dispatcher/worker loop when production operators are ready
-  for continuous automation-run claiming rather than manual dispatch-once.
+PR42: Desktop Packaging
+  Add macOS, Windows, and Linux packaging strategy, app id, icons, release
+  artifacts, signing placeholders, and updater decision notes.
+
+PR43: Desktop Auth And Notification Polish
+  Add keychain-backed local sessions, pairing-code UX, OS notifications, tray
+  behavior, and optional enterprise identity hooks.
 ```
 
 ## 6. Acceptance Criteria For The Current Native Agent Line
@@ -372,6 +382,7 @@ GitHub routable events can start configured native workflows.
 Ignored GitHub events remain audit-only.
 No Codex or Claude Code binary is required for the core runtime.
 Codex/Claude-inspired features are reimplemented as Xautojs-native contracts.
+Browser /operator remains available as a remote operator fallback.
 ```
 
 ## 7. Remaining Non-Goals
@@ -382,12 +393,12 @@ Still out of scope for this line:
 Codex /v1/responses proxy as the primary runtime
 hard dependency on Codex CLI
 hard dependency on Claude Code CLI
-web UI for editing every source policy
-GitHub App installation auth
-multi-machine distributed worker scheduling
+replacing the browser /operator console before desktop is stable
+Desktop UI direct access to Postgres
 general remote code execution outside allowed roots
 raw webhook body retention by default
+publishing desktop artifacts inside the CLI npm package by accident
 ```
 
-These can be revisited later only after the native Xautojs runtime and operator
-runbooks are stable.
+These can be revisited later only after the native Xautojs runtime, browser
+operator fallback, and desktop operator contracts are stable.
