@@ -48,6 +48,25 @@ assert.deepEqual((await store.readRunEvents({ agentRunId: claimed.id, afterSeq: 
   "run.output_delta",
 ]);
 
+const waiting = await store.setAgentRunStatus({
+  agentRunId: claimed.id,
+  status: "waiting_input",
+  result: { approvalId: "approval_1" },
+  errorCode: "NATIVE_APPROVAL_REQUIRED",
+  errorMessage: "Approval required",
+});
+assert.equal(waiting?.status, "waiting_input");
+assert.equal(waiting?.result.approvalId, "approval_1");
+assert.equal(waiting?.errorCode, "NATIVE_APPROVAL_REQUIRED");
+assert.equal(store.automationRuns.get("auto_run_1")?.status, "running");
+
+const resumed = await store.setAgentRunStatus({
+  agentRunId: claimed.id,
+  status: "running",
+});
+assert.equal(resumed?.status, "running");
+assert.equal(resumed?.errorCode, undefined);
+
 const toolCall = await store.recordToolCallStart({
   agentRunId: claimed.id,
   toolName: "process",
