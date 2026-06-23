@@ -167,7 +167,8 @@ MCP clients discover metadata from:
 ## Native Agent Operator
 
 Native agent operator workflows require Postgres mode and ready migrations. At a
-minimum, prepare the database before dispatching or replaying native runs:
+minimum, prepare the database before dispatching, replaying, or opening the
+browser console:
 
 ```bash
 DEVSPACE_DATABASE_PROVIDER="postgres" \
@@ -179,12 +180,28 @@ DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" 
 node dist/cli.js db status --json
 ```
 
-Operator HTTP APIs require a bearer token:
+The operator console is served at:
 
-| Variable | Purpose |
-| --- | --- |
-| `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN` | Bearer token required by `/api/native-agent/*` routes. |
-| `DEVSPACE_NATIVE_RUNTIME_HOOKS` | Optional JSON runtime hook rule config. |
+```text
+/operator
+```
+
+The operator API is served under:
+
+```text
+/api/native-agent
+```
+
+Operator API clients may use a bearer token directly. The browser console uses
+the same token once to mint a signed HttpOnly session cookie, then authenticates
+subsequent requests with that cookie.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN` | unset | Required for `/api/native-agent/*` bearer auth and `/operator` login. |
+| `DEVSPACE_NATIVE_AGENT_OPERATOR_SESSION_SECRET` | operator token | Signs `/operator` browser session cookies. Set a separate production secret. |
+| `DEVSPACE_NATIVE_AGENT_OPERATOR_SESSION_TTL_SECONDS` | `28800` | Browser operator session lifetime in seconds. Values below 60 seconds are clamped to 60. |
+| `DEVSPACE_NATIVE_RUNTIME_HOOKS` | unset | Optional JSON runtime hook rule config. |
 
 CLI commands run locally and do not use `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN`.
 They still require `DEVSPACE_DATABASE_PROVIDER=postgres`, `DEVSPACE_DATABASE_URL`,
@@ -206,13 +223,37 @@ DEVSPACE_DATABASE_URL="postgres://devspace:secret@db.example.com:5432/devspace" 
 node dist/cli.js agent replay --id <agentRunId>
 ```
 
-Operator API example:
+Bearer API example:
 
 ```bash
 curl -fsS \
   -H "Authorization: Bearer $DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN" \
   https://devspace.example.com/api/native-agent/runs/<agentRunId>/replay
 ```
+
+Browser session example:
+
+```bash
+curl -fsS -c /tmp/devspace-operator.cookies \
+  -H "Content-Type: application/json" \
+  -d "{\"token\":\"$DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN\"}" \
+  https://devspace.example.com/api/native-agent/operator/session
+
+curl -fsS -b /tmp/devspace-operator.cookies \
+  https://devspace.example.com/api/native-agent/runs
+```
+
+Session endpoints:
+
+```text
+POST   /api/native-agent/operator/session
+GET    /api/native-agent/operator/session
+DELETE /api/native-agent/operator/session
+```
+
+When `DEVSPACE_PUBLIC_BASE_URL` uses HTTPS, the operator session cookie is marked
+secure. Production deployments should serve `/operator` and `/api/native-agent/*`
+through HTTPS.
 
 `DEVSPACE_NATIVE_RUNTIME_HOOKS` is a JSON object. Example:
 
@@ -244,6 +285,9 @@ Hook decisions are replayable through `agent_run_events` as
 `run.hook.decision`. The legacy `agent_runtime_hooks` table stores only
 `PreToolUse`, `PostToolUse`, `PermissionRequest`, `PostCompact`, and `Stop`.
 Use replay for `Start` and `WorkflowStep` decisions.
+
+For the browser workflow, see [Native Agent Operator Console](native-agent-operator-console.md).
+For the CLI workflow, see [Native Agent Operator Guide](native-agent-operator-guide.md).
 
 ## Tool Modes
 

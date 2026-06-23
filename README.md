@@ -45,6 +45,8 @@ execution:
 - first-party native agent runs, events, process execution, and workflow packs
 - permission profiles, approval pause/resume, runtime hooks, retry, replay, and
   operator APIs
+- browser operator console for run replay, approvals, hook decisions, workflow
+  step state, dispatch, resume, retry, and cancel
 - operator CLI commands for dispatch, replay, approvals, retry, and cancel
 
 Codex and Claude Code are reference systems for good ideas. The runtime, storage,
@@ -255,10 +257,18 @@ state. Legacy hook table records are still kept for `PreToolUse`, `PostToolUse`,
 
 ## Operator CLI
 
-Native agent commands require Postgres. Operator HTTP APIs additionally require:
+Native agent commands require Postgres. Operator HTTP APIs and the browser
+console additionally require:
 
 ```text
 DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN
+```
+
+Recommended browser session settings:
+
+```text
+DEVSPACE_NATIVE_AGENT_OPERATOR_SESSION_SECRET
+DEVSPACE_NATIVE_AGENT_OPERATOR_SESSION_TTL_SECONDS
 ```
 
 Common CLI flow:
@@ -281,6 +291,33 @@ summary by default: status, workflow, approval counts, hook decision counts,
 workflow step state, pending approval, blocking hooks, and retry links. Use
 `--json` for the full machine-readable event stream.
 
+## Operator Console
+
+The browser console is served from the DevSpace server at:
+
+```text
+/operator
+```
+
+It lets an operator inspect runs without reading raw JSON:
+
+```text
+run queue and status filters
+replay timeline
+approval approve/deny
+hook decision visibility
+workflow step state
+resume, retry, cancel
+dispatch queued automation
+```
+
+The console login exchanges `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN` for a signed
+HttpOnly session cookie. Bearer token auth remains supported for CLI, curl, and
+scripts.
+
+See [Native Agent Operator Console](docs/native-agent-operator-console.md) for
+setup, session configuration, UI workflow, and production smoke commands.
+
 ## Operator API
 
 The native agent operator API is mounted under:
@@ -289,7 +326,8 @@ The native agent operator API is mounted under:
 /api/native-agent
 ```
 
-It requires:
+It accepts either a bearer token or the operator session cookie created by
+`/api/native-agent/operator/session`:
 
 ```text
 Authorization: Bearer <DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN>
@@ -298,6 +336,9 @@ Authorization: Bearer <DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN>
 Important endpoints:
 
 ```text
+POST /api/native-agent/operator/session
+GET  /api/native-agent/operator/session
+DELETE /api/native-agent/operator/session
 GET  /api/native-agent/runs
 GET  /api/native-agent/runs/:agentRunId/events
 GET  /api/native-agent/runs/:agentRunId/replay
@@ -341,6 +382,7 @@ node dist/cli.js doctor
 - [DevSpace Automation Ingress Plan](docs/devspace-automation-ingress-plan.md)
 - [Native Agent Runtime](docs/native-agent-runtime.md)
 - [Native Agent Operator Guide](docs/native-agent-operator-guide.md)
+- [Native Agent Operator Console](docs/native-agent-operator-console.md)
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)
 

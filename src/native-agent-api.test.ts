@@ -9,6 +9,7 @@ const config = {
   database: { provider: "sqlite", stateDir: process.cwd(), filePath: ":memory:" },
   allowedRoots: [process.cwd()],
   worktreeRoot: process.cwd(),
+  publicBaseUrl: "http://127.0.0.1:7676",
 } as ServerConfig;
 const store = new InMemoryNativeAgentStore();
 const run = await store.createAgentRun({
@@ -28,7 +29,12 @@ await store.createAgentRun({
 });
 
 const app = express();
-const registration = registerNativeAgentApiRoutes(app, config, { store, operatorToken: "operator-token" });
+const registration = registerNativeAgentApiRoutes(app, config, {
+  store,
+  operatorToken: "operator-token",
+  operatorSessionSecret: "operator-session-secret-that-is-long-enough",
+  operatorSessionTtlSeconds: 3_600,
+});
 const server = await listen(app);
 const baseUrl = `http://127.0.0.1:${addressPort(server)}`;
 
@@ -38,6 +44,73 @@ try {
     const body = await response.json() as { error: { code: string } };
     assert.equal(response.status, 401);
     assert.equal(body.error.code, "NATIVE_AGENT_OPERATOR_TOKEN_INVALID");
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/operator/session`);
+    const body = await response.json() as { error: { code: string } };
+    assert.equal(response.status, 401);
+    assert.equal(body.error.code, "NATIVE_AGENT_OPERATOR_TOKEN_INVALID");
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/operator/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "wrong-token" }),
+    });
+    const body = await response.json() as { error: { code: string } };
+    assert.equal(response.status, 401);
+    assert.equal(body.error.code, "NATIVE_AGENT_OPERATOR_TOKEN_INVALID");
+  }
+
+  let sessionCookie = "";
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/operator/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "operator-token" }),
+    });
+    const body = await response.json() as { session: { authenticated: boolean; method: string; expiresAt: string }; requestId: string };
+    assert.equal(response.status, 201);
+    assert.equal(body.session.authenticated, true);
+    assert.equal(body.session.method, "session");
+    assert.ok(Date.parse(body.session.expiresAt) > Date.now());
+    assert.ok(body.requestId);
+    sessionCookie = cookiePair(response, "devspace_operator_session");
+    assert.ok(sessionCookie.startsWith("devspace_operator_session="));
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/operator/session`, {
+      headers: { cookie: sessionCookie },
+    });
+    const body = await response.json() as { session: { authenticated: boolean; method: string; expiresAt: string } };
+    assert.equal(response.status, 200);
+    assert.equal(body.session.authenticated, true);
+    assert.equal(body.session.method, "session");
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/runs`, {
+      headers: { cookie: sessionCookie },
+    });
+    const body = await response.json() as { runs: Array<{ id: string }>; requestId: string };
+    assert.equal(response.status, 200);
+    assert.ok(body.runs.some((entry) => entry.id === "agent_run_api"));
+    assert.ok(body.requestId);
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/operator/session`, {
+      method: "DELETE",
+      headers: { cookie: sessionCookie },
+    });
+    const body = await response.json() as { session: { authenticated: boolean }; requestId: string };
+    assert.equal(response.status, 200);
+    assert.equal(body.session.authenticated, false);
+    assert.ok(response.headers.get("set-cookie")?.includes("devspace_operator_session="));
+    assert.ok(body.requestId);
   }
 
   {
@@ -190,4 +263,12 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   });
+}
+
+function cookiePair(response: globalThis.Response, name: string): string {
+  const setCookie = response.headers.get("set-cookie");
+  assert.ok(setCookie, "Expected Set-Cookie header");
+  const cookie = setCookie.split(";")[0];
+  assert.ok(cookie.startsWith(`${name}=`));
+  return cookie;
 }

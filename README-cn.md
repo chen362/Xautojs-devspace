@@ -43,6 +43,7 @@ Xautojs 分支还增加了面向生产和自动化的能力：
 - GitHub webhook 签名校验、事件去重和路由策略
 - 第一方 native agent run、事件流、进程执行和 workflow pack
 - 权限 profile、approval 暂停/恢复、runtime hooks、retry、replay 和 operator API
+- 浏览器 Operator Console：查看 run replay、approval、hook decision、workflow step 状态，执行 dispatch、resume、retry、cancel
 - 面向 operator 的 CLI：dispatch、replay、approval、retry、cancel 等
 
 Codex 和 Claude Code 在这里是参考系统，不是运行时依赖。Xautojs 自己拥有 runtime、
@@ -246,10 +247,17 @@ Stop
 
 ## Operator CLI
 
-Native agent 命令需要 Postgres。Operator HTTP API 还需要配置：
+Native agent 命令需要 Postgres。Operator HTTP API 和浏览器控制台还需要配置：
 
 ```text
 DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN
+```
+
+推荐的浏览器 session 配置：
+
+```text
+DEVSPACE_NATIVE_AGENT_OPERATOR_SESSION_SECRET
+DEVSPACE_NATIVE_AGENT_OPERATOR_SESSION_TTL_SECONDS
 ```
 
 常见 CLI 流程：
@@ -271,6 +279,32 @@ node dist/cli.js agent cancel --id <agentRunId>
 workflow、approval 计数、hook decision 计数、workflow step 状态、最新 pending
 approval、blocking hooks 和 retry 链接。需要完整机器可读事件流时使用 `--json`。
 
+## Operator Console
+
+浏览器控制台由 DevSpace server 提供，入口是：
+
+```text
+/operator
+```
+
+Operator 不需要阅读原始 JSON，就能处理：
+
+```text
+run queue 和 status filter
+replay timeline
+approval approve/deny
+hook decision 可视化
+workflow step 状态
+resume、retry、cancel
+dispatch queued automation
+```
+
+控制台登录会把 `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN` 换成 signed HttpOnly session
+cookie。CLI、curl 和脚本仍然可以继续使用 Bearer token。
+
+设置、session 配置、UI 工作流和 production smoke 命令见
+[Native Agent Operator Console](docs/native-agent-operator-console.md)。
+
 ## Operator API
 
 Native agent operator API 挂载在：
@@ -279,7 +313,8 @@ Native agent operator API 挂载在：
 /api/native-agent
 ```
 
-请求需要：
+它接受 Bearer token，也接受 `/api/native-agent/operator/session` 创建的 operator
+session cookie：
 
 ```text
 Authorization: Bearer <DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN>
@@ -288,6 +323,9 @@ Authorization: Bearer <DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN>
 重要端点：
 
 ```text
+POST /api/native-agent/operator/session
+GET  /api/native-agent/operator/session
+DELETE /api/native-agent/operator/session
 GET  /api/native-agent/runs
 GET  /api/native-agent/runs/:agentRunId/events
 GET  /api/native-agent/runs/:agentRunId/replay
@@ -331,6 +369,7 @@ node dist/cli.js doctor
 - [DevSpace Automation Ingress Plan](docs/devspace-automation-ingress-plan.md)
 - [Native Agent Runtime](docs/native-agent-runtime.md)
 - [Native Agent Operator Guide](docs/native-agent-operator-guide.md)
+- [Native Agent Operator Console](docs/native-agent-operator-console.md)
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)
 
