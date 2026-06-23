@@ -22,7 +22,7 @@ first-party process execution contract
 permission profiles and command policy
 interactive approval pause/resume gates
 typed runtime hooks
-workflow packs with stable loop steps
+workflow packs with stable plan/execute/verify/handoff steps
 event-sourced approval request/resolve records
 terminal-run retry creation
 operator HTTP APIs
@@ -93,9 +93,9 @@ run.succeeded | run.failed | run.cancelled | run.timed_out
 `run.waiting_input`, `run.approval.accepted`, and `run.resumed` are present only
 when policy or hooks require operator approval.
 
-Workflow packs define the stable step list. This gives operators a replayable
-view of intent and progress even before a richer model-driven agent loop is
-plugged in.
+Workflow packs define the stable step list and execution plan. This gives
+operators a replayable view of intent, phase, expected output, and acceptance
+criteria even before a richer model-driven agent loop is plugged in.
 
 Queued native runs can be dispatched directly:
 
@@ -239,8 +239,37 @@ title
 description
 permissionProfile
 steps[]
+successCriteria[]
+failureModes[]
 buildPrompt(input)
 ```
+
+Each step is no longer just display text. It is a durable execution contract:
+
+```text
+id
+title
+phase: plan | execute | verify | handoff
+action: observe | decide | modify | test | report
+objective
+expectedOutput
+acceptanceCriteria[]
+suggestedTools[]
+```
+
+The runtime builds an `executionPlan` with version
+`native-workflow-pack/v1` and stores it in both:
+
+```text
+DEVSPACE_NATIVE_AGENT_INPUT.executionPlan
+agent_runs.result.executionPlan
+```
+
+`run.loop.started` includes plan-level phases, success criteria, and failure
+modes. Every `run.loop.step` includes phase, action, expected output, acceptance
+criteria, and suggested tools. This is the contract that lets future real agent
+loops move from static bootstrap output toward plan/execute/verify behavior
+without changing the operator replay model again.
 
 GitHub automation metadata defaults to `github-pr-review`. A source or run can
 select a workflow with `metadata.workflowId` when it maps to a known workflow id.

@@ -5,7 +5,7 @@ import { NativeRuntimeHookManager } from "./native-agent-hooks.js";
 import { listNativeAgentApprovals, resolveNativeAgentApproval } from "./native-agent-operator.js";
 import type { ServerConfig } from "./config.js";
 import type { WorkspaceStore } from "./workspace-store.js";
-import type { AutomationRun } from "./postgres-automation-store.js";
+import type { AutomationRun, JsonObject } from "./postgres-automation-store.js";
 
 const workspaceRoot = process.cwd();
 const config = {
@@ -43,11 +43,20 @@ const workspaceStore = {
   assert.equal(result.status, "succeeded");
   assert.equal(result.agentRun?.workflowId, "github-pr-review");
   assert.equal(store.automationRuns.get("auto_run_pr")?.status, "succeeded");
+  assert.equal((result.agentRun?.result.executionPlan as JsonObject | undefined)?.version, "native-workflow-pack/v1");
+  assert.ok(Array.isArray((result.agentRun?.result.executionPlan as JsonObject | undefined)?.successCriteria));
 
   const events = await store.readRunEvents({ agentRunId: result.agentRun!.id });
   assert.ok(events.some((event) => event.type === "run.started"));
   assert.ok(events.some((event) => event.type === "run.loop.started"));
-  assert.ok(events.some((event) => event.type === "run.loop.step" && event.payload.id === "normalize-event"));
+  const started = events.find((event) => event.type === "run.loop.started");
+  assert.deepEqual(started?.payload.phases, ["plan", "execute", "verify", "handoff"]);
+  assert.ok(Array.isArray(started?.payload.successCriteria));
+  const normalizeStep = events.find((event) => event.type === "run.loop.step" && event.payload.id === "normalize-event");
+  assert.equal(normalizeStep?.payload.phase, "plan");
+  assert.equal(normalizeStep?.payload.action, "observe");
+  assert.ok(Array.isArray(normalizeStep?.payload.acceptanceCriteria));
+  assert.match(String(normalizeStep?.payload.expectedOutput ?? ""), /normalized review target/i);
   assert.ok(events.some((event) => event.type === "run.output_delta"));
   assert.ok(events.some((event) => event.type === "run.loop.completed"));
   assert.ok(events.some((event) => event.type === "run.succeeded"));
@@ -56,7 +65,7 @@ const workspaceStore = {
       .filter((event) => event.type === "run.output_delta")
       .map((event) => String(event.payload.text ?? ""))
       .join(""),
-    /github-pr-review/,
+    /native-workflow-pack\/v1/,
   );
   assert.deepEqual(store.hooks.map((hook) => hook.hookEventName), ["PreToolUse", "PostToolUse", "Stop"]);
 }
@@ -98,7 +107,11 @@ const workspaceStore = {
   assert.equal(result.claimed, true);
   assert.equal(result.status, "succeeded");
   assert.equal(result.agentRun?.status, "succeeded");
-  assert.ok((await store.readRunEvents({ agentRunId: run.id })).some((event) => event.type === "run.loop.step" && event.payload.id === "plan"));
+  const events = await store.readRunEvents({ agentRunId: run.id });
+  const planStep = events.find((event) => event.type === "run.loop.step" && event.payload.id === "plan");
+  assert.equal(planStep?.payload.phase, "plan");
+  assert.equal(planStep?.payload.action, "decide");
+  assert.ok(Array.isArray(planStep?.payload.acceptanceCriteria));
 }
 
 {
