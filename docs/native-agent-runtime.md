@@ -20,6 +20,7 @@ queued native agent run dispatch
 cursor-readable and replayable run events
 first-party process execution contract
 permission profiles and command policy
+interactive approval pause/resume gates
 typed runtime hooks
 workflow packs with stable loop steps
 event-sourced approval request/resolve records
@@ -64,8 +65,10 @@ failed
 cancelled
 ```
 
-When a native agent run reaches a terminal state, the linked automation run is
-updated to the corresponding terminal automation state.
+When a native agent run waits for approval, the native run moves to
+`waiting_input` while the linked automation run remains `running`. When a native
+agent run reaches a terminal state, the linked automation run is updated to the
+corresponding terminal automation state.
 
 `agent_run_events` is append-only and cursor-readable by `afterSeq`. Operators
 can safely replay a run from sequence `0`, tail new events from the latest
@@ -79,24 +82,36 @@ Every dispatched run writes structured loop events around raw process output:
 run.started
 run.loop.started
 run.loop.step
+run.waiting_input
+run.approval.accepted
+run.resumed
 run.output_delta
 run.loop.completed | run.loop.failed
 run.succeeded | run.failed | run.cancelled | run.timed_out
 ```
 
+`run.waiting_input`, `run.approval.accepted`, and `run.resumed` are present only
+when policy or hooks require operator approval.
+
 Workflow packs define the stable step list. This gives operators a replayable
 view of intent and progress even before a richer model-driven agent loop is
 plugged in.
 
-Queued native runs can now be dispatched directly:
+Queued native runs can be dispatched directly:
 
 ```bash
 devspace agent dispatch-run --id <agentRunId> --workspace-root <path>
 ```
 
-This is separate from automation claiming. It lets retry-created runs and future
-manual native runs execute through the same policy, hook, process, and event
-pipeline.
+A waiting run is resumed through the same execution pipeline:
+
+```bash
+devspace agent resume --id <agentRunId> --workspace-root <path>
+```
+
+This is separate from automation claiming. It lets retry-created runs, waiting
+runs, and future manual native runs execute through the same policy, hook,
+process, and event pipeline.
 
 ## Dispatcher Contract
 
@@ -150,7 +165,7 @@ read_only:
 
 workspace_write:
   allows internal workflow process execution inside workspaceRoot
-  blocks high-risk shell/network/destructive commands by default
+  requires approval for high-risk shell/network/destructive commands
 
 trusted_local:
   allows low/medium-risk local commands
@@ -171,6 +186,38 @@ command risk classification
 A webhook payload is never trusted as a raw shell command. External events may
 select a workflow, but executable argv is produced by first-party Xautojs workflow
 code.
+
+## Approval Gates
+
+Policy and hooks can return these decisions:
+
+```text
+allow       execute immediately
+ask         pause the run and request approval
+block       fail the run before execution
+audit_only  execute but record the high-risk decision
+```
+
+When the decision is `ask`, runtime behavior is stable:
+
+```text
+1. Write run.approval.requested if an equivalent approval is not already present.
+2. Move the native run to waiting_input.
+3. Return dispatch status waiting_input with NATIVE_APPROVAL_REQUIRED.
+4. Keep the linked automation run in running.
+5. Reuse the same approval on repeated dispatch attempts.
+6. After approval, dispatch/resume writes run.approval.accepted and run.resumed.
+7. After denial, dispatch/resume finishes failed with NATIVE_APPROVAL_DENIED.
+8. After timeout, dispatch/resume finishes timed_out with NATIVE_APPROVAL_TIMEOUT.
+```
+
+Equivalent policy approvals are matched by a stable fingerprint over title,
+message, risk, and request payload. This prevents repeated resume attempts from
+creating duplicate approval prompts.
+
+Approval timeout defaults to 15 minutes. Operators can override it with
+`approvalTimeoutMs` through API dispatch/resume calls, or `--approval-timeout-ms`
+through the CLI.
 
 ## Workflow Packs
 
@@ -215,9 +262,8 @@ PostCompact
 Stop
 ```
 
-Hook records are stored in `agent_runtime_hooks`. The first default hooks are
-policy-shaped audit/block decisions; they are intentionally small so the runtime
-can grow without hidden side effects.
+Hook records are stored in `agent_runtime_hooks`. Default hooks turn high-risk
+pre-tool decisions into `ask`, block policy-denied actions, and audit stop events.
 
 ## Approval, Retry, And Replay
 
@@ -280,10 +326,36 @@ GET  /api/native-agent/runs/:agentRunId/replay
 GET  /api/native-agent/runs/:agentRunId/approvals
 POST /api/native-agent/runs/:agentRunId/approvals
 POST /api/native-agent/runs/:agentRunId/approvals/:approvalId/resolve
+POST /api/native-agent/runs/:agentRunId/resume
 POST /api/native-agent/runs/:agentRunId/retry
 POST /api/native-agent/runs/:agentRunId/cancel
 POST /api/native-agent/dispatch/once
 POST /api/native-agent/dispatch/run
+```
+
+Dispatch and resume accept:
+
+```json
+{
+  "workspaceRoot": "/path/to/workspace",
+  "timeoutMs": 5000,
+  "approvalTimeoutMs": 900000
+}
+```
+
+Stable waiting response shape:
+
+```json
+{
+  "claimed": true,
+  "status": "waiting_input",
+  "errorCode": "NATIVE_APPROVAL_REQUIRED",
+  "errorMessage": "Approve high-risk native command",
+  "agentRun": {
+    "status": "waiting_input"
+  },
+  "requestId": "..."
+}
 ```
 
 Stable error response shape:
@@ -307,6 +379,7 @@ Native agent commands:
 devspace agent workflows
 devspace agent dispatch-once --workspace-root <path>
 devspace agent dispatch-run --id <agentRunId> --workspace-root <path>
+devspace agent resume --id <agentRunId> --workspace-root <path>
 devspace agent list
 devspace agent events --id <agentRunId>
 devspace agent replay --id <agentRunId>
@@ -316,6 +389,13 @@ devspace agent request-approval --id <agentRunId> --message <text>
 devspace agent approve --id <agentRunId> --approval-id <approvalId>
 devspace agent deny --id <agentRunId> --approval-id <approvalId>
 devspace agent cancel --id <agentRunId>
+```
+
+Dispatch and resume support:
+
+```bash
+--timeout-ms <ms>
+--approval-timeout-ms <ms>
 ```
 
 Most commands support `--json` for automation-friendly output.
