@@ -19,6 +19,37 @@ const run = await store.createAgentRun({
   input: { text: "implement feature" },
 });
 await store.appendRunEvent({ agentRunId: run.id, type: "run.started", payload: { workflowId: "feature-dev" } });
+await store.appendRunEvent({
+  agentRunId: run.id,
+  type: "run.loop.step",
+  payload: {
+    id: "plan",
+    title: "Plan implementation",
+    phase: "plan",
+    action: "decide",
+    expectedOutput: "Implementation plan",
+    acceptanceCriteria: ["Plan names the touched files"],
+    suggestedTools: ["process"],
+  },
+});
+await store.appendRunEvent({
+  agentRunId: run.id,
+  type: "run.hook.decision",
+  payload: {
+    hookEventName: "WorkflowStep",
+    decision: "audit_only",
+    continue: true,
+    auditOnly: true,
+    reason: "Native workflow step recorded for audit.",
+    hookPayload: {
+      stage: "before",
+      workflowId: "feature-dev",
+      stepId: "plan",
+      stepPhase: "plan",
+      stepAction: "decide",
+    },
+  },
+});
 
 const requested = await requestNativeAgentApproval(store, {
   agentRunId: run.id,
@@ -90,6 +121,15 @@ assert.equal(replay.terminal, false);
 assert.ok(replay.events.some((event) => event.type === "run.approval.requested"));
 assert.equal(replay.approvals[0]?.status, "approved");
 assert.equal(replay.nextSeq, replay.events.length + 1);
+assert.equal(replay.summary.status, "running");
+assert.equal(replay.summary.approvals.total, 2);
+assert.equal(replay.summary.approvals.pending, 0);
+assert.equal(replay.summary.approvals.approved, 1);
+assert.equal(replay.summary.approvals.denied, 1);
+assert.equal(replay.summary.hooks.auditOnly, 1);
+assert.equal(replay.summary.workflowSteps[0]?.id, "plan");
+assert.equal(replay.summary.workflowSteps[0]?.hookDecision, "audit_only");
+assert.equal(replay.summary.workflowSteps[0]?.status, "recorded");
 
 await store.finishAgentRun({
   agentRunId: run.id,
@@ -110,3 +150,7 @@ assert.equal(retry.input.retryOfAgentRunId, run.id);
 assert.equal(retry.input.retryReason, "fix and retry");
 assert.ok((await store.readRunEvents({ agentRunId: run.id })).some((event) => event.type === "run.retry.created"));
 assert.ok((await store.readRunEvents({ agentRunId: retry.id })).some((event) => event.type === "run.retry.source"));
+
+const replayAfterRetry = await replayNativeAgentRun(store, { agentRunId: run.id });
+assert.equal(replayAfterRetry.summary.terminal, true);
+assert.deepEqual(replayAfterRetry.summary.retries.retryAgentRunIds, ["agent_run_retry_1"]);
