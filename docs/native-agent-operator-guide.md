@@ -90,7 +90,7 @@ For production, use your public HTTPS origin:
 https://devspace.example.com/operator
 ```
 
-The console is the recommended day-to-day operator surface. It shows:
+The console is the recommended remote and fallback operator surface. It shows:
 
 ```text
 run queue and status filters
@@ -413,3 +413,29 @@ node dist/cli.js agent replay --id <agentRunId>
 
 For automation, prefer `--json` and consume `nextSeq`, `terminal`, and
 `summary` from replay.
+
+## 12. Desktop Operator Direction
+
+The browser console remains the remote and fallback operator surface. The planned
+Xautojs Desktop app is the local-first default surface for daily operator work.
+
+Desktop should connect to a loopback operator daemon, reuse the same
+`/api/native-agent` contract, and expose the current replay, approval, hook,
+workflow-step, resume, retry, cancel, and dispatch controls without requiring the
+operator to open a browser.
+
+The planned local daemon entry point is:
+
+```bash
+node dist/cli.js operator serve
+```
+
+Future global install equivalent:
+
+```bash
+devspace operator serve
+```
+
+For the full desktop product architecture, daemon contract, Tauri plan,
+permission UX, streaming model, and PR roadmap, see
+[Xautojs Desktop Operator Architecture](xautojs-desktop-operator.md).
