@@ -61,6 +61,17 @@ A workspaceId created in one MCP session is rejected as unknown in another MCP s
 conversationSessionId, deviceId, and toolCallId remain reserved in the execution context for cloud mode.
 ```
 
+Phase 1.2 implementation status:
+
+```text
+RemoteMcpToolExecutor now implements the same DevspaceToolExecutor contract as the local executor.
+RemoteMcpToolTransport is an injected internal boundary for future device-channel routing.
+Remote calls forward mcpSessionId, owner, optional conversationSessionId, deviceId, and toolCallId.
+When toolCallId is absent, the remote executor creates a tc_ id for audit/idempotency plumbing.
+Fake transport tests cover canonical tool routing, context forwarding, workspaceId forwarding, and remote error mapping.
+No real WebSocket, device channel, or cloud gateway server is introduced in this phase.
+```
+
 This is correct for self-hosted use. Public customer mode needs an additional split:
 
 ```text
