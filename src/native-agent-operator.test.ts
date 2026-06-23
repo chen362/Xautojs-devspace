@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { InMemoryNativeAgentStore } from "./native-agent-store.js";
 import {
   createNativeAgentRetry,
+  ensureNativeAgentPolicyApproval,
   listNativeAgentApprovals,
   replayNativeAgentRun,
   requestNativeAgentApproval,
@@ -43,6 +44,45 @@ const resolved = await resolveNativeAgentApproval(store, {
 assert.equal(resolved.status, "approved");
 assert.deepEqual(resolved.response, { message: "ok" });
 assert.deepEqual((await listNativeAgentApprovals(store, { agentRunId: run.id })).map((approval) => approval.status), ["approved"]);
+
+const policyApproval = await ensureNativeAgentPolicyApproval(store, {
+  agentRunId: run.id,
+  approvalId: "approval_policy",
+  title: "Approve command",
+  message: "Allow command",
+  risk: "high",
+  request: { toolName: "process", argv: ["rm", "-rf", "dist"] },
+  timeoutMs: 1_000,
+  now: () => new Date("2026-06-23T00:00:00.000Z"),
+});
+assert.equal(policyApproval.status, "pending");
+assert.equal(policyApproval.expiresAt, "2026-06-23T00:00:01.000Z");
+assert.equal(policyApproval.request.approvalFingerprint && typeof policyApproval.request.approvalFingerprint, "string");
+
+const reusedPolicyApproval = await ensureNativeAgentPolicyApproval(store, {
+  agentRunId: run.id,
+  title: "Approve command",
+  message: "Allow command",
+  risk: "high",
+  request: { argv: ["rm", "-rf", "dist"], toolName: "process" },
+  timeoutMs: 1_000,
+  now: () => new Date("2026-06-23T00:00:00.500Z"),
+});
+assert.equal(reusedPolicyApproval.id, "approval_policy");
+assert.equal(reusedPolicyApproval.status, "pending");
+
+const expiredPolicyApproval = await ensureNativeAgentPolicyApproval(store, {
+  agentRunId: run.id,
+  title: "Approve command",
+  message: "Allow command",
+  risk: "high",
+  request: { toolName: "process", argv: ["rm", "-rf", "dist"] },
+  timeoutMs: 1_000,
+  now: () => new Date("2026-06-23T00:00:02.000Z"),
+});
+assert.equal(expiredPolicyApproval.id, "approval_policy");
+assert.equal(expiredPolicyApproval.status, "denied");
+assert.equal(expiredPolicyApproval.response.code, "NATIVE_APPROVAL_TIMEOUT");
 
 const replay = await replayNativeAgentRun(store, { agentRunId: run.id });
 assert.equal(replay.agentRunId, run.id);
