@@ -44,7 +44,8 @@ jobs:
 
       - name: Remove temporary lockfile sync job
         shell: bash
-        run: perl -0pi -e 's/^  # TEMP-DESKTOP-LOCKFILE-SYNC-START\n.*?^  # TEMP-DESKTOP-LOCKFILE-SYNC-END\n//ms' .github/workflows/ci.yml
+        run: |
+          perl -0pi -e 's/^  \# TEMP-DESKTOP-LOCKFILE-SYNC-START\n.*?^  \# TEMP-DESKTOP-LOCKFILE-SYNC-END\n//ms' .github/workflows/ci.yml
 
       - name: Commit generated desktop lockfiles
         shell: bash
