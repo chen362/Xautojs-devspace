@@ -63,6 +63,48 @@ try {
     assert.equal(body.nextSeq, 2);
   }
 
+  let approvalId = "";
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/runs/agent_run_api/approvals`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer operator-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ title: "Run tests", message: "Allow npm test", risk: "medium", requestedBy: "api-test" }),
+    });
+    const body = await response.json() as { approval: { id: string; status: string } };
+    assert.equal(response.status, 201);
+    assert.equal(body.approval.status, "pending");
+    approvalId = body.approval.id;
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/runs/agent_run_api/approvals/${approvalId}/resolve`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer operator-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ decision: "approved", resolvedBy: "owner" }),
+    });
+    const body = await response.json() as { approval: { id: string; status: string; resolvedBy: string } };
+    assert.equal(response.status, 200);
+    assert.equal(body.approval.id, approvalId);
+    assert.equal(body.approval.status, "approved");
+    assert.equal(body.approval.resolvedBy, "owner");
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/runs/agent_run_api/replay`, {
+      headers: { authorization: "Bearer operator-token" },
+    });
+    const body = await response.json() as { replay: { approvals: Array<{ status: string }>; events: Array<{ type: string }> } };
+    assert.equal(response.status, 200);
+    assert.equal(body.replay.approvals[0]?.status, "approved");
+    assert.ok(body.replay.events.some((event) => event.type === "run.approval.requested"));
+  }
+
   {
     const response = await fetch(`${baseUrl}/api/native-agent/runs/agent_run_api/cancel`, {
       method: "POST",
@@ -77,6 +119,22 @@ try {
     assert.equal(body.run.id, "agent_run_api");
     assert.equal(body.run.status, "cancelled");
     assert.equal(body.run.errorCode, "AGENT_RUN_CANCELLED");
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/runs/agent_run_api/retry`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer operator-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ reason: "try again" }),
+    });
+    const body = await response.json() as { retry: { status: string; attempt: number; input: { retryOfAgentRunId: string } } };
+    assert.equal(response.status, 201);
+    assert.equal(body.retry.status, "queued");
+    assert.equal(body.retry.attempt, 2);
+    assert.equal(body.retry.input.retryOfAgentRunId, "agent_run_api");
   }
 } finally {
   await registration.close();
