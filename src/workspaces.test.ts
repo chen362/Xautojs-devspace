@@ -84,8 +84,15 @@ try {
   assert.equal(worktreeReadmePath.startsWith(worktreeWorkspace.workspace.root), true);
 
   const stateDir = join(root, ".state");
+  const mcpSessionA = { mcpSessionId: "mcp_session_a" };
+  const mcpSessionB = { mcpSessionId: "mcp_session_b" };
   const firstStore = new SqliteWorkspaceStore(stateDir);
-  const persistentRegistry = new WorkspaceRegistry(config, firstStore);
+  const persistentRegistry = new WorkspaceRegistry(
+    config,
+    firstStore,
+    LOCAL_WORKSPACE_IDENTITY,
+    mcpSessionA,
+  );
   const persistentWorkspace = await persistentRegistry.openWorkspace(root);
   const persistentWorktree = await persistentRegistry.openWorkspace({
     path: gitRoot,
@@ -95,7 +102,12 @@ try {
   await writeFile(join(root, "AGENTS.md"), "changed root instructions\n");
 
   const secondStore = new SqliteWorkspaceStore(stateDir);
-  const restoredRegistry = new WorkspaceRegistry(config, secondStore);
+  const restoredRegistry = new WorkspaceRegistry(
+    config,
+    secondStore,
+    LOCAL_WORKSPACE_IDENTITY,
+    mcpSessionA,
+  );
   const restoredWorkspace = await restoredRegistry.getWorkspace(persistentWorkspace.workspace.id);
   assert.equal(restoredWorkspace.root, root);
   assert.equal(restoredWorkspace.mode, "checkout");
@@ -108,10 +120,27 @@ try {
     [join(gitRoot, "AGENTS.md"), join(root, "nested", "AGENTS.md")],
   );
   assert.deepEqual(
-    (await secondStore.getLoadedAgentFiles(persistentWorkspace.workspace.id, LOCAL_WORKSPACE_IDENTITY)).map(
-      (file) => file.content,
-    ),
+    (await secondStore.getLoadedAgentFiles(
+      persistentWorkspace.workspace.id,
+      LOCAL_WORKSPACE_IDENTITY,
+      mcpSessionA,
+    )).map((file) => file.content),
     ["global instructions\n", "root instructions\n"],
+  );
+
+  const otherSessionRegistry = new WorkspaceRegistry(
+    config,
+    secondStore,
+    LOCAL_WORKSPACE_IDENTITY,
+    mcpSessionB,
+  );
+  await assert.rejects(
+    () => otherSessionRegistry.getWorkspace(persistentWorkspace.workspace.id),
+    /Unknown workspaceId: .* Call open_workspace first\./,
+  );
+  await assert.rejects(
+    () => restoredRegistry.getWorkspace("ws_missing"),
+    /Unknown workspaceId: ws_missing\. Call open_workspace first\./,
   );
 
   const restoredWorktree = await restoredRegistry.getWorkspace(persistentWorktree.workspace.id);
@@ -120,14 +149,21 @@ try {
   assert.equal(restoredWorktree.root, persistentWorktree.workspace.root);
   assert.equal(restoredWorktree.worktree?.managed, true);
 
-  assert.equal(await secondStore.deleteSession(persistentWorkspace.workspace.id, LOCAL_WORKSPACE_IDENTITY), true);
+  assert.equal(
+    await secondStore.deleteSession(persistentWorkspace.workspace.id, LOCAL_WORKSPACE_IDENTITY, mcpSessionA),
+    true,
+  );
   assert.deepEqual(
-    await secondStore.getLoadedAgentFiles(persistentWorkspace.workspace.id, LOCAL_WORKSPACE_IDENTITY),
+    await secondStore.getLoadedAgentFiles(
+      persistentWorkspace.workspace.id,
+      LOCAL_WORKSPACE_IDENTITY,
+      mcpSessionA,
+    ),
     [],
   );
   assert.equal(await secondStore.deleteExpiredSessions(new Date(Date.now() + 1000).toISOString()), 1);
   assert.equal(
-    await secondStore.getSession(persistentWorktree.workspace.id, LOCAL_WORKSPACE_IDENTITY),
+    await secondStore.getSession(persistentWorktree.workspace.id, LOCAL_WORKSPACE_IDENTITY, mcpSessionA),
     undefined,
   );
   await secondStore.close();
