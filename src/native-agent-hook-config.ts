@@ -5,11 +5,13 @@ import type {
 } from "./native-agent-store.js";
 import type { NativeWorkflowStepPhase } from "./native-agent-workflows.js";
 
+export type NativeRuntimeLifecycleHookEventName = "Start" | "WorkflowStep";
+export type NativeRuntimeHookName = NativeRuntimeHookEventName | NativeRuntimeLifecycleHookEventName;
 export type NativeRuntimeHookStage = "before" | "after";
 
 export interface NativeRuntimeHookRule {
   id: string;
-  events: NativeRuntimeHookEventName[];
+  events: NativeRuntimeHookName[];
   stages?: NativeRuntimeHookStage[];
   workflowIds?: string[];
   stepPhases?: NativeWorkflowStepPhase[];
@@ -28,7 +30,7 @@ export interface NativeRuntimeHookConfig {
   rules: NativeRuntimeHookRule[];
 }
 
-const runtimeHookEvents: NativeRuntimeHookEventName[] = [
+const runtimeHookEvents: NativeRuntimeHookName[] = [
   "Start",
   "WorkflowStep",
   "PreToolUse",
@@ -80,7 +82,7 @@ function parseRule(value: unknown, source: string): NativeRuntimeHookRule {
     runtimeHookEvents,
     `${source}.events`,
     true,
-  ) as NativeRuntimeHookEventName[];
+  ) as NativeRuntimeHookName[];
   const decision = parseEnum(record.decision, runtimeHookDecisions, `${source}.decision`) as NativeRuntimeHookDecision;
 
   return {
