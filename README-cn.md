@@ -14,7 +14,7 @@
 
 <p align="center">
   <img alt="Package" src="https://img.shields.io/badge/package-xautojs--devspace-blue?style=flat-square" />
-  <a href="https://github.com/chen362/Xautojs-devspace/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/chen362/Xautojs-devspace/ci.yml?style=flat-square&branch=Xautojs-devspace" /></a>
+  <a href="https://github.com/chen362/Xautojs-devspace/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/chen362/Xautojs-devspace/ci.yml?style=flat-square&branch=main" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green?style=flat-square" /></a>
 </p>
 
@@ -36,7 +36,7 @@ Xautojs 自有的原生本地 Agent Runtime。
 - 发现本地 agent skills
 - 在兼容 ChatGPT Apps 的宿主里展示工具卡片和变更摘要
 
-Xautojs 分支还增加了面向生产和自动化的能力：
+Xautojs 项目还增加了面向生产和自动化的能力：
 
 - 基于 Postgres 的 workspace、automation、native agent 状态存储
 - 通用 automation trigger 和 GitHub webhook 入口
@@ -78,7 +78,7 @@ devspace
 当前默认开发分支是：
 
 ```text
-Xautojs-devspace
+main
 ```
 
 发布前，`package.json`、`package-lock.json`、badge 和 release 文档都必须统一到
@@ -96,7 +96,7 @@ DevSpace 需要 Node `>=20.12 <27`。推荐使用 Node 22 LTS。
 ```bash
 git clone https://github.com/chen362/Xautojs-devspace.git
 cd Xautojs-devspace
-git checkout Xautojs-devspace
+git checkout main
 npm install --include=dev
 npm run build
 ```
