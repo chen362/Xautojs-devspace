@@ -45,6 +45,7 @@ Xautojs 分支还增加了面向生产和自动化的能力：
 - 权限 profile、approval 暂停/恢复、runtime hooks、retry、replay 和 operator API
 - 浏览器 Operator Console：查看 run replay、approval、hook decision、workflow step 状态，执行 dispatch、resume、retry、cancel
 - 面向 operator 的 CLI：dispatch、replay、approval、retry、cancel 等
+- 规划中的 Xautojs Desktop Operator：提供类似 Codex / Claude Desktop 的本地项目、approval、replay 和 workflow UI
 
 Codex 和 Claude Code 在这里是参考系统，不是运行时依赖。Xautojs 自己拥有 runtime、
 storage、policy、hooks、workflow packs 和 operator controls，不要求安装 Codex 或
@@ -305,6 +306,18 @@ cookie。CLI、curl 和脚本仍然可以继续使用 Bearer token。
 设置、session 配置、UI 工作流和 production smoke 命令见
 [Native Agent Operator Console](docs/native-agent-operator-console.md)。
 
+## Xautojs Desktop 方向
+
+规划中的 Desktop Operator 是日常本地使用的默认入口。它应该更像一个本地桌面编码助手，
+而不是浏览器后台：左侧是项目和 runs，中间是聊天式 run 工作区，右侧是 operator
+inspector，用来显示 approval、hook decision、workflow step、retry 和 replay 摘要。
+
+浏览器 `/operator` 继续保留为远程、admin、CI 和 fallback 控制台。Desktop 通过本地
+loopback daemon 调用同一套 operator API，不直接访问 Postgres。
+
+Daemon 契约、Tauri 应用方案、权限 UX、streaming model、路线图和验收标准见
+[Xautojs Desktop Operator Architecture](docs/xautojs-desktop-operator.md)。
+
 ## Operator API
 
 Native agent operator API 挂载在：
@@ -370,6 +383,7 @@ node dist/cli.js doctor
 - [Native Agent Runtime](docs/native-agent-runtime.md)
 - [Native Agent Operator Guide](docs/native-agent-operator-guide.md)
 - [Native Agent Operator Console](docs/native-agent-operator-console.md)
+- [Xautojs Desktop Operator Architecture](docs/xautojs-desktop-operator.md)
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)
 
