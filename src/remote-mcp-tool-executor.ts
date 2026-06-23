@@ -79,7 +79,11 @@ export class RemoteMcpToolExecutor implements DevspaceToolExecutor {
     context: DevspaceToolExecutionContext,
     input: OpenWorkspaceToolInput,
   ): Promise<WorkspaceContext> {
-    return this.callRemote("open_workspace", context, input);
+    return this.callRemote<WorkspaceContext, OpenWorkspaceToolInput>(
+      "open_workspace",
+      context,
+      input,
+    );
   }
 
   readFile(
@@ -87,7 +91,7 @@ export class RemoteMcpToolExecutor implements DevspaceToolExecutor {
     workspaceId: string,
     input: ReadFileToolInput,
   ): Promise<ToolResponse> {
-    return this.callRemote("read_file", context, input, workspaceId);
+    return this.callRemote<ToolResponse, ReadFileToolInput>("read_file", context, input, workspaceId);
   }
 
   writeFile(
@@ -95,7 +99,7 @@ export class RemoteMcpToolExecutor implements DevspaceToolExecutor {
     workspaceId: string,
     input: WriteFileToolInput,
   ): Promise<ToolResponse> {
-    return this.callRemote("write_file", context, input, workspaceId);
+    return this.callRemote<ToolResponse, WriteFileToolInput>("write_file", context, input, workspaceId);
   }
 
   editFile(
@@ -103,7 +107,12 @@ export class RemoteMcpToolExecutor implements DevspaceToolExecutor {
     workspaceId: string,
     input: EditFileToolInput,
   ): Promise<ToolResponse<EditFileToolDetails>> {
-    return this.callRemote("edit_file", context, input, workspaceId);
+    return this.callRemote<ToolResponse<EditFileToolDetails>, EditFileToolInput>(
+      "edit_file",
+      context,
+      input,
+      workspaceId,
+    );
   }
 
   grepFiles(
@@ -111,7 +120,7 @@ export class RemoteMcpToolExecutor implements DevspaceToolExecutor {
     workspaceId: string,
     input: GrepFilesToolInput,
   ): Promise<ToolResponse> {
-    return this.callRemote("grep_files", context, input, workspaceId);
+    return this.callRemote<ToolResponse, GrepFilesToolInput>("grep_files", context, input, workspaceId);
   }
 
   findFiles(
@@ -119,7 +128,7 @@ export class RemoteMcpToolExecutor implements DevspaceToolExecutor {
     workspaceId: string,
     input: FindFilesToolInput,
   ): Promise<ToolResponse> {
-    return this.callRemote("find_files", context, input, workspaceId);
+    return this.callRemote<ToolResponse, FindFilesToolInput>("find_files", context, input, workspaceId);
   }
 
   listDirectory(
@@ -127,7 +136,12 @@ export class RemoteMcpToolExecutor implements DevspaceToolExecutor {
     workspaceId: string,
     input: ListDirectoryToolInput,
   ): Promise<ToolResponse> {
-    return this.callRemote("list_directory", context, input, workspaceId);
+    return this.callRemote<ToolResponse, ListDirectoryToolInput>(
+      "list_directory",
+      context,
+      input,
+      workspaceId,
+    );
   }
 
   runShell(
@@ -135,14 +149,19 @@ export class RemoteMcpToolExecutor implements DevspaceToolExecutor {
     workspaceId: string,
     input: RunShellToolInput,
   ): Promise<ToolResponse> {
-    return this.callRemote("run_shell", context, input, workspaceId);
+    return this.callRemote<ToolResponse, RunShellToolInput>("run_shell", context, input, workspaceId);
   }
 
   showChanges(
     context: DevspaceToolExecutionContext,
     input: ShowChangesToolInput,
   ): Promise<ReviewChangesResult> {
-    return this.callRemote("show_changes", context, input, input.workspaceId);
+    return this.callRemote<ReviewChangesResult, ShowChangesToolInput>(
+      "show_changes",
+      context,
+      input,
+      input.workspaceId,
+    );
   }
 
   private async callRemote<TResult, TInput>(
