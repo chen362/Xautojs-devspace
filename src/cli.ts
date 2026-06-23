@@ -12,6 +12,8 @@ import { postgresConnectionSummary } from "./db/postgres.js";
 import type { PostgresDatabaseConfig } from "./db/types.js";
 import type { PostgresMigrationStatusJson } from "./db/postgres-migrations.js";
 import { registerGithubWebhookRoutes } from "./github-webhook-api.js";
+import { registerNativeAgentApiRoutes } from "./native-agent-api.js";
+import { runNativeAgentCommand } from "./native-agent-cli.js";
 import { buildReadinessReport } from "./readiness.js";
 import {
   generateOwnerToken,
@@ -22,7 +24,7 @@ import {
 } from "./user-config.js";
 import { expandHomePath } from "./roots.js";
 
-type Command = "serve" | "init" | "doctor" | "config" | "db" | "automation" | "help";
+type Command = "serve" | "init" | "doctor" | "config" | "db" | "automation" | "agent" | "help";
 type DbCommand = "migrate" | "status";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
@@ -113,6 +115,9 @@ async function main(argv: string[]): Promise<void> {
     case "automation":
       await runAutomationCommand(args, loadConfig());
       return;
+    case "agent":
+      await runNativeAgentCommand(args, loadConfig());
+      return;
     case "help":
       printHelp();
       return;
@@ -126,7 +131,8 @@ function normalizeCommand(command: string | undefined): Command {
     command === "doctor" ||
     command === "config" ||
     command === "db" ||
-    command === "automation"
+    command === "automation" ||
+    command === "agent"
   ) return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   throw new Error(`Unknown command: ${command}`);
@@ -267,6 +273,7 @@ async function serve(): Promise<void> {
   const { app } = runningServer;
   const automationRoutes = registerAutomationApiRoutes(app, config);
   const githubWebhookRoutes = registerGithubWebhookRoutes(app, config);
+  const nativeAgentRoutes = registerNativeAgentApiRoutes(app, config);
   app.get("/readyz", async (_req, res) => {
     const report = await buildReadinessReport(config);
     res.status(report.ok ? 200 : 503).json(report);
@@ -290,6 +297,7 @@ async function serve(): Promise<void> {
       void Promise.all([
         automationRoutes.close(),
         githubWebhookRoutes.close(),
+        nativeAgentRoutes.close(),
         runningServer.close(),
       ]).finally(() => process.exit(0));
     });
@@ -578,6 +586,11 @@ function printHelp(): void {
       "  devspace automation source create --id <id> --name <name>",
       "  devspace automation source list",
       "  devspace automation source rotate-token --id <id>",
+      "  devspace agent workflows",
+      "  devspace agent dispatch-once --workspace-root <path>",
+      "  devspace agent list",
+      "  devspace agent events --id <agentRunId>",
+      "  devspace agent cancel --id <agentRunId>",
       "",
       "For temporary tunnels:",
       "  DEVSPACE_PUBLIC_BASE_URL=https://example.trycloudflare.com devspace serve",
