@@ -7,12 +7,13 @@ import type {
 import {
   loadNativeRuntimeHookConfigFromEnv,
   type NativeRuntimeHookConfig,
+  type NativeRuntimeHookName,
   type NativeRuntimeHookRule,
 } from "./native-agent-hook-config.js";
 
 export interface NativeRuntimeHookInput {
   agentRunId?: string;
-  hookEventName: NativeRuntimeHookEventName;
+  hookEventName: NativeRuntimeHookName;
   payload?: JsonObject;
 }
 
@@ -30,10 +31,10 @@ export type NativeRuntimeHookHandler = (
 ) => Promise<NativeRuntimeHookResult> | NativeRuntimeHookResult;
 
 export class NativeRuntimeHookManager {
-  private readonly handlers = new Map<NativeRuntimeHookEventName, NativeRuntimeHookHandler[]>();
+  private readonly handlers = new Map<NativeRuntimeHookName, NativeRuntimeHookHandler[]>();
   private readonly rules: NativeRuntimeHookRule[] = [];
 
-  register(eventName: NativeRuntimeHookEventName, handler: NativeRuntimeHookHandler): void {
+  register(eventName: NativeRuntimeHookName, handler: NativeRuntimeHookHandler): void {
     const handlers = this.handlers.get(eventName) ?? [];
     handlers.push(handler);
     this.handlers.set(eventName, handlers);
@@ -195,7 +196,7 @@ async function recordHookResult(
 ): Promise<void> {
   await store.recordRuntimeHook({
     agentRunId: input.agentRunId,
-    hookEventName: input.hookEventName,
+    hookEventName: input.hookEventName as NativeRuntimeHookEventName,
     decision: result.decision,
     payload: input.payload,
     result: hookResultJson(result),
