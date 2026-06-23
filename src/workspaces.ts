@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { WorkspaceMode, WorkspaceStore } from "./workspace-store.js";
+import type { WorkspaceMode, WorkspaceSessionScope, WorkspaceStore } from "./workspace-store.js";
 import { mkdir, opendir, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
@@ -14,6 +14,8 @@ import {
   type LoadedSkills,
   type SkillReadResolution,
 } from "./skills.js";
+
+type WorkspaceSessionScopeProvider = WorkspaceSessionScope | (() => WorkspaceSessionScope);
 
 export interface LoadedAgentsFile {
   path: string;
@@ -72,6 +74,7 @@ export class WorkspaceRegistry {
     private readonly config: ServerConfig,
     private readonly store?: WorkspaceStore,
     private readonly owner: WorkspaceIdentity = LOCAL_WORKSPACE_IDENTITY,
+    private readonly sessionScope: WorkspaceSessionScopeProvider = {},
   ) {}
 
   async openWorkspace(input: string | OpenWorkspaceInput): Promise<WorkspaceContext> {
@@ -138,13 +141,14 @@ export class WorkspaceRegistry {
   }
 
   private async restoreWorkspace(workspaceId: string): Promise<Workspace> {
-    const session = await this.store?.getSession(workspaceId, this.owner);
+    const scope = this.currentSessionScope();
+    const session = await this.store?.getSession(workspaceId, this.owner, scope);
     if (!session) {
       throw new Error(`Unknown workspaceId: ${workspaceId}. Call open_workspace first.`);
     }
 
     const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
-    const agentsFiles = await this.loadRestoredAgentsFiles(session.id, root);
+    const agentsFiles = await this.loadRestoredAgentsFiles(session.id, root, scope);
     const availableAgentsFiles = await this.findAvailableAgentsFiles(root, agentsFiles);
     const restoredWorkspace: Workspace = {
       id: session.id,
@@ -168,8 +172,8 @@ export class WorkspaceRegistry {
       availableAgentsFiles,
       activatedSkillDirs: new Set(),
     };
-    await this.store?.touchSession(workspaceId, this.owner);
-    await this.persistLoadedAgentFiles(restoredWorkspace.id, agentsFiles);
+    await this.store?.touchSession(workspaceId, this.owner, scope);
+    await this.persistLoadedAgentFiles(restoredWorkspace.id, agentsFiles, scope);
     this.workspaces.set(restoredWorkspace.id, restoredWorkspace);
 
     return restoredWorkspace;
@@ -177,7 +181,8 @@ export class WorkspaceRegistry {
 
   private touchSessionInBackground(workspaceId: string): void {
     if (!this.store) return;
-    void this.store.touchSession(workspaceId, this.owner).catch(() => undefined);
+    const scope = this.currentSessionScope();
+    void this.store.touchSession(workspaceId, this.owner, scope).catch(() => undefined);
   }
 
   private async openCheckoutWorkspace(path: string): Promise<WorkspaceContext> {
@@ -213,6 +218,7 @@ export class WorkspaceRegistry {
     sourceRoot?: string;
     worktree?: WorkspaceWorktree;
   }): Promise<WorkspaceContext> {
+    const scope = this.currentSessionScope();
     const agentsFiles = this.loadInitialAgentsFiles(input.root);
     const availableAgentsFiles = await this.findAvailableAgentsFiles(input.root, agentsFiles);
     const workspace: Workspace = {
@@ -232,13 +238,14 @@ export class WorkspaceRegistry {
       owner: this.owner,
       id: workspace.id,
       root: workspace.root,
+      mcpSessionId: scope.mcpSessionId,
       mode: workspace.mode,
       sourceRoot: workspace.sourceRoot,
       baseRef: workspace.worktree?.baseRef,
       baseSha: workspace.worktree?.baseSha,
       managed: workspace.worktree?.managed,
     });
-    await this.persistLoadedAgentFiles(workspace.id, agentsFiles);
+    await this.persistLoadedAgentFiles(workspace.id, agentsFiles, scope);
     this.workspaces.set(workspace.id, workspace);
 
     return { workspace, agentsFiles, availableAgentsFiles };
@@ -247,19 +254,22 @@ export class WorkspaceRegistry {
   private async persistLoadedAgentFiles(
     workspaceSessionId: string,
     files: LoadedAgentsFile[],
+    scope: WorkspaceSessionScope = this.currentSessionScope(),
   ): Promise<void> {
     await this.store?.saveLoadedAgentFiles({
       owner: this.owner,
       workspaceSessionId,
       files,
+      scope,
     });
   }
 
   private async loadRestoredAgentsFiles(
     workspaceSessionId: string,
     root: string,
+    scope: WorkspaceSessionScope,
   ): Promise<LoadedAgentsFile[]> {
-    const storedFiles = await this.store?.getLoadedAgentFiles(workspaceSessionId, this.owner);
+    const storedFiles = await this.store?.getLoadedAgentFiles(workspaceSessionId, this.owner, scope);
     if (storedFiles && storedFiles.length > 0) {
       return storedFiles.map((file) => ({
         path: file.path,
@@ -268,6 +278,10 @@ export class WorkspaceRegistry {
     }
 
     return this.loadInitialAgentsFiles(root);
+  }
+
+  private currentSessionScope(): WorkspaceSessionScope {
+    return typeof this.sessionScope === "function" ? this.sessionScope() : this.sessionScope;
   }
 
   private loadSkillsForWorkspace(root: string): Pick<Workspace, "skills" | "skillDiagnostics"> {
