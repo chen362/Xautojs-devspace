@@ -70,6 +70,24 @@ export class NativeRuntimeHookManager {
 export function defaultNativeRuntimeHooks(): NativeRuntimeHookManager {
   const manager = new NativeRuntimeHookManager();
   manager.register("PreToolUse", (input) => {
+    const policyDecision = stringPayload(input.payload?.decision);
+    if (policyDecision === "block") {
+      return {
+        decision: "block",
+        continue: false,
+        auditOnly: false,
+        reason: "Tool use was blocked by native policy.",
+      };
+    }
+    if (policyDecision === "audit_only") {
+      return {
+        decision: "audit_only",
+        continue: true,
+        auditOnly: true,
+        reason: "Tool use is allowed only with an audit record by native policy.",
+      };
+    }
+
     const risk = input.payload?.risk;
     if (risk === "high") {
       return {
@@ -129,4 +147,8 @@ function hookResultJson(result: NativeRuntimeHookResult): JsonObject {
     ...(result.reason ? { reason: result.reason } : {}),
     ...(result.additionalContext ? { additionalContext: result.additionalContext } : {}),
   };
+}
+
+function stringPayload(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
