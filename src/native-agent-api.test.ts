@@ -6,7 +6,7 @@ import { registerNativeAgentApiRoutes } from "./native-agent-api.js";
 import type { ServerConfig } from "./config.js";
 
 const config = {
-  database: { provider: "sqlite", stateDir: process.cwd(), filePath: ":memory:" },
+  database: { provider: "postgres", url: "postgres://devspace:secret@127.0.0.1:5432/devspace_test", sslMode: "disable" },
   allowedRoots: [process.cwd()],
   worktreeRoot: process.cwd(),
   publicBaseUrl: "http://127.0.0.1:7676",
