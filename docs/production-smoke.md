@@ -3,6 +3,17 @@
 This guide verifies a production-style DevSpace deployment before you put real
 MCP traffic on it. It is written for Ubuntu/Linux, macOS, and Windows.
 
+The commands below assume a source checkout that has already run:
+
+```bash
+npm install --include=dev
+npm run build
+```
+
+Run CLI commands from the repository root with `node dist/cli.js ...`. If you
+install a future published package globally, the equivalent binary remains
+`devspace`.
+
 ## What This Checks
 
 - production config loads with OIDC + Postgres
@@ -34,8 +45,8 @@ Install the optional Postgres driver in the same environment that runs DevSpace:
 npm install pg
 ```
 
-For global package installs, install `pg` next to the deployment package or run
-from a project directory that contains both `@waishnav/devspace` and `pg`.
+For source-checkout deployments, install `pg` in the repository checkout before
+running the production smoke.
 
 ## Environment Template
 
@@ -75,11 +86,11 @@ export DEVSPACE_PUBLIC_BASE_URL="https://devspace.example.com"
 export DEVSPACE_ALLOWED_HOSTS="devspace.example.com"
 export DEVSPACE_ALLOWED_ROOTS="$HOME/devspace-workspaces"
 
-npx @waishnav/devspace db status --json
-npx @waishnav/devspace db migrate
-npx @waishnav/devspace db status --json
-npx @waishnav/devspace doctor --json
-npx @waishnav/devspace serve
+node dist/cli.js db status --json
+node dist/cli.js db migrate
+node dist/cli.js db status --json
+node dist/cli.js doctor --json
+node dist/cli.js serve
 ```
 
 ## Windows PowerShell
@@ -99,11 +110,11 @@ $env:DEVSPACE_PUBLIC_BASE_URL = "https://devspace.example.com"
 $env:DEVSPACE_ALLOWED_HOSTS = "devspace.example.com"
 $env:DEVSPACE_ALLOWED_ROOTS = "$HOME\devspace-workspaces"
 
-npx @waishnav/devspace db status --json
-npx @waishnav/devspace db migrate
-npx @waishnav/devspace db status --json
-npx @waishnav/devspace doctor --json
-npx @waishnav/devspace serve
+node dist/cli.js db status --json
+node dist/cli.js db migrate
+node dist/cli.js db status --json
+node dist/cli.js doctor --json
+node dist/cli.js serve
 ```
 
 ## Windows Git Bash Or WSL
@@ -221,11 +232,11 @@ In Postgres mode, `/readyz` includes the same migration readiness shape used by
 
 ## Smoke Checklist
 
-- `npx @waishnav/devspace db status --json` returns valid JSON.
-- `state` becomes `ready` after `npx @waishnav/devspace db migrate`.
-- `npx @waishnav/devspace doctor --json` returns `ok: true`.
+- `node dist/cli.js db status --json` returns valid JSON.
+- `state` becomes `ready` after `node dist/cli.js db migrate`.
+- `node dist/cli.js doctor --json` returns `ok: true`.
 - `postgresSchema.ready` is `true`.
 - `database.url` in doctor output is redacted.
-- `npx @waishnav/devspace serve` starts and prints the public `/mcp` URL.
+- `node dist/cli.js serve` starts and prints the public `/mcp` URL.
 - `/healthz` returns HTTP 200.
 - `/readyz` returns HTTP 200 with `status: "ready"`.
