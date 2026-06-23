@@ -15,7 +15,7 @@ import { evaluateNativeCommandPolicy, type NativePolicyResult } from "./native-a
 import { defaultNativeRuntimeHooks, type NativeRuntimeHookManager, type NativeRuntimeHookResult } from "./native-agent-hooks.js";
 import { ensureNativeAgentPolicyApproval, type NativeAgentApproval } from "./native-agent-operator.js";
 import { buildNativeWorkflowExecution, workflowInputFromAgentInput } from "./native-agent-workflows.js";
-import type { NativeWorkflowExecution } from "./native-agent-workflows.js";
+import type { NativeWorkflowExecution, NativeWorkflowStep } from "./native-agent-workflows.js";
 import type { JsonObject, JsonValue } from "./postgres-automation-store.js";
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 15 * 60 * 1000;
@@ -264,7 +264,11 @@ async function executeNativeAgentRun(
   await store.appendRunEvent({
     agentRunId: activeRun.id,
     type: "run.loop.completed",
-    payload: { workflowId: execution.workflow.id, stepCount: execution.steps.length },
+    payload: {
+      workflowId: execution.workflow.id,
+      stepCount: execution.steps.length,
+      successCriteria: execution.executionPlan.successCriteria,
+    },
   });
   await hooks.run(store, {
     agentRunId: activeRun.id,
@@ -283,6 +287,7 @@ async function executeNativeAgentRun(
       workflowId: execution.workflow.id,
       prompt: execution.prompt,
       steps: workflowStepsJson(execution),
+      executionPlan: workflowExecutionPlanJson(execution),
     },
   });
   return { claimed: true, status: "succeeded", agentRun: finished ?? activeRun };
@@ -484,6 +489,9 @@ async function appendLoopPlan(
       workflowId: execution.workflow.id,
       title: execution.workflow.title,
       stepCount: execution.steps.length,
+      phases: execution.executionPlan.phases,
+      successCriteria: execution.executionPlan.successCriteria,
+      failureModes: execution.executionPlan.failureModes,
     },
   });
   for (const [index, step] of execution.steps.entries()) {
@@ -494,7 +502,12 @@ async function appendLoopPlan(
         index: index + 1,
         id: step.id,
         title: step.title,
+        phase: step.phase,
+        action: step.action,
         objective: step.objective,
+        expectedOutput: step.expectedOutput,
+        acceptanceCriteria: step.acceptanceCriteria,
+        suggestedTools: step.suggestedTools ?? [],
       },
     });
   }
@@ -549,12 +562,34 @@ async function failRun(
   };
 }
 
-function workflowStepsJson(execution: NativeWorkflowExecution) {
-  return execution.steps.map((step) => ({
+function workflowExecutionPlanJson(execution: NativeWorkflowExecution): JsonObject {
+  return {
+    version: execution.executionPlan.version,
+    workflowId: execution.executionPlan.workflowId,
+    title: execution.executionPlan.title,
+    permissionProfile: execution.executionPlan.permissionProfile,
+    phases: execution.executionPlan.phases,
+    steps: workflowStepsJson(execution),
+    successCriteria: execution.executionPlan.successCriteria,
+    failureModes: execution.executionPlan.failureModes,
+  };
+}
+
+function workflowStepsJson(execution: NativeWorkflowExecution): JsonObject[] {
+  return execution.steps.map(workflowStepJson);
+}
+
+function workflowStepJson(step: NativeWorkflowStep): JsonObject {
+  return {
     id: step.id,
     title: step.title,
+    phase: step.phase,
+    action: step.action,
     objective: step.objective,
-  }));
+    expectedOutput: step.expectedOutput,
+    acceptanceCriteria: step.acceptanceCriteria,
+    suggestedTools: step.suggestedTools ?? [],
+  };
 }
 
 function effectivePermissionProfile(
