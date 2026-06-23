@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import type { DevspaceToolExecutionContext } from "./mcp-tool-executor.js";
-import type { ToolResponse } from "./pi-tools.js";
+import type { DevspaceToolExecutionContext, ToolResponse } from "./mcp-tool-executor.js";
 import {
   RemoteMcpToolExecutionError,
   RemoteMcpToolExecutor,
