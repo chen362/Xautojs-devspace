@@ -22,6 +22,7 @@ first-party process execution contract
 permission profiles and command policy
 interactive approval pause/resume gates
 typed runtime hooks
+configurable before/after runtime hook pipeline
 workflow packs with stable plan/execute/verify/handoff steps
 event-sourced approval request/resolve records
 terminal-run retry creation
@@ -284,6 +285,8 @@ future policy work.
 Runtime hooks are typed and auditable:
 
 ```text
+Start
+WorkflowStep
 PreToolUse
 PostToolUse
 PermissionRequest
@@ -291,8 +294,91 @@ PostCompact
 Stop
 ```
 
-Hook records are stored in `agent_runtime_hooks`. Default hooks turn high-risk
-pre-tool decisions into `ask`, block policy-denied actions, and audit stop events.
+Hook records are stored in `agent_runtime_hooks`. Default hooks remain enabled
+for safety: they turn high-risk pre-tool decisions into `ask`, block policy-denied
+actions, and audit lifecycle events. Configured rules extend the pipeline; they
+are not an escape hatch around command policy.
+
+The runtime binds workflow packs into the hook payloads:
+
+```text
+Start:
+  stage=before
+  workflowId
+  permissionProfile
+  workspaceRoot
+  executionPlan
+
+WorkflowStep:
+  stage=before
+  workflowId
+  executionPlanVersion
+  stepIndex
+  stepId
+  stepPhase
+  stepAction
+  expectedOutput
+  acceptanceCriteria
+  suggestedTools
+
+PreToolUse / PermissionRequest:
+  stage=before
+  toolName
+  workflowId
+  executionPlanVersion
+  risk
+  decision
+  reason
+
+PostToolUse / Stop:
+  stage=after
+  workflowId
+  executionPlanVersion
+  status
+```
+
+Operators can add rule-based hooks with `DEVSPACE_NATIVE_RUNTIME_HOOKS`. The
+value is JSON:
+
+```json
+{
+  "enabled": true,
+  "rules": [
+    {
+      "id": "ask-high-risk-process",
+      "events": ["PreToolUse"],
+      "stages": ["before"],
+      "risks": ["high"],
+      "decision": "ask",
+      "reason": "High-risk native process execution needs operator approval."
+    },
+    {
+      "id": "block-feature-plan",
+      "events": ["WorkflowStep"],
+      "workflowIds": ["feature-dev"],
+      "stepPhases": ["plan"],
+      "decision": "block",
+      "reason": "Feature planning is temporarily disabled by local policy."
+    }
+  ]
+}
+```
+
+Rule match fields are optional except `id`, `events`, and `decision`:
+
+```text
+stages: before | after
+workflowIds
+stepPhases: plan | execute | verify | handoff
+toolNames
+risks: low | medium | high
+policyDecisions: allow | block | ask | deny | audit_only
+```
+
+Decision merging is conservative. A later `allow` cannot downgrade an earlier
+`ask`, `deny`, or `block`. `block` and `deny` stop the hook pipeline and fail the
+run before the native process starts. `ask` participates in the existing approval
+flow when returned from `PreToolUse` or `PermissionRequest`.
 
 ## Approval, Retry, And Replay
 
@@ -463,6 +549,7 @@ Core coverage lives in:
 
 ```text
 src/native-agent-policy.test.ts
+src/native-agent-hooks.test.ts
 src/native-agent-process.test.ts
 src/native-agent-workflows.test.ts
 src/native-agent-store.test.ts
