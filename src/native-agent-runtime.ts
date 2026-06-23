@@ -12,7 +12,12 @@ import {
 } from "./native-agent-store.js";
 import { NativeProcessManager } from "./native-agent-process.js";
 import { evaluateNativeCommandPolicy, type NativePolicyResult } from "./native-agent-policy.js";
-import { defaultNativeRuntimeHooks, type NativeRuntimeHookManager, type NativeRuntimeHookResult } from "./native-agent-hooks.js";
+import {
+  defaultNativeRuntimeHooks,
+  isBlockingNativeRuntimeHookResult,
+  type NativeRuntimeHookManager,
+  type NativeRuntimeHookResult,
+} from "./native-agent-hooks.js";
 import { ensureNativeAgentPolicyApproval, type NativeAgentApproval } from "./native-agent-operator.js";
 import { buildNativeWorkflowExecution, workflowInputFromAgentInput } from "./native-agent-workflows.js";
 import type { NativeWorkflowExecution, NativeWorkflowStep } from "./native-agent-workflows.js";
@@ -146,9 +151,30 @@ async function executeNativeAgentRun(
     workflowId: input.workflowId ?? activeRun.workflowId,
   });
   const execution = buildNativeWorkflowExecution(workflowInput);
-  await appendLoopPlan(store, activeRun, execution);
-
   const permissionProfile = effectivePermissionProfile(activeRun.permissionProfile, execution.permissionProfile);
+  const executionPlan = workflowExecutionPlanJson(execution);
+
+  const startHook = await hooks.run(store, {
+    agentRunId: activeRun.id,
+    hookEventName: "Start",
+    payload: {
+      stage: "before",
+      source: input.source,
+      workflowId: execution.workflow.id,
+      permissionProfile,
+      workspaceRoot,
+      executionPlan,
+    },
+  });
+  if (isBlockingNativeRuntimeHookResult(startHook)) {
+    return failRun(store, activeRun, "NATIVE_RUNTIME_HOOK_BLOCKED", startHook.reason ?? "Native runtime start hook blocked the run.");
+  }
+
+  const loopHook = await appendLoopPlan(store, activeRun, execution, hooks);
+  if (loopHook && isBlockingNativeRuntimeHookResult(loopHook)) {
+    return failRun(store, activeRun, "NATIVE_RUNTIME_HOOK_BLOCKED", loopHook.reason ?? "Native workflow step hook blocked the run.");
+  }
+
   const policy = evaluateNativeCommandPolicy({
     permissionProfile,
     argv: execution.argv,
@@ -161,8 +187,10 @@ async function executeNativeAgentRun(
     agentRunId: activeRun.id,
     hookEventName: "PreToolUse",
     payload: {
+      stage: "before",
       toolName: "process",
       workflowId: execution.workflow.id,
+      executionPlanVersion: execution.executionPlan.version,
       permissionProfile,
       risk: policy.risk,
       decision: policy.decision,
@@ -170,7 +198,7 @@ async function executeNativeAgentRun(
     },
   });
 
-  if (policy.decision === "block" || !preToolUse.continue || preToolUse.decision === "block" || preToolUse.decision === "deny") {
+  if (policy.decision === "block" || isBlockingNativeRuntimeHookResult(preToolUse)) {
     await blockProcessTool(store, activeRun, execution, workspaceRoot, policy, preToolUse.reason ?? policy.reason);
     return failRun(store, activeRun, "NATIVE_POLICY_BLOCKED", preToolUse.reason ?? policy.reason);
   }
@@ -255,9 +283,12 @@ async function executeNativeAgentRun(
     agentRunId: activeRun.id,
     hookEventName: "PostToolUse",
     payload: {
+      stage: "after",
       toolName: "process",
       toolCallId: toolCall.id,
+      processId,
       workflowId: execution.workflow.id,
+      executionPlanVersion: execution.executionPlan.version,
       status: "succeeded",
     },
   });
@@ -273,7 +304,12 @@ async function executeNativeAgentRun(
   await hooks.run(store, {
     agentRunId: activeRun.id,
     hookEventName: "Stop",
-    payload: { status: "succeeded" },
+    payload: {
+      stage: "after",
+      workflowId: execution.workflow.id,
+      executionPlanVersion: execution.executionPlan.version,
+      status: "succeeded",
+    },
   });
   await store.appendRunEvent({
     agentRunId: activeRun.id,
@@ -287,7 +323,7 @@ async function executeNativeAgentRun(
       workflowId: execution.workflow.id,
       prompt: execution.prompt,
       steps: workflowStepsJson(execution),
-      executionPlan: workflowExecutionPlanJson(execution),
+      executionPlan,
     },
   });
   return { claimed: true, status: "succeeded", agentRun: finished ?? activeRun };
@@ -346,14 +382,16 @@ async function resolveApprovalGate(
     agentRunId: run.id,
     hookEventName: "PermissionRequest",
     payload: {
+      stage: "before",
       toolName: "process",
       workflowId: execution.workflow.id,
+      executionPlanVersion: execution.executionPlan.version,
       risk: policy.risk,
       decision: policy.decision,
       reason: preToolUse.reason ?? policy.reason,
     },
   });
-  if (!permissionRequest.continue || permissionRequest.decision === "deny" || permissionRequest.decision === "block") {
+  if (isBlockingNativeRuntimeHookResult(permissionRequest)) {
     return {
       status: "denied",
       result: await failRun(
@@ -468,7 +506,7 @@ async function blockProcessTool(
     agentRunId: run.id,
     toolName: "process",
     risk: policy.risk,
-    input: { argv: execution.argv, cwd: workspaceRoot },
+    input: { argv: execution.argv, cwd: workspaceRoot, workflowId: execution.workflow.id },
   }).then((call) => store.finishToolCall({
     id: call.id,
     status: "blocked",
@@ -481,7 +519,8 @@ async function appendLoopPlan(
   store: NativeAgentStore,
   run: NativeAgentRun,
   execution: NativeWorkflowExecution,
-): Promise<void> {
+  hooks: NativeRuntimeHookManager,
+): Promise<NativeRuntimeHookResult | undefined> {
   await store.appendRunEvent({
     agentRunId: run.id,
     type: "run.loop.started",
@@ -510,7 +549,26 @@ async function appendLoopPlan(
         suggestedTools: step.suggestedTools ?? [],
       },
     });
+    const stepHook = await hooks.run(store, {
+      agentRunId: run.id,
+      hookEventName: "WorkflowStep",
+      payload: {
+        stage: "before",
+        workflowId: execution.workflow.id,
+        executionPlanVersion: execution.executionPlan.version,
+        stepIndex: index + 1,
+        stepId: step.id,
+        stepTitle: step.title,
+        stepPhase: step.phase,
+        stepAction: step.action,
+        expectedOutput: step.expectedOutput,
+        acceptanceCriteria: step.acceptanceCriteria,
+        suggestedTools: step.suggestedTools ?? [],
+      },
+    });
+    if (isBlockingNativeRuntimeHookResult(stepHook)) return stepHook;
   }
+  return undefined;
 }
 
 async function resolveDispatchWorkspaceRoot(
