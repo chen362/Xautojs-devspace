@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { InMemoryNativeAgentStore } from "./native-agent-store.js";
 import { dispatchNativeAgentOnce, dispatchNativeAgentRunOnce } from "./native-agent-runtime.js";
-import { NativeRuntimeHookManager } from "./native-agent-hooks.js";
+import { defaultNativeRuntimeHooks, NativeRuntimeHookManager } from "./native-agent-hooks.js";
 import { listNativeAgentApprovals, resolveNativeAgentApproval } from "./native-agent-operator.js";
 import type { ServerConfig } from "./config.js";
 import type { WorkspaceStore } from "./workspace-store.js";
@@ -67,7 +67,16 @@ const workspaceStore = {
       .join(""),
     /native-workflow-pack\/v1/,
   );
-  assert.deepEqual(store.hooks.map((hook) => hook.hookEventName), ["PreToolUse", "PostToolUse", "Stop"]);
+
+  const startHook = store.hooks.find((hook) => String(hook.hookEventName) === "Start");
+  assert.equal((startHook?.payload.executionPlan as JsonObject | undefined)?.version, "native-workflow-pack/v1");
+  assert.equal(startHook?.payload.workflowId, "github-pr-review");
+  const stepHook = store.hooks.find((hook) => String(hook.hookEventName) === "WorkflowStep" && hook.payload.stepId === "normalize-event");
+  assert.equal(stepHook?.payload.stepPhase, "plan");
+  assert.equal(stepHook?.payload.stepAction, "observe");
+  assert.ok(store.hooks.some((hook) => hook.hookEventName === "PreToolUse"));
+  assert.ok(store.hooks.some((hook) => hook.hookEventName === "PostToolUse"));
+  assert.ok(store.hooks.some((hook) => hook.hookEventName === "Stop"));
 }
 
 {
@@ -84,8 +93,8 @@ const workspaceStore = {
   assert.equal(result.status, "failed");
   assert.equal(result.errorCode, "NATIVE_POLICY_BLOCKED");
   assert.equal(store.automationRuns.get("auto_run_security")?.status, "failed");
-  assert.equal(store.hooks[0]?.hookEventName, "PreToolUse");
-  assert.equal(store.hooks[0]?.decision, "block");
+  const blockedHook = store.hooks.find((hook) => hook.hookEventName === "PreToolUse");
+  assert.equal(blockedHook?.decision, "block");
   assert.ok((await store.readRunEvents({ agentRunId: result.agentRun!.id })).some((event) => event.type === "run.loop.failed"));
 }
 
@@ -112,6 +121,45 @@ const workspaceStore = {
   assert.equal(planStep?.payload.phase, "plan");
   assert.equal(planStep?.payload.action, "decide");
   assert.ok(Array.isArray(planStep?.payload.acceptanceCriteria));
+}
+
+{
+  const store = new InMemoryNativeAgentStore();
+  const hooks = defaultNativeRuntimeHooks({
+    enabled: true,
+    rules: [
+      {
+        id: "block-feature-plan-step",
+        events: ["WorkflowStep"],
+        stages: ["before"],
+        workflowIds: ["feature-dev"],
+        stepPhases: ["plan"],
+        decision: "block",
+        reason: "Feature-dev planning is disabled by runtime hook policy.",
+      },
+    ],
+  });
+  const run = await store.createAgentRun({
+    id: "agent_run_step_blocked",
+    owner: { tenantId: "tenant-a", userId: "alice" },
+    workflowId: "feature-dev",
+    status: "queued",
+    input: { text: "Implement a tiny feature" },
+  });
+
+  const result = await dispatchNativeAgentRunOnce(
+    config,
+    { agentRunId: run.id, workspaceRoot, timeoutMs: 5_000 },
+    { store, workspaceStore, hooks },
+  );
+
+  assert.equal(result.claimed, true);
+  assert.equal(result.status, "failed");
+  assert.equal(result.errorCode, "NATIVE_RUNTIME_HOOK_BLOCKED");
+  assert.equal(store.toolCalls.size, 0);
+  const ruleHook = store.hooks.find((hook) => String(hook.result.ruleId) === "block-feature-plan-step");
+  assert.equal(String(ruleHook?.hookEventName), "WorkflowStep");
+  assert.equal(ruleHook?.payload.stepPhase, "plan");
 }
 
 {
