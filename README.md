@@ -51,26 +51,41 @@ Codex and Claude Code are reference systems for good ideas. The runtime, storage
 policy, hooks, workflow packs, and operator controls are Xautojs-native and do
 not require a Codex or Claude Code binary.
 
-## Package Name
+## Package And CLI Contract
 
-This fork is moving off the upstream package identity. The local package metadata
-uses:
+Xautojs DevSpace is moving off the upstream package identity. The release-facing
+package identity is:
 
 ```text
 xautojs-devspace
 ```
 
-The CLI binary remains:
+Do not publish new releases as:
+
+```text
+@waishnav/devspace
+```
+
+The installed CLI binary remains:
 
 ```text
 devspace
 ```
+
+The package name and executable are intentionally different: users install the
+Xautojs package identity, while existing config, scripts, and docs can continue
+using the `devspace` command. Source-checkout docs use `node dist/cli.js ...`
+until a public npm release exists.
 
 The default development branch is:
 
 ```text
 Xautojs-devspace
 ```
+
+Before publishing, `package.json`, `package-lock.json`, badges, and release docs
+must all agree on `xautojs-devspace`. See [Release Packaging](docs/release-packaging.md)
+for the pre-publish checklist and CLI compatibility rules.
 
 Until a public npm release is published under the new package name, use the
 source checkout workflow below.
@@ -319,6 +334,7 @@ node dist/cli.js doctor
 
 - [中文 README](README-cn.md)
 - [Setup Guide](docs/setup.md)
+- [Release Packaging](docs/release-packaging.md)
 - [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
 - [Configuration Reference](docs/configuration.md)
 - [Production Smoke Check](docs/production-smoke.md)
