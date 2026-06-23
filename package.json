@@ -13,7 +13,7 @@
   "type": "module",
   "main": "dist/server.js",
   "engines": {
-    "node": ">=20.12 <27"
+    "node": ">=22.19 <27"
   },
   "bin": {
     "devspace": "dist/cli.js"
