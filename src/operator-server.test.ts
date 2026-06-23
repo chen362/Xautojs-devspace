@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import type { Server } from "node:http";
+import type { Express } from "express";
 import { InMemoryNativeAgentStore } from "./native-agent-store.js";
 import { createOperatorServer } from "./operator-server.js";
 import type { ServerConfig } from "./config.js";
@@ -95,7 +96,7 @@ try {
   await closeServer(server);
 }
 
-function listen(app: Parameters<typeof createOperatorServer>[0] extends never ? never : ReturnType<typeof createOperatorServer>["app"]): Promise<Server> {
+function listen(app: Express): Promise<Server> {
   return new Promise((resolve) => {
     const server = app.listen(0, "127.0.0.1", () => resolve(server));
   });
