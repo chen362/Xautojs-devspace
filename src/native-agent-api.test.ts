@@ -196,6 +196,35 @@ try {
   }
 
   {
+    const controller = new AbortController();
+    const response = await fetch(`${baseUrl}/api/native-agent/runs/agent_run_api/stream?afterSeq=0&pollMs=50`, {
+      headers: { authorization: "Bearer operator-token" },
+      signal: controller.signal,
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream/);
+    const reader = response.body?.getReader();
+    assert.ok(reader);
+    const decoder = new TextDecoder();
+    let streamText = "";
+    try {
+      for (let attempt = 0; attempt < 5 && !streamText.includes("event: replay.snapshot"); attempt++) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        streamText += decoder.decode(chunk.value, { stream: true });
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      controller.abort();
+    }
+    assert.match(streamText, /event: replay\.snapshot/);
+    assert.match(streamText, /"agentRunId":"agent_run_api"/);
+    assert.match(streamText, /"type":"run\.started"/);
+    assert.match(streamText, /"summary":/);
+    assert.match(streamText, /"nextSeq":/);
+  }
+
+  {
     const response = await fetch(`${baseUrl}/api/native-agent/runs/agent_run_resume_api/resume`, {
       method: "POST",
       headers: {
