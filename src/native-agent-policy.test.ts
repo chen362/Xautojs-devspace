@@ -5,9 +5,10 @@ import { classifyNativeToolRisk, evaluateNativeCommandPolicy } from "./native-ag
 const workspaceRoot = process.cwd();
 const safeNodeCommand = [process.execPath, "-e", "console.log('ok')"];
 
-assert.equal(classifyNativeToolRisk(safeNodeCommand, true), "low");
-assert.equal(classifyNativeToolRisk(["rm", "-rf", "dist"], false), "high");
-assert.equal(classifyNativeToolRisk(["curl", "https://example.com"], false), "high");
+assert.equal(classifyNativeToolRisk("read"), "low");
+assert.equal(classifyNativeToolRisk("edit"), "medium");
+assert.equal(classifyNativeToolRisk("shell"), "high");
+assert.equal(classifyNativeToolRisk("custom", { command: "rm -rf dist" }), "high");
 
 {
   const policy = evaluateNativeCommandPolicy({
@@ -19,7 +20,7 @@ assert.equal(classifyNativeToolRisk(["curl", "https://example.com"], false), "hi
   });
   assert.equal(policy.decision, "block");
   assert.equal(policy.risk, "medium");
-  assert.match(policy.reason, /read-only/i);
+  assert.match(policy.reason, /read_only/i);
 }
 
 {
@@ -31,7 +32,7 @@ assert.equal(classifyNativeToolRisk(["curl", "https://example.com"], false), "hi
     internal: true,
   });
   assert.equal(policy.decision, "allow");
-  assert.equal(policy.risk, "low");
+  assert.equal(policy.risk, "medium");
 }
 
 {
