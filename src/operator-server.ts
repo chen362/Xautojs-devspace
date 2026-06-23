@@ -1,9 +1,12 @@
-import express, { type Express, type Request, type Response } from "express";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { Server } from "node:http";
 import type { ServerConfig } from "./config.js";
 import { registerNativeAgentApiRoutes } from "./native-agent-api.js";
 import type { NativeAgentStore } from "./native-agent-store.js";
 import { buildHealthReport, buildReadinessReport } from "./readiness.js";
+
+const CORS_METHODS = "GET,POST,DELETE,OPTIONS";
+const CORS_HEADERS = "authorization,content-type,x-request-id";
 
 export interface OperatorServerOptions {
   store?: NativeAgentStore;
@@ -31,6 +34,7 @@ export function createOperatorServer(
   options: OperatorServerOptions = {},
 ): RunningOperatorServer {
   const app = express();
+  installLocalDesktopCors(app);
   const nativeAgentRoutes = registerNativeAgentApiRoutes(app, config, {
     store: options.store,
     operatorToken: options.operatorToken,
@@ -79,6 +83,39 @@ export async function startOperatorServer(
       await running.close();
     },
   };
+}
+
+function installLocalDesktopCors(app: Express): void {
+  app.use((request: Request, response: Response, next: NextFunction) => {
+    const origin = request.headers.origin;
+    if (isAllowedLocalDesktopOrigin(origin)) {
+      response.setHeader("Access-Control-Allow-Origin", origin);
+      response.setHeader("Access-Control-Allow-Credentials", "true");
+      response.setHeader("Access-Control-Allow-Methods", CORS_METHODS);
+      response.setHeader("Access-Control-Allow-Headers", CORS_HEADERS);
+      response.setHeader("Access-Control-Expose-Headers", "x-request-id");
+      response.setHeader("Access-Control-Max-Age", "600");
+      response.setHeader("Vary", "Origin");
+      if (request.method === "OPTIONS") {
+        response.status(204).end();
+        return;
+      }
+    }
+    next();
+  });
+}
+
+function isAllowedLocalDesktopOrigin(origin: unknown): origin is string {
+  if (typeof origin !== "string" || !origin.trim()) return false;
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol === "tauri:" && parsed.hostname === "localhost") return true;
+    if ((parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.hostname === "tauri.localhost") return true;
+    if (parsed.protocol !== "http:") return false;
+    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "[::1]";
+  } catch {
+    return false;
+  }
 }
 
 function listen(app: Express, host: string, port: number): Promise<Server> {

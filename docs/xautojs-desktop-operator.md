@@ -5,8 +5,8 @@ Last updated: 2026-06-23
 ## Product Decision
 
 Xautojs should have a local desktop operator as the default day-to-day surface.
-The existing browser `/operator` console remains valuable, but it should become
-the remote, admin, CI, and fallback console rather than the primary local UX.
+The browser `/operator` console remains valuable, but it is now positioned as the
+remote, admin, CI, and fallback console rather than the primary local UX.
 
 Target split:
 
@@ -79,9 +79,9 @@ run dispatch/resume/retry/cancel
 replay summary and event streaming
 ```
 
-## Local Daemon Contract
+## Current Local Daemon Contract
 
-Planned command:
+Implemented command:
 
 ```bash
 node dist/cli.js operator serve
@@ -100,34 +100,43 @@ bind host: 127.0.0.1
 bind port: 7677 unless overridden
 remote bind: disabled by default
 operator API prefix: /api/native-agent
-browser console: optional, not opened by default in desktop mode
+MCP /mcp: not exposed
 Postgres readiness: required before accepting operator traffic
+operator token: required before listening
 ```
 
-Recommended flags for PR39:
+Implemented flags:
 
 ```text
 --host <host>
 --port <port>
---database-url <url>
+--database-url <postgres-url>
 --postgres-ssl-mode <prefer|require|disable>
 --operator-token <token>
 --session-ttl-seconds <seconds>
---workspace-root <path>
---no-browser-console
 --json
 ```
 
-The daemon may be implemented by reusing the existing server internals, but the
-CLI command should express operator-local intent. A user should not need to know
-which server module happens to serve the API.
+The daemon reuses the existing native-agent operator API and checks Postgres
+schema readiness before listening. Local desktop origins are allowed through a
+narrow CORS policy for loopback/Tauri clients; arbitrary remote origins are not
+allowed.
 
 ## Authentication And Pairing
 
 The desktop app should avoid hand-entered long-lived tokens during normal local
 use.
 
-MVP pairing contract:
+Current PR40 scaffold behavior:
+
+```text
+operator token is entered manually
+raw token stays in renderer memory only
+daemon URL may be remembered in localStorage
+no raw operator token is written to localStorage
+```
+
+Target pairing contract for a later auth polish PR:
 
 ```text
 1. daemon starts on loopback
@@ -160,10 +169,13 @@ If added, it must be loopback-only, one-time, short-lived, and auditable.
 The desktop app should reuse the current operator endpoints first:
 
 ```text
+GET  /healthz
+GET  /readyz
 GET  /api/native-agent/runs
 GET  /api/native-agent/runs/:agentRunId
 GET  /api/native-agent/runs/:agentRunId/events
 GET  /api/native-agent/runs/:agentRunId/replay
+GET  /api/native-agent/runs/:agentRunId/stream
 GET  /api/native-agent/runs/:agentRunId/approvals
 POST /api/native-agent/runs/:agentRunId/approvals
 POST /api/native-agent/runs/:agentRunId/approvals/:approvalId/resolve
@@ -189,20 +201,20 @@ summary already exposes it.
 
 ## Streaming Contract
 
-Desktop UX should feel live. PR39 should add a streaming API or formalize a
-polling fallback.
+PR39 added a replay SSE stream. Desktop clients should prefer it when available
+and fall back to polling `/replay` or `/events` when SSE is unavailable.
 
-Preferred additive endpoint:
+Endpoint:
 
 ```text
-GET /api/native-agent/runs/:agentRunId/stream?afterSeq=<number>
+GET /api/native-agent/runs/:agentRunId/stream?afterSeq=<number>&pollMs=<ms>&maxEvents=<number>
 ```
 
 Transport:
 
 ```text
 SSE first
-polling fallback through replay afterSeq/nextSeq
+polling fallback through replay/events
 ```
 
 SSE event names:
@@ -216,9 +228,10 @@ hook.decision
 workflow.step
 run.terminal
 heartbeat
+error
 ```
 
-Every message should include:
+Every replay snapshot and terminal message includes:
 
 ```json
 {
@@ -229,9 +242,50 @@ Every message should include:
 }
 ```
 
-`summary` can be omitted on high-frequency delta events, but `replay.snapshot`
-and terminal events should include it. The desktop app must tolerate reconnects
-by resuming from the last known `nextSeq`.
+The desktop app must tolerate reconnects by resuming from the last known
+`nextSeq - 1`.
+
+## Current PR40 Scaffold
+
+Implemented layout:
+
+```text
+apps/desktop/
+  package.json
+  index.html
+  vite.config.ts
+  tsconfig.json
+  src/
+    App.tsx
+    App.css
+    main.tsx
+    operator-client.ts
+    operator-client.test.ts
+  src-tauri/
+    Cargo.toml
+    build.rs
+    tauri.conf.json
+    src/main.rs
+```
+
+Implemented behavior:
+
+```text
+Tauri 2 + React native window shell
+loopback daemon URL input
+in-memory operator token input
+health and readiness checks
+runs list from /api/native-agent/runs
+selected run replay from /api/native-agent/runs/:agentRunId/replay
+clear state for daemon unavailable
+clear state for Postgres schema not ready
+clear state for token missing
+clear state for token rejected
+clear state for connected but no runs
+```
+
+The scaffold intentionally does not implement operator mutations yet. Approve,
+deny, resume, retry, cancel, dispatch, and live SSE replay belong in PR41.
 
 ## Desktop Information Architecture
 
@@ -239,26 +293,24 @@ Use a three-pane operator workspace.
 
 ```text
 left rail:
-  projects / workspaces
-  recent runs
-  status filters
-  pending approval count
   connection state
+  daemon URL and token input
+  recent runs
+  status counts
 
 center workspace:
-  chat-style run composer
-  selected run transcript
-  workflow timeline
-  terminal/output drawer
-  retry and resume context
+  selected run replay
+  empty/error states
+  future chat-style run composer
+  future workflow timeline and terminal drawer
 
 right inspector:
   replay summary
-  pending approval card
-  hook decision cards
-  workflow step checklist
-  retry lineage
-  raw event toggle for debugging
+  pending approval preview
+  hook decision preview
+  workflow step preview
+  retry lineage later
+  raw event toggle later
 ```
 
 The first screen should be the working surface, not a marketing page. Empty
@@ -268,6 +320,7 @@ states should be operational:
 no daemon connected
 Postgres schema not ready
 operator token/session missing
+operator token rejected
 no runs yet
 no pending approvals
 selected run terminal
@@ -373,22 +426,11 @@ Cmd/Ctrl+Enter: submit composer
 Esc: close modal/drawer
 ```
 
-## File And Package Layout
+## Package Boundary
 
-Proposed PR40 layout:
-
-```text
-apps/desktop/
-  package.json
-  src/
-  src-tauri/
-  index.html
-  vite.config.ts
-```
-
-The root npm package should remain `xautojs-devspace`. Do not accidentally ship
-desktop build artifacts inside the CLI npm package until release packaging is
-explicitly designed for it.
+The root npm package remains `xautojs-devspace`. Desktop build artifacts are not
+included in the CLI npm package until release packaging explicitly designs that
+channel.
 
 Initial root-level packaging rule:
 
@@ -401,19 +443,20 @@ Desktop installers are separate release artifacts.
 
 ```text
 PR38: Desktop UX and architecture spec
-  Land this document and wire README/operator guide links.
+  Completed.
 
 PR39: Local operator daemon
-  Add `operator serve`, loopback defaults, readiness checks, session handling,
-  and a replay stream or documented polling fallback.
+  Completed: operator serve, loopback defaults, readiness checks, operator auth,
+  /api/native-agent reuse, no /mcp exposure, and replay SSE stream.
 
 PR40: Tauri desktop scaffold
-  Add apps/desktop with a connection screen, daemon status, and empty states.
-  Do not duplicate runtime logic in the desktop app.
+  Current: apps/desktop with Tauri 2 + React, connection screen, daemon status,
+  token missing/rejected states, schema not ready state, no-runs empty state,
+  runs list, selected replay, and local daemon CORS.
 
 PR41: Desktop operator MVP
-  Implement runs list, selected replay, pending approval, approve/deny, resume,
-  retry, cancel, hook decisions, and workflow steps.
+  Next: live replay stream, pending approval actions, approve/deny, resume,
+  retry, cancel, dispatch, hook decision cards, and workflow step state.
 
 PR42: Desktop packaging
   Add macOS, Windows, and Linux packaging strategy, icons, app id, release

@@ -79,6 +79,32 @@ try {
   }
 
   {
+    const response = await fetch(`${baseUrl}/api/native-agent/runs`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://127.0.0.1:5177",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "authorization",
+      },
+    });
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get("access-control-allow-origin"), "http://127.0.0.1:5177");
+    assert.equal(response.headers.get("access-control-allow-credentials"), "true");
+    assert.match(response.headers.get("access-control-allow-headers") ?? "", /authorization/);
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/runs`, {
+      headers: {
+        authorization: "Bearer operator-token",
+        origin: "tauri://localhost",
+      },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("access-control-allow-origin"), "tauri://localhost");
+  }
+
+  {
     const response = await fetch(`${baseUrl}/mcp`);
     assert.equal(response.status, 404);
   }
