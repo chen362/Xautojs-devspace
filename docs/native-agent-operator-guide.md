@@ -39,10 +39,18 @@ The schema is ready when `db status --json` reports:
 ## 2. Configure Operator API Auth
 
 The CLI talks to Postgres directly and does not require an operator token. The
-HTTP operator API requires one:
+HTTP operator API and browser console require one:
 
 ```bash
 export DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN="replace-with-a-long-random-token"
+```
+
+For browser sessions, production deployments should also set a separate session
+secret and an explicit TTL:
+
+```bash
+export DEVSPACE_NATIVE_AGENT_OPERATOR_SESSION_SECRET="replace-with-a-long-random-session-secret"
+export DEVSPACE_NATIVE_AGENT_OPERATOR_SESSION_TTL_SECONDS="28800"
 ```
 
 Start the server with the same database and token environment:
@@ -51,13 +59,16 @@ Start the server with the same database and token environment:
 node dist/cli.js serve
 ```
 
-HTTP requests must include:
+HTTP API requests may include:
 
 ```text
 Authorization: Bearer <DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN>
 ```
 
-Example:
+The browser console exchanges the same token for a signed HttpOnly session
+cookie. The token is not stored in local storage.
+
+Example bearer request:
 
 ```bash
 curl -fsS \
@@ -65,7 +76,50 @@ curl -fsS \
   http://127.0.0.1:7676/api/native-agent/runs
 ```
 
-## 3. Inspect Available Workflows
+## 3. Use The Operator Console
+
+Open the console from the same DevSpace origin:
+
+```text
+http://127.0.0.1:7676/operator
+```
+
+For production, use your public HTTPS origin:
+
+```text
+https://devspace.example.com/operator
+```
+
+The console is the recommended day-to-day operator surface. It shows:
+
+```text
+run queue and status filters
+replay timeline
+approval state
+hook decisions
+workflow step state
+retry links
+run actions
+manual dispatch
+```
+
+Main browser loop:
+
+```text
+login with operator token
+select a run
+inspect replay summary and timeline
+approve or deny pending approvals
+resume waiting runs
+retry terminal runs
+cancel stale work
+dispatch queued automation when needed
+```
+
+For the full browser workflow and production smoke commands, see
+[Native Agent Operator Console](native-agent-operator-console.md).
+
+## 4. Inspect Available Workflows
 
 ```bash
 node dist/cli.js agent workflows
@@ -84,7 +138,7 @@ test-fix
 Workflow packs define the operator-visible execution plan. Each step has a
 phase, action, expected output, acceptance criteria, and suggested tools.
 
-## 4. Dispatch Work
+## 5. Dispatch Work
 
 ### Claim The Oldest Queued Automation Run
 
@@ -118,7 +172,7 @@ Dispatch and resume support:
 --approval-timeout-ms <ms>
 ```
 
-## 5. List And Inspect Runs
+## 6. List And Inspect Runs
 
 List recent native agent runs:
 
@@ -175,7 +229,7 @@ summary.retries.retryOfAgentRunId
 summary.retries.retryAgentRunIds[]
 ```
 
-## 6. Handle Approvals
+## 7. Handle Approvals
 
 A run that requires approval moves to `waiting_input` and records a pending
 approval.
@@ -225,7 +279,7 @@ Equivalent approval requests are matched by a stable fingerprint so repeated
 dispatch/resume attempts reuse the existing pending approval rather than creating
 duplicates.
 
-## 7. Retry Terminal Runs
+## 8. Retry Terminal Runs
 
 Retries are allowed only from terminal native runs.
 
@@ -259,7 +313,7 @@ run.retry.created
 run.retry.source
 ```
 
-## 8. Cancel Runs
+## 9. Cancel Runs
 
 Cancel a running or queued native run:
 
@@ -271,7 +325,7 @@ node dist/cli.js agent cancel \
 
 Cancellation is reflected in run status and replay events.
 
-## 9. Configure Runtime Hooks
+## 10. Configure Runtime Hooks
 
 Runtime hook rules are configured with `DEVSPACE_NATIVE_RUNTIME_HOOKS`.
 
@@ -333,9 +387,19 @@ Use replay for `Start` and `WorkflowStep` decisions. They intentionally do not
 write to `agent_runtime_hooks` because the current Postgres table constraint only
 accepts the legacy subset.
 
-## 10. Quick Operator Loop
+## 11. Quick Operator Loop
 
-A compact day-to-day loop:
+Recommended browser loop:
+
+```text
+open /operator
+select waiting_input or running runs
+inspect replay summary
+resolve approvals
+resume, retry, cancel, or dispatch as needed
+```
+
+A compact CLI loop remains useful for scripts and terminal-only debugging:
 
 ```bash
 node dist/cli.js agent dispatch-once --workspace-root /path/to/workspace
