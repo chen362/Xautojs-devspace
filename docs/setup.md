@@ -22,7 +22,7 @@ this repository checkout:
 ```bash
 git clone https://github.com/chen362/Xautojs-devspace.git
 cd Xautojs-devspace
-git checkout Xautojs-devspace
+git checkout main
 npm install --include=dev
 npm run build
 ```
