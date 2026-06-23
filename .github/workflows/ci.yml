@@ -74,6 +74,9 @@ jobs:
             os: ubuntu-latest
             bundle_script: bundle:linux
             artifact_suffix: linux
+    env:
+      CARGO_HTTP_MULTIPLEXING: "false"
+      CARGO_NET_RETRY: "10"
 
     steps:
       - name: Checkout
