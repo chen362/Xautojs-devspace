@@ -60,6 +60,7 @@ async function runTool<TInput, TDetails = unknown>(
     return {
       content: toMcpContent(result),
       details: result.details,
+      isError: false,
     };
   } catch (error) {
     return { content: formatToolError(error), isError: true };
