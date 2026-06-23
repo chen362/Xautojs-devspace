@@ -14,7 +14,7 @@
 
 <p align="center">
   <img alt="Package" src="https://img.shields.io/badge/package-xautojs--devspace-blue?style=flat-square" />
-  <a href="https://github.com/chen362/Xautojs-devspace/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/chen362/Xautojs-devspace/ci.yml?style=flat-square&branch=Xautojs-devspace" /></a>
+  <a href="https://github.com/chen362/Xautojs-devspace/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/chen362/Xautojs-devspace/ci.yml?style=flat-square&branch=main" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green?style=flat-square" /></a>
 </p>
 
@@ -36,7 +36,7 @@ folders through explicit tools, while keeping execution on your machine:
 - discover local agent skills
 - expose change widgets in ChatGPT Apps-compatible hosts
 
-The Xautojs branch also adds production-oriented automation and native agent
+The Xautojs project also adds production-oriented automation and native agent
 execution:
 
 - Postgres-backed workspace, automation, and native agent state
@@ -84,7 +84,7 @@ until a public npm release exists.
 The default development branch is:
 
 ```text
-Xautojs-devspace
+main
 ```
 
 Before publishing, `package.json`, `package-lock.json`, badges, and release docs
@@ -103,7 +103,7 @@ Clone and build this repository:
 ```bash
 git clone https://github.com/chen362/Xautojs-devspace.git
 cd Xautojs-devspace
-git checkout Xautojs-devspace
+git checkout main
 npm install --include=dev
 npm run build
 ```
