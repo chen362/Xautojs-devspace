@@ -409,6 +409,7 @@ node dist/cli.js doctor
 - [Configuration Reference](docs/configuration.md)
 - [Production Smoke Check](docs/production-smoke.md)
 - [DevSpace Automation Ingress Plan](docs/devspace-automation-ingress-plan.md)
+- [Cloud MCP Gateway Architecture](docs/xautojs-cloud-mcp-gateway.md)
 - [Native Agent Runtime](docs/native-agent-runtime.md)
 - [Native Agent Operator Guide](docs/native-agent-operator-guide.md)
 - [Native Agent Operator Console](docs/native-agent-operator-console.md)
