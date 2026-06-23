@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
 import type { PostgresDatabaseConfig } from "./db/types.js";
 import { LOCAL_WORKSPACE_IDENTITY, type WorkspaceIdentity } from "./identity.js";
-import type { LoadedAgentFile, LoadedAgentFileInput, WorkspaceMode, WorkspaceSession, WorkspaceStore } from "./workspace-store.js";
+import type {
+  LoadedAgentFile,
+  LoadedAgentFileInput,
+  WorkspaceMode,
+  WorkspaceSession,
+  WorkspaceSessionScope,
+  WorkspaceStore,
+} from "./workspace-store.js";
 
 type QueryValue = string | boolean | null;
 
@@ -45,6 +52,7 @@ interface PostgresWorkspaceSessionRow {
   id: string;
   tenant_id: string | null;
   user_id: string | null;
+  mcp_session_id: string | null;
   root: string;
   status: string;
   mode: string;
@@ -83,6 +91,7 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     owner: WorkspaceIdentity;
     id: string;
     root: string;
+    mcpSessionId?: string;
     mode?: WorkspaceMode;
     sourceRoot?: string;
     baseRef?: string;
@@ -94,6 +103,7 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
       id: input.id,
       tenantId: input.owner.tenantId,
       userId: input.owner.userId,
+      mcpSessionId: input.mcpSessionId,
       root: input.root,
       status: "active",
       mode: input.mode ?? "checkout",
@@ -111,6 +121,7 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
           id,
           tenant_id,
           user_id,
+          mcp_session_id,
           root,
           status,
           mode,
@@ -131,14 +142,16 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
           $8,
           $9,
           $10,
-          $11::timestamptz,
-          $12::timestamptz
+          $11,
+          $12::timestamptz,
+          $13::timestamptz
         )
       `,
       values: [
         session.id,
         session.tenantId,
         session.userId,
+        session.mcpSessionId ?? null,
         session.root,
         session.status,
         session.mode,
@@ -154,13 +167,18 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     return session;
   }
 
-  async getSession(id: string, owner: WorkspaceIdentity): Promise<WorkspaceSession | undefined> {
+  async getSession(
+    id: string,
+    owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
+  ): Promise<WorkspaceSession | undefined> {
     const result = await this.query<PostgresWorkspaceSessionRow>({
       text: `
         select
           id,
           tenant_id,
           user_id,
+          mcp_session_id,
           root,
           status,
           mode,
@@ -174,9 +192,10 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
         where id = $1
           and tenant_id = $2
           and user_id = $3
+          and ($4::text is null or mcp_session_id = $4)
         limit 1
       `,
-      values: [id, owner.tenantId, owner.userId],
+      values: [id, owner.tenantId, owner.userId, scope?.mcpSessionId ?? null],
     });
 
     const row = result.rows[0];
@@ -187,6 +206,7 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     owner: WorkspaceIdentity;
     workspaceSessionId: string;
     files: LoadedAgentFileInput[];
+    scope?: WorkspaceSessionScope;
   }): Promise<void> {
     await this.query({
       text: `
@@ -196,8 +216,14 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
           and files.workspace_session_id = $1
           and sessions.tenant_id = $2
           and sessions.user_id = $3
+          and ($4::text is null or sessions.mcp_session_id = $4)
       `,
-      values: [input.workspaceSessionId, input.owner.tenantId, input.owner.userId],
+      values: [
+        input.workspaceSessionId,
+        input.owner.tenantId,
+        input.owner.userId,
+        input.scope?.mcpSessionId ?? null,
+      ],
     });
 
     const now = new Date().toISOString();
@@ -214,17 +240,18 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
           )
           select
             $1,
-            $4,
             $5,
             $6,
-            $7::timestamptz,
-            $8::timestamptz
+            $7,
+            $8::timestamptz,
+            $9::timestamptz
           where exists (
             select 1
             from workspace_sessions
             where id = $1
               and tenant_id = $2
               and user_id = $3
+              and ($4::text is null or mcp_session_id = $4)
           )
           on conflict (workspace_session_id, path) do update set
             content_hash = excluded.content_hash,
@@ -235,6 +262,7 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
           input.workspaceSessionId,
           input.owner.tenantId,
           input.owner.userId,
+          input.scope?.mcpSessionId ?? null,
           file.path,
           hashLoadedAgentFileContent(file.content),
           file.content,
@@ -248,6 +276,7 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
   async getLoadedAgentFiles(
     workspaceSessionId: string,
     owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
   ): Promise<LoadedAgentFile[]> {
     const result = await this.query<PostgresLoadedAgentFileRow>({
       text: `
@@ -263,23 +292,29 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
         where files.workspace_session_id = $1
           and sessions.tenant_id = $2
           and sessions.user_id = $3
+          and ($4::text is null or sessions.mcp_session_id = $4)
         order by files.path asc
       `,
-      values: [workspaceSessionId, owner.tenantId, owner.userId],
+      values: [workspaceSessionId, owner.tenantId, owner.userId, scope?.mcpSessionId ?? null],
     });
 
     return result.rows.map(rowToLoadedAgentFile);
   }
 
-  async deleteSession(id: string, owner: WorkspaceIdentity): Promise<boolean> {
+  async deleteSession(
+    id: string,
+    owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
+  ): Promise<boolean> {
     const result = await this.query({
       text: `
         delete from workspace_sessions
         where id = $1
           and tenant_id = $2
           and user_id = $3
+          and ($4::text is null or mcp_session_id = $4)
       `,
-      values: [id, owner.tenantId, owner.userId],
+      values: [id, owner.tenantId, owner.userId, scope?.mcpSessionId ?? null],
     });
 
     return result.rowCount > 0;
@@ -297,16 +332,21 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
     return result.rowCount;
   }
 
-  async touchSession(id: string, owner: WorkspaceIdentity): Promise<void> {
+  async touchSession(
+    id: string,
+    owner: WorkspaceIdentity,
+    scope?: WorkspaceSessionScope,
+  ): Promise<void> {
     await this.query({
       text: `
         update workspace_sessions
-        set last_used_at = $4::timestamptz
+        set last_used_at = $5::timestamptz
         where id = $1
           and tenant_id = $2
           and user_id = $3
+          and ($4::text is null or mcp_session_id = $4)
       `,
-      values: [id, owner.tenantId, owner.userId, new Date().toISOString()],
+      values: [id, owner.tenantId, owner.userId, scope?.mcpSessionId ?? null, new Date().toISOString()],
     });
   }
 
@@ -343,6 +383,7 @@ function rowToWorkspaceSession(row: PostgresWorkspaceSessionRow): WorkspaceSessi
     id: row.id,
     tenantId: row.tenant_id ?? LOCAL_WORKSPACE_IDENTITY.tenantId,
     userId: row.user_id ?? LOCAL_WORKSPACE_IDENTITY.userId,
+    mcpSessionId: row.mcp_session_id ?? undefined,
     root: row.root,
     status: row.status,
     mode: row.mode === "worktree" ? "worktree" : "checkout",
