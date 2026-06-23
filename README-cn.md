@@ -49,25 +49,39 @@ Codex 和 Claude Code 在这里是参考系统，不是运行时依赖。Xautojs
 storage、policy、hooks、workflow packs 和 operator controls，不要求安装 Codex 或
 Claude Code 二进制。
 
-## 包名说明
+## 包与 CLI 契约
 
-这个 fork 正在脱离上游包身份。当前本地 package metadata 使用：
+Xautojs DevSpace 正在脱离上游包身份。面向发布的 package identity 是：
 
 ```text
 xautojs-devspace
 ```
 
-CLI 二进制命令仍然是：
+不要再把新版本发布成：
+
+```text
+@waishnav/devspace
+```
+
+安装后的 CLI 命令仍然是：
 
 ```text
 devspace
 ```
+
+包名和可执行命令有意保持不同：用户安装的是 Xautojs 的包身份，已有配置、脚本和文档
+可以继续使用 `devspace` 命令。在公开 npm 包发布前，源码运行文档统一使用
+`node dist/cli.js ...`。
 
 当前默认开发分支是：
 
 ```text
 Xautojs-devspace
 ```
+
+发布前，`package.json`、`package-lock.json`、badge 和 release 文档都必须统一到
+`xautojs-devspace`。预发布检查清单和 CLI 兼容规则见
+[Release Packaging](docs/release-packaging.md)。
 
 在新的 npm 包名公开发布前，请使用下面的源码运行方式。
 
@@ -310,6 +324,7 @@ node dist/cli.js doctor
 
 - [English README](README.md)
 - [Setup Guide](docs/setup.md)
+- [Release Packaging](docs/release-packaging.md)
 - [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
 - [Configuration Reference](docs/configuration.md)
 - [Production Smoke Check](docs/production-smoke.md)
