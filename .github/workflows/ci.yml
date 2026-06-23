@@ -51,6 +51,151 @@ jobs:
       - name: Doctor JSON
         run: node dist/cli.js doctor --json
 
+  desktop-artifact-smoke:
+    name: Desktop artifact smoke (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            bundle_script: bundle:macos
+            artifact_suffix: macos
+          - name: Windows
+            os: windows-latest
+            bundle_script: bundle:windows
+            artifact_suffix: windows
+          - name: Linux
+            os: ubuntu-latest
+            bundle_script: bundle:linux
+            artifact_suffix: linux
+    env:
+      CARGO_HTTP_MULTIPLEXING: "false"
+      CARGO_NET_RETRY: "10"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine desktop packaging scope
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          echo "$changed"
+
+          if echo "$changed" | grep -E '^(apps/desktop/|\.github/workflows/(ci|desktop-release)\.yml|docs/xautojs-desktop-packaging\.md|package\.json)$' >/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip desktop packaging smoke
+        if: steps.scope.outputs.run != 'true'
+        run: echo "No desktop packaging changes detected."
+
+      - name: Setup Node
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        if: steps.scope.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: ${{ runner.os }}-desktop-cargo-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml', 'apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-desktop-cargo-
+
+      - name: Install Linux Tauri prerequisites
+        if: steps.scope.outputs.run == 'true' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install root dependencies
+        if: steps.scope.outputs.run == 'true'
+        run: npm ci
+
+      - name: Install desktop dependencies
+        if: steps.scope.outputs.run == 'true'
+        shell: bash
+        run: |
+          if [ -f apps/desktop/package-lock.json ]; then
+            npm --prefix apps/desktop ci
+          else
+            npm --prefix apps/desktop install --package-lock-only --ignore-scripts
+            npm --prefix apps/desktop ci
+          fi
+
+      - name: Check desktop package
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          npm run desktop:typecheck
+          npm run desktop:test
+
+      - name: Bundle unsigned desktop artifacts
+        if: steps.scope.outputs.run == 'true'
+        env:
+          XAUTOJS_DESKTOP_RELEASE_CHANNEL: unsigned-smoke
+        run: npm --prefix apps/desktop run ${{ matrix.bundle_script }}
+
+      - name: Write artifact checksums
+        if: steps.scope.outputs.run == 'true'
+        run: npm --prefix apps/desktop run artifacts:checksums
+
+      - name: Generate artifact provenance
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/attest@v4
+        with:
+          subject-checksums: apps/desktop/src-tauri/target/release/bundle/SHA256SUMS.txt
+
+      - name: Upload desktop artifacts
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: xautojs-desktop-smoke-${{ matrix.artifact_suffix }}-${{ github.sha }}
+          path: apps/desktop/src-tauri/target/release/bundle/**/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload generated desktop lockfiles
+        if: always() && steps.scope.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: xautojs-desktop-lockfiles-${{ matrix.artifact_suffix }}-${{ github.sha }}
+          path: |
+            apps/desktop/package-lock.json
+            apps/desktop/src-tauri/Cargo.lock
+          if-no-files-found: warn
+          retention-days: 14
+
   postgres-integration:
     name: Postgres integration (ubuntu-latest)
     runs-on: ubuntu-latest

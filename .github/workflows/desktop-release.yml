@@ -18,6 +18,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  attestations: write
 
 concurrency:
   group: desktop-release-${{ github.ref }}-${{ github.event.inputs.desktop_version || github.run_id }}
@@ -64,7 +66,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             apps/desktop/src-tauri/target
-          key: ${{ runner.os }}-desktop-cargo-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml') }}
+          key: ${{ runner.os }}-desktop-cargo-${{ hashFiles('apps/desktop/src-tauri/Cargo.toml', 'apps/desktop/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-desktop-cargo-
 
@@ -78,7 +80,14 @@ jobs:
         run: npm ci
 
       - name: Install desktop dependencies
-        run: npm --prefix apps/desktop install --no-package-lock
+        shell: bash
+        run: |
+          if [ -f apps/desktop/package-lock.json ]; then
+            npm --prefix apps/desktop ci
+          else
+            npm --prefix apps/desktop install --package-lock-only --ignore-scripts
+            npm --prefix apps/desktop ci
+          fi
 
       - name: Check desktop package
         run: |
@@ -119,8 +128,16 @@ jobs:
 
       - name: Bundle desktop artifacts
         env:
-          XAUTOJS_DESKTOP_RELEASE_CHANNEL: ${{ github.event.inputs.release_channel }}
+          XAUTOJS_DESKTOP_RELEASE_CHANNEL: ${{ github.event.inputs.release_channel || 'unsigned-smoke' }}
         run: npm --prefix apps/desktop run ${{ matrix.bundle_script }}
+
+      - name: Write artifact checksums
+        run: npm --prefix apps/desktop run artifacts:checksums
+
+      - name: Generate artifact provenance
+        uses: actions/attest@v4
+        with:
+          subject-checksums: apps/desktop/src-tauri/target/release/bundle/SHA256SUMS.txt
 
       - name: Upload desktop artifacts
         uses: actions/upload-artifact@v4
@@ -128,4 +145,15 @@ jobs:
           name: xautojs-desktop-${{ matrix.artifact_suffix }}-${{ github.event.inputs.desktop_version || github.sha }}
           path: apps/desktop/src-tauri/target/release/bundle/**/*
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload generated desktop lockfiles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xautojs-desktop-lockfiles-${{ matrix.artifact_suffix }}-${{ github.event.inputs.desktop_version || github.sha }}
+          path: |
+            apps/desktop/package-lock.json
+            apps/desktop/src-tauri/Cargo.lock
+          if-no-files-found: warn
           retention-days: 14

@@ -28,6 +28,8 @@ hook decision cards from replay.summary.hooks
 workflow step state from replay.summary.workflowSteps
 Tauri bundle configuration for macOS, Windows, and Linux artifacts
 generated app icons for PNG, ICO, and ICNS targets
+SHA256 checksum generation for bundle outputs
+GitHub artifact provenance attestation in packaging workflows
 ```
 
 Still intentionally deferred:
@@ -87,7 +89,6 @@ npm run desktop:build
 
 ## Package Desktop Artifacts
 
-PR42 enables Tauri bundle mode and adds a generated Xautojs Desktop icon set.
 The root npm package remains CLI-first; desktop installers are separate release
 artifacts.
 
@@ -100,8 +101,18 @@ npm --prefix apps/desktop run icons:generate
 Build the current platform bundle from the repository root:
 
 ```bash
-npm --prefix apps/desktop install --no-package-lock
+npm --prefix apps/desktop install --package-lock-only --ignore-scripts
+npm --prefix apps/desktop ci
 npm run desktop:bundle
+npm --prefix apps/desktop run artifacts:checksums
+```
+
+After `apps/desktop/package-lock.json` is committed, use:
+
+```bash
+npm --prefix apps/desktop ci
+npm run desktop:bundle
+npm --prefix apps/desktop run artifacts:checksums
 ```
 
 Platform-specific bundle commands:
@@ -118,14 +129,27 @@ The manual GitHub artifact workflow is:
 .github/workflows/desktop-release.yml
 ```
 
+The PR packaging smoke runs from:
+
+```text
+.github/workflows/ci.yml -> desktop-artifact-smoke
+```
+
 Artifacts are uploaded from:
 
 ```text
 apps/desktop/src-tauri/target/release/bundle/**/*
 ```
 
+The workflows also upload generated lockfiles from:
+
+```text
+apps/desktop/package-lock.json
+apps/desktop/src-tauri/Cargo.lock
+```
+
 These artifacts are unsigned smoke or release-candidate artifacts until platform
-signing, checksums, lockfile strategy, and updater policy are completed.
+signing, lockfiles, checksums, provenance, and updater policy are all production-ready.
 
 ## Operator Flow
 
