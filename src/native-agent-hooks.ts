@@ -94,7 +94,7 @@ export function defaultNativeRuntimeHooks(): NativeRuntimeHookManager {
         decision: "ask",
         continue: true,
         auditOnly: false,
-        reason: "High-risk tool use requires explicit policy approval in future interactive runtimes.",
+        reason: "High-risk tool use requires explicit native policy approval.",
       };
     }
     return {
