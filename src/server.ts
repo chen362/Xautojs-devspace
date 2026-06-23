@@ -31,7 +31,7 @@ import {
   assertMcpSessionIdentity,
   McpSessionIdentityMismatchError,
 } from "./mcp-session-identity.js";
-import type { DevspaceToolExecutor } from "./mcp-tool-executor.js";
+import type { DevspaceToolExecutionContext, DevspaceToolExecutor } from "./mcp-tool-executor.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { formatPathForPrompt } from "./skills.js";
@@ -458,6 +458,7 @@ async function assertWorkspaceAppAssets(): Promise<void> {
 function createMcpServer(
   config: ServerConfig,
   toolExecutor: DevspaceToolExecutor,
+  getExecutionContext: () => DevspaceToolExecutionContext,
 ): McpServer {
   const toolNames = toolNamesFor(config);
   const server = new McpServer(
@@ -554,7 +555,10 @@ function createMcpServer(
     },
     async ({ path, mode, baseRef }) => {
       const startedAt = performance.now();
-      const { workspace, agentsFiles, availableAgentsFiles } = await toolExecutor.openWorkspace({ path, mode, baseRef });
+      const { workspace, agentsFiles, availableAgentsFiles } = await toolExecutor.openWorkspace(
+        getExecutionContext(),
+        { path, mode, baseRef },
+      );
       const visibleSkills = workspace.skills
         .filter((skill) => !skill.disableModelInvocation)
         .map((skill) => ({
@@ -677,7 +681,7 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const response = await toolExecutor.readFile(workspaceId, input);
+      const response = await toolExecutor.readFile(getExecutionContext(), workspaceId, input);
 
       if (response.isError) {
         logFailedToolResponse(config, {
@@ -741,7 +745,7 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const response = await toolExecutor.writeFile(workspaceId, input);
+      const response = await toolExecutor.writeFile(getExecutionContext(), workspaceId, input);
 
       if (response.isError) {
         logFailedToolResponse(config, {
@@ -823,7 +827,7 @@ function createMcpServer(
     },
     async ({ workspaceId, ...input }) => {
       const startedAt = performance.now();
-      const response = await toolExecutor.editFile(workspaceId, input);
+      const response = await toolExecutor.editFile(getExecutionContext(), workspaceId, input);
 
       if (response.isError) {
         logFailedToolResponse(config, {
@@ -900,7 +904,7 @@ function createMcpServer(
       },
       async ({ workspaceId, since, markReviewed }) => {
         const startedAt = performance.now();
-        const review = await toolExecutor.showChanges({
+        const review = await toolExecutor.showChanges(getExecutionContext(), {
           workspaceId,
           since,
           markReviewed,
@@ -962,7 +966,7 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const response = await toolExecutor.grepFiles(workspaceId, input);
+        const response = await toolExecutor.grepFiles(getExecutionContext(), workspaceId, input);
 
         if (response.isError) {
           logFailedToolResponse(config, {
@@ -1027,7 +1031,7 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const response = await toolExecutor.findFiles(workspaceId, input);
+        const response = await toolExecutor.findFiles(getExecutionContext(), workspaceId, input);
 
         if (response.isError) {
           logFailedToolResponse(config, {
@@ -1092,7 +1096,7 @@ function createMcpServer(
       },
       async ({ workspaceId, ...input }) => {
         const startedAt = performance.now();
-        const response = await toolExecutor.listDirectory(workspaceId, input);
+        const response = await toolExecutor.listDirectory(getExecutionContext(), workspaceId, input);
 
         if (response.isError) {
           logFailedToolResponse(config, {
@@ -1167,7 +1171,7 @@ function createMcpServer(
     },
     async ({ workspaceId, workingDirectory, ...input }) => {
       const startedAt = performance.now();
-      const response = await toolExecutor.runShell(workspaceId, {
+      const response = await toolExecutor.runShell(getExecutionContext(), workspaceId, {
         ...input,
         workingDirectory,
       });
@@ -1424,11 +1428,24 @@ export function createServer(config = loadConfig()): RunningServer {
         }
         transport = session.transport;
       } else if (initializeRequest) {
-        const workspaces = new WorkspaceRegistry(config, workspaceStore, identity);
+        let initializedSessionId: string | undefined;
+        const executionContext = (): DevspaceToolExecutionContext => {
+          const mcpSessionId = transport?.sessionId ?? initializedSessionId;
+          if (!mcpSessionId) throw new Error("MCP session is not initialized.");
+
+          return {
+            mcpSessionId,
+            owner: identity,
+          };
+        };
+        const workspaces = new WorkspaceRegistry(config, workspaceStore, identity, () => ({
+          mcpSessionId: executionContext().mcpSessionId,
+        }));
         const toolExecutor = new LocalMcpToolExecutor(config, workspaces, reviewCheckpoints);
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
+            initializedSessionId = newSessionId;
             if (transport) transports.set(newSessionId, { transport, identity });
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
@@ -1450,7 +1467,7 @@ export function createServer(config = loadConfig()): RunningServer {
           }
         };
 
-        const server = createMcpServer(config, toolExecutor);
+        const server = createMcpServer(config, toolExecutor, executionContext);
         await server.connect(transport);
       } else {
         sendJsonRpcError(res, 400, -32000, "No valid MCP session");
