@@ -2,8 +2,17 @@ import express, { type Express, type Request, type Response } from "express";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ServerConfig } from "./config.js";
 import { isPostgresDatabaseConfig } from "./db/types.js";
-import { PostgresNativeAgentStore, type NativeAgentRunStatus, type NativeAgentStore } from "./native-agent-store.js";
-import { dispatchNativeAgentOnce } from "./native-agent-runtime.js";
+import { PostgresNativeAgentStore, type NativeAgentRunStatus, type NativeAgentStore, type NativeAgentToolRisk } from "./native-agent-store.js";
+import { dispatchNativeAgentOnce, dispatchNativeAgentRunOnce } from "./native-agent-runtime.js";
+import {
+  createNativeAgentRetry,
+  listNativeAgentApprovals,
+  NativeAgentOperatorError,
+  replayNativeAgentRun,
+  requestNativeAgentApproval,
+  resolveNativeAgentApproval,
+  type NativeAgentApprovalDecision,
+} from "./native-agent-operator.js";
 
 const JSON_BODY_LIMIT = "64kb";
 const ROUTE_PREFIX = "/api/native-agent";
@@ -96,6 +105,18 @@ export function registerNativeAgentApiRoutes(
     }
   });
 
+  app.get(`${ROUTE_PREFIX}/runs/:agentRunId/replay`, async (request, response) => {
+    const requestId = requestIdFor(request, response);
+    try {
+      requireOperator(request, operatorToken);
+      if (!store) throw unavailable();
+      const replay = await replayNativeAgentRun(store, { agentRunId: routeParam(request.params.agentRunId) });
+      response.json({ replay, requestId });
+    } catch (error) {
+      sendError(response, requestId, error);
+    }
+  });
+
   app.post(`${ROUTE_PREFIX}/runs/:agentRunId/cancel`, jsonBody, async (request, response) => {
     const requestId = requestIdFor(request, response);
     try {
@@ -112,6 +133,68 @@ export function registerNativeAgentApiRoutes(
     }
   });
 
+  app.post(`${ROUTE_PREFIX}/runs/:agentRunId/retry`, jsonBody, async (request, response) => {
+    const requestId = requestIdFor(request, response);
+    try {
+      requireOperator(request, operatorToken);
+      if (!store) throw unavailable();
+      const retry = await createNativeAgentRetry(store, {
+        agentRunId: routeParam(request.params.agentRunId),
+        reason: bodyString(request.body, "reason"),
+      });
+      response.status(201).json({ retry, requestId });
+    } catch (error) {
+      sendError(response, requestId, error);
+    }
+  });
+
+  app.get(`${ROUTE_PREFIX}/runs/:agentRunId/approvals`, async (request, response) => {
+    const requestId = requestIdFor(request, response);
+    try {
+      requireOperator(request, operatorToken);
+      if (!store) throw unavailable();
+      const approvals = await listNativeAgentApprovals(store, { agentRunId: routeParam(request.params.agentRunId) });
+      response.json({ approvals, requestId });
+    } catch (error) {
+      sendError(response, requestId, error);
+    }
+  });
+
+  app.post(`${ROUTE_PREFIX}/runs/:agentRunId/approvals`, jsonBody, async (request, response) => {
+    const requestId = requestIdFor(request, response);
+    try {
+      requireOperator(request, operatorToken);
+      if (!store) throw unavailable();
+      const approval = await requestNativeAgentApproval(store, {
+        agentRunId: routeParam(request.params.agentRunId),
+        title: bodyString(request.body, "title") ?? "Approval requested",
+        message: bodyString(request.body, "message") ?? "Native agent approval requested.",
+        risk: bodyRisk(request.body),
+        requestedBy: bodyString(request.body, "requestedBy"),
+      });
+      response.status(201).json({ approval, requestId });
+    } catch (error) {
+      sendError(response, requestId, error);
+    }
+  });
+
+  app.post(`${ROUTE_PREFIX}/runs/:agentRunId/approvals/:approvalId/resolve`, jsonBody, async (request, response) => {
+    const requestId = requestIdFor(request, response);
+    try {
+      requireOperator(request, operatorToken);
+      if (!store) throw unavailable();
+      const approval = await resolveNativeAgentApproval(store, {
+        agentRunId: routeParam(request.params.agentRunId),
+        approvalId: routeParam(request.params.approvalId),
+        decision: bodyApprovalDecision(request.body),
+        resolvedBy: bodyString(request.body, "resolvedBy"),
+      });
+      response.json({ approval, requestId });
+    } catch (error) {
+      sendError(response, requestId, error);
+    }
+  });
+
   app.post(`${ROUTE_PREFIX}/dispatch/once`, jsonBody, async (request, response) => {
     const requestId = requestIdFor(request, response);
     try {
@@ -122,6 +205,23 @@ export function registerNativeAgentApiRoutes(
         workflowId: bodyString(request.body, "workflowId"),
         timeoutMs: bodyNumber(request.body, "timeoutMs"),
       });
+      response.status(result.claimed ? 202 : 200).json({ ...result, requestId });
+    } catch (error) {
+      sendError(response, requestId, error);
+    }
+  });
+
+  app.post(`${ROUTE_PREFIX}/dispatch/run`, jsonBody, async (request, response) => {
+    const requestId = requestIdFor(request, response);
+    try {
+      requireOperator(request, operatorToken);
+      const agentRunId = bodyString(request.body, "agentRunId");
+      if (!agentRunId) throw new NativeAgentApiError(400, "AGENT_RUN_ID_REQUIRED", "agentRunId is required.", false);
+      const result = await dispatchNativeAgentRunOnce(config, {
+        agentRunId,
+        workspaceRoot: bodyString(request.body, "workspaceRoot"),
+        timeoutMs: bodyNumber(request.body, "timeoutMs"),
+      }, store ? { store } : undefined);
       response.status(result.claimed ? 202 : 200).json({ ...result, requestId });
     } catch (error) {
       sendError(response, requestId, error);
@@ -163,7 +263,7 @@ function requestIdFor(request: Request, response: Response): string {
 }
 
 function sendError(response: Response, requestId: string, error: unknown): void {
-  if (error instanceof NativeAgentApiError) {
+  if (error instanceof NativeAgentApiError || error instanceof NativeAgentOperatorError) {
     response.status(error.statusCode).json({
       error: {
         code: error.code,
@@ -220,4 +320,17 @@ function bodyNumber(body: unknown, key: string): number | undefined {
   if (!body || typeof body !== "object") return undefined;
   const value = (body as Record<string, unknown>)[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function bodyRisk(body: unknown): NativeAgentToolRisk | undefined {
+  const value = bodyString(body, "risk");
+  if (!value) return undefined;
+  if (value === "low" || value === "medium" || value === "high") return value;
+  throw new NativeAgentApiError(400, "INVALID_APPROVAL_RISK", "Approval risk must be low, medium, or high.", false);
+}
+
+function bodyApprovalDecision(body: unknown): NativeAgentApprovalDecision {
+  const value = bodyString(body, "decision");
+  if (value === "approved" || value === "denied") return value;
+  throw new NativeAgentApiError(400, "INVALID_APPROVAL_DECISION", "Approval decision must be approved or denied.", false);
 }

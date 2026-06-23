@@ -1,8 +1,9 @@
 # Native Agent Runtime
 
-Xautojs now owns a first-party native local agent runtime. Codex and Claude Code
+Xautojs owns a first-party native local agent runtime. Codex and Claude Code
 remain reference systems for ideas, but the runtime contract, storage, policy,
-workflow mapping, and operator controls are Xautojs-native.
+workflow mapping, approval flow, replay model, and operator controls are
+Xautojs-native.
 
 ## Goals
 
@@ -10,16 +11,19 @@ The native runtime turns queued automation runs into auditable local execution.
 It is designed for Linux, macOS, and Windows-compatible Node environments without
 requiring a Codex or Claude Code binary.
 
-The first implementation supports:
+The runtime supports:
 
 ```text
 Postgres-backed native agent run storage
 queued automation run claiming
-cursor-readable run events
+queued native agent run dispatch
+cursor-readable and replayable run events
 first-party process execution contract
 permission profiles and command policy
 typed runtime hooks
-workflow packs for repeatable local tasks
+workflow packs with stable loop steps
+event-sourced approval request/resolve records
+terminal-run retry creation
 operator HTTP APIs
 operator CLI commands
 ```
@@ -64,12 +68,39 @@ When a native agent run reaches a terminal state, the linked automation run is
 updated to the corresponding terminal automation state.
 
 `agent_run_events` is append-only and cursor-readable by `afterSeq`. Operators
-can safely replay a run from sequence `0`, or tail new events from the latest
-`nextSeq` value.
+can safely replay a run from sequence `0`, tail new events from the latest
+`nextSeq` value, and reconstruct approval state from the event stream.
+
+## Loop Contract
+
+Every dispatched run writes structured loop events around raw process output:
+
+```text
+run.started
+run.loop.started
+run.loop.step
+run.output_delta
+run.loop.completed | run.loop.failed
+run.succeeded | run.failed | run.cancelled | run.timed_out
+```
+
+Workflow packs define the stable step list. This gives operators a replayable
+view of intent and progress even before a richer model-driven agent loop is
+plugged in.
+
+Queued native runs can now be dispatched directly:
+
+```bash
+devspace agent dispatch-run --id <agentRunId> --workspace-root <path>
+```
+
+This is separate from automation claiming. It lets retry-created runs and future
+manual native runs execute through the same policy, hook, process, and event
+pipeline.
 
 ## Dispatcher Contract
 
-The dispatcher claims queued automation work exactly once:
+The automation dispatcher claims queued automation work exactly once:
 
 ```bash
 devspace agent dispatch-once --automation-run-id <automationRunId> --workspace-root <path>
@@ -86,7 +117,7 @@ Workspace resolution follows this order:
 
 ```text
 1. explicit --workspace-root / API workspaceRoot
-2. stored workspace_session_id on the automation run
+2. stored workspace_session_id on the automation run or native run
 ```
 
 Every resolved path is checked against `allowedRoots` or `worktreeRoot` before
@@ -118,7 +149,7 @@ read_only:
   blocks native process execution
 
 workspace_write:
-  allows low-risk internal workflow process execution inside workspaceRoot
+  allows internal workflow process execution inside workspaceRoot
   blocks high-risk shell/network/destructive commands by default
 
 trusted_local:
@@ -153,6 +184,17 @@ security-review
 test-fix
 ```
 
+Each pack has:
+
+```text
+id
+title
+description
+permissionProfile
+steps[]
+buildPrompt(input)
+```
+
 GitHub automation metadata defaults to `github-pr-review`. A source or run can
 select a workflow with `metadata.workflowId` when it maps to a known workflow id.
 Unknown workflow ids fall back to `manual`.
@@ -177,6 +219,43 @@ Hook records are stored in `agent_runtime_hooks`. The first default hooks are
 policy-shaped audit/block decisions; they are intentionally small so the runtime
 can grow without hidden side effects.
 
+## Approval, Retry, And Replay
+
+Approvals are event-sourced in `agent_run_events` rather than stored in a
+separate table:
+
+```text
+run.approval.requested
+run.approval.resolved
+```
+
+A resolved approval is folded from the event stream into:
+
+```text
+pending
+approved
+denied
+```
+
+Retries are created only from terminal native runs. A retry creates a new queued
+`agent_run` with the same owner, workflow, workspace session, permission profile,
+and input plus retry metadata:
+
+```text
+retryOfAgentRunId
+retryReason
+```
+
+The source and retry runs get durable linking events:
+
+```text
+run.retry.created
+run.retry.source
+```
+
+Replay returns the full event stream, folded approvals, next sequence cursor,
+and terminal flag.
+
 ## Operator API
 
 The operator API is mounted under:
@@ -197,8 +276,14 @@ Available endpoints:
 GET  /api/native-agent/runs
 GET  /api/native-agent/runs/:agentRunId
 GET  /api/native-agent/runs/:agentRunId/events?afterSeq=0&maxEvents=100
+GET  /api/native-agent/runs/:agentRunId/replay
+GET  /api/native-agent/runs/:agentRunId/approvals
+POST /api/native-agent/runs/:agentRunId/approvals
+POST /api/native-agent/runs/:agentRunId/approvals/:approvalId/resolve
+POST /api/native-agent/runs/:agentRunId/retry
 POST /api/native-agent/runs/:agentRunId/cancel
 POST /api/native-agent/dispatch/once
+POST /api/native-agent/dispatch/run
 ```
 
 Stable error response shape:
@@ -221,8 +306,15 @@ Native agent commands:
 ```bash
 devspace agent workflows
 devspace agent dispatch-once --workspace-root <path>
+devspace agent dispatch-run --id <agentRunId> --workspace-root <path>
 devspace agent list
 devspace agent events --id <agentRunId>
+devspace agent replay --id <agentRunId>
+devspace agent retry --id <agentRunId>
+devspace agent approvals --id <agentRunId>
+devspace agent request-approval --id <agentRunId> --message <text>
+devspace agent approve --id <agentRunId> --approval-id <approvalId>
+devspace agent deny --id <agentRunId> --approval-id <approvalId>
 devspace agent cancel --id <agentRunId>
 ```
 
@@ -265,6 +357,7 @@ src/native-agent-policy.test.ts
 src/native-agent-process.test.ts
 src/native-agent-workflows.test.ts
 src/native-agent-store.test.ts
+src/native-agent-operator.test.ts
 src/native-agent-runtime.test.ts
 src/native-agent-api.test.ts
 ```

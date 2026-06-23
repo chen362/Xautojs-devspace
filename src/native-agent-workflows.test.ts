@@ -14,6 +14,7 @@ assert.deepEqual(
 assert.equal(getNativeWorkflowPack("unknown").id, "manual");
 assert.equal(workflowIdFromAutomationMetadata({ provider: "github" }), "github-pr-review");
 assert.equal(workflowIdFromAutomationMetadata({ workflowId: "security-review", provider: "github" }), "security-review");
+assert.ok(getNativeWorkflowPack("feature-dev").steps.length >= 3);
 
 {
   const input = workflowInputFromAgentInput({
@@ -32,6 +33,7 @@ assert.equal(workflowIdFromAutomationMetadata({ workflowId: "security-review", p
   assert.equal(execution.permissionProfile, "workspace_write");
   assert.equal(execution.argv[0], process.execPath);
   assert.equal(execution.argv[1], "-e");
+  assert.equal(execution.steps[0]?.id, "normalize-event");
   assert.match(execution.prompt, /GitHub pull request/i);
   assert.match(execution.prompt, /chen362\/Xautojs-devspace/);
 
@@ -39,11 +41,13 @@ assert.equal(workflowIdFromAutomationMetadata({ workflowId: "security-review", p
   assert.equal(envInput.workflowId, "github-pr-review");
   assert.equal(envInput.repository, "chen362/Xautojs-devspace");
   assert.equal(envInput.branch, "Xautojs-devspace");
+  assert.ok(Array.isArray(envInput.steps));
 }
 
 {
   const execution = buildNativeWorkflowExecution({ workflowId: "security-review" });
   assert.equal(execution.workflow.id, "security-review");
   assert.equal(execution.permissionProfile, "read_only");
+  assert.equal(execution.steps[0]?.id, "scope");
   assert.match(execution.prompt, /read-only security review/i);
 }
