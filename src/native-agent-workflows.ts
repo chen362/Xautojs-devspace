@@ -3,11 +3,18 @@ import type { NativeAgentPermissionProfile } from "./native-agent-store.js";
 
 export type NativeWorkflowId = "manual" | "github-pr-review" | "feature-dev" | "security-review" | "test-fix";
 
+export interface NativeWorkflowStep {
+  id: string;
+  title: string;
+  objective: string;
+}
+
 export interface NativeWorkflowPack {
   id: NativeWorkflowId;
   title: string;
   permissionProfile: NativeAgentPermissionProfile;
   description: string;
+  steps: NativeWorkflowStep[];
   buildPrompt(input: NativeWorkflowInput): string;
 }
 
@@ -25,6 +32,7 @@ export interface NativeWorkflowInput {
 export interface NativeWorkflowExecution {
   workflow: NativeWorkflowPack;
   prompt: string;
+  steps: NativeWorkflowStep[];
   argv: string[];
   env: Record<string, string>;
   permissionProfile: NativeAgentPermissionProfile;
@@ -36,6 +44,11 @@ const WORKFLOWS: Record<NativeWorkflowId, NativeWorkflowPack> = {
     title: "Manual Native Agent Task",
     permissionProfile: "workspace_write",
     description: "Run a first-party Xautojs local task from a manual automation trigger.",
+    steps: [
+      { id: "understand", title: "Understand request", objective: "Normalize the request and workspace context." },
+      { id: "act", title: "Act locally", objective: "Execute the smallest safe local action allowed by policy." },
+      { id: "summarize", title: "Summarize result", objective: "Record a concise operator-facing result." },
+    ],
     buildPrompt: (input) => input.text ?? "Inspect the workspace and complete the requested local task.",
   },
   "github-pr-review": {
@@ -43,6 +56,12 @@ const WORKFLOWS: Record<NativeWorkflowId, NativeWorkflowPack> = {
     title: "GitHub PR Review",
     permissionProfile: "workspace_write",
     description: "Review a GitHub pull_request event using local workspace context and produce auditable output.",
+    steps: [
+      { id: "normalize-event", title: "Normalize GitHub event", objective: "Identify repository, branch, event type, and requested review target." },
+      { id: "inspect-change", title: "Inspect local change", objective: "Use local workspace context to inspect changed code and tests." },
+      { id: "risk-review", title: "Review risk", objective: "Check correctness, security, compatibility, and missing tests." },
+      { id: "report", title: "Report findings", objective: "Produce an auditable review summary with next actions." },
+    ],
     buildPrompt: (input) => [
       "Review the GitHub pull request event for correctness, tests, security, and maintainability.",
       input.repository ? `Repository: ${input.repository}` : undefined,
@@ -56,6 +75,12 @@ const WORKFLOWS: Record<NativeWorkflowId, NativeWorkflowPack> = {
     title: "Feature Development",
     permissionProfile: "workspace_write",
     description: "Plan, implement, and verify a bounded feature request in the local workspace.",
+    steps: [
+      { id: "plan", title: "Plan change", objective: "Map the request to a small implementation path." },
+      { id: "patch", title: "Patch workspace", objective: "Apply the focused code or configuration change." },
+      { id: "verify", title: "Verify", objective: "Run the narrowest useful checks." },
+      { id: "handoff", title: "Handoff", objective: "Summarize changed behavior and verification." },
+    ],
     buildPrompt: (input) => input.text ?? "Implement the requested feature with focused tests and a concise change summary.",
   },
   "security-review": {
@@ -63,6 +88,11 @@ const WORKFLOWS: Record<NativeWorkflowId, NativeWorkflowPack> = {
     title: "Security Review",
     permissionProfile: "read_only",
     description: "Inspect code for command injection, XSS, SSRF, secrets, unsafe eval, and auth boundary regressions.",
+    steps: [
+      { id: "scope", title: "Scope review", objective: "Identify security-sensitive surfaces and trust boundaries." },
+      { id: "inspect", title: "Inspect safely", objective: "Review code paths without mutating the workspace." },
+      { id: "findings", title: "Report findings", objective: "Return actionable issues with evidence and severity." },
+    ],
     buildPrompt: (input) => input.text ?? "Perform a read-only security review and report actionable findings.",
   },
   "test-fix": {
@@ -70,6 +100,11 @@ const WORKFLOWS: Record<NativeWorkflowId, NativeWorkflowPack> = {
     title: "Test Failure Fix",
     permissionProfile: "workspace_write",
     description: "Investigate failing tests and apply the smallest safe fix.",
+    steps: [
+      { id: "reproduce", title: "Reproduce failure", objective: "Capture the failing signal and likely root cause." },
+      { id: "patch", title: "Patch root cause", objective: "Apply the smallest safe correction." },
+      { id: "rerun", title: "Rerun check", objective: "Verify the fixed path with focused tests." },
+    ],
     buildPrompt: (input) => input.text ?? "Investigate the failing test signal, patch the root cause, and re-run the narrow check.",
   },
 };
@@ -124,6 +159,7 @@ export function buildNativeWorkflowExecution(input: NativeWorkflowInput): Native
     workflowId: workflow.id,
     title: workflow.title,
     prompt,
+    steps: workflow.steps,
     automationRunId: input.automationRunId ?? null,
     repository: input.repository ?? null,
     branch: input.branch ?? null,
@@ -132,6 +168,7 @@ export function buildNativeWorkflowExecution(input: NativeWorkflowInput): Native
   return {
     workflow,
     prompt,
+    steps: workflow.steps,
     argv: [
       process.execPath,
       "-e",
@@ -141,6 +178,7 @@ export function buildNativeWorkflowExecution(input: NativeWorkflowInput): Native
         "  status: 'ready',",
         "  workflowId: input.workflowId,",
         "  title: input.title,",
+        "  steps: input.steps,",
         "  automationRunId: input.automationRunId,",
         "  repository: input.repository,",
         "  branch: input.branch,",
