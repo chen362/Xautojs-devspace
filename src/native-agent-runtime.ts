@@ -267,7 +267,7 @@ async function executeNativeAgentRun(
     result: {
       workflowId: execution.workflow.id,
       prompt: execution.prompt,
-      steps: execution.steps,
+      steps: workflowStepsJson(execution),
     },
   });
   return { claimed: true, status: "succeeded", agentRun: finished ?? run };
@@ -379,4 +379,12 @@ async function failRun(
     errorCode,
     errorMessage,
   };
+}
+
+function workflowStepsJson(execution: NativeWorkflowExecution) {
+  return execution.steps.map((step) => ({
+    id: step.id,
+    title: step.title,
+    objective: step.objective,
+  }));
 }
