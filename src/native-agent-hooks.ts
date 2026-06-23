@@ -194,13 +194,42 @@ async function recordHookResult(
   input: NativeRuntimeHookInput,
   result: NativeRuntimeHookResult,
 ): Promise<void> {
+  await recordHookDecisionEvent(store, input, result);
+  if (!isRuntimeHookRecordEvent(input.hookEventName)) return;
+
   await store.recordRuntimeHook({
     agentRunId: input.agentRunId,
-    hookEventName: input.hookEventName as NativeRuntimeHookEventName,
+    hookEventName: input.hookEventName,
     decision: result.decision,
     payload: input.payload,
     result: hookResultJson(result),
   });
+}
+
+async function recordHookDecisionEvent(
+  store: NativeAgentStore,
+  input: NativeRuntimeHookInput,
+  result: NativeRuntimeHookResult,
+): Promise<void> {
+  if (!input.agentRunId) return;
+  await store.appendRunEvent({
+    agentRunId: input.agentRunId,
+    type: "run.hook.decision",
+    payload: hookDecisionEventJson(input, result),
+  });
+}
+
+function hookDecisionEventJson(input: NativeRuntimeHookInput, result: NativeRuntimeHookResult): JsonObject {
+  return {
+    hookEventName: input.hookEventName,
+    decision: result.decision,
+    continue: result.continue,
+    auditOnly: result.auditOnly,
+    hookPayload: input.payload ?? {},
+    ...(result.reason ? { reason: result.reason } : {}),
+    ...(result.additionalContext ? { additionalContext: result.additionalContext } : {}),
+    ...(result.ruleId ? { ruleId: result.ruleId } : {}),
+  };
 }
 
 function hookResultJson(result: NativeRuntimeHookResult): JsonObject {
@@ -212,6 +241,14 @@ function hookResultJson(result: NativeRuntimeHookResult): JsonObject {
     ...(result.additionalContext ? { additionalContext: result.additionalContext } : {}),
     ...(result.ruleId ? { ruleId: result.ruleId } : {}),
   };
+}
+
+function isRuntimeHookRecordEvent(eventName: NativeRuntimeHookName): eventName is NativeRuntimeHookEventName {
+  return eventName === "PreToolUse"
+    || eventName === "PostToolUse"
+    || eventName === "PermissionRequest"
+    || eventName === "PostCompact"
+    || eventName === "Stop";
 }
 
 function defaultHookResult(): NativeRuntimeHookResult {

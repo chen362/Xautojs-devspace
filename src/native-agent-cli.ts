@@ -8,6 +8,8 @@ import {
   replayNativeAgentRun,
   requestNativeAgentApproval,
   resolveNativeAgentApproval,
+  type NativeAgentApproval,
+  type NativeAgentReplay,
 } from "./native-agent-operator.js";
 import { listNativeWorkflowPacks } from "./native-agent-workflows.js";
 
@@ -214,7 +216,120 @@ function printOutput(value: unknown, json: boolean): void {
     }
     return;
   }
+  if (isReplay(value)) {
+    printReplay(value);
+    return;
+  }
+  if (isApprovalsOutput(value)) {
+    printApprovals(value.approvals);
+    return;
+  }
   console.log(JSON.stringify(value, null, 2));
+}
+
+function printReplay(replay: NativeAgentReplay): void {
+  const summary = replay.summary;
+  console.log(`Run: ${summary.agentRunId}`);
+  console.log(`Status: ${summary.status}${summary.terminal ? " (terminal)" : ""}`);
+  console.log(`Workflow: ${summary.workflowId}  Attempt: ${summary.attempt}  Permission: ${summary.permissionProfile}`);
+  console.log(`Events: ${summary.eventCount}  Next seq: ${summary.nextSeq}`);
+  console.log(
+    `Approvals: pending=${summary.approvals.pending} approved=${summary.approvals.approved} denied=${summary.approvals.denied} total=${summary.approvals.total}`,
+  );
+  console.log(
+    `Hooks: allow=${summary.hooks.allow} ask=${summary.hooks.ask} block=${summary.hooks.block} deny=${summary.hooks.deny} audit_only=${summary.hooks.auditOnly} total=${summary.hooks.total}`,
+  );
+
+  if (summary.workflowSteps.length > 0) {
+    console.log("");
+    console.log("Workflow steps");
+    console.log("Seq\tPhase\tAction\tStep\tHook\tStatus");
+    for (const step of summary.workflowSteps) {
+      console.log([
+        step.seq,
+        tableCell(step.phase),
+        tableCell(step.action),
+        tableCell(step.id),
+        tableCell(step.hookDecision),
+        step.status,
+      ].join("\t"));
+    }
+  }
+
+  if (summary.approvals.latestPending) {
+    const approval = summary.approvals.latestPending;
+    console.log("");
+    console.log("Latest pending approval");
+    console.log(`ID: ${approval.id}`);
+    console.log(`Risk: ${approval.risk}`);
+    console.log(`Title: ${oneLine(approval.title)}`);
+    console.log(`Message: ${oneLine(approval.message)}`);
+    if (approval.expiresAt) console.log(`Expires: ${approval.expiresAt}`);
+  }
+
+  if (summary.hooks.blocking.length > 0) {
+    console.log("");
+    console.log("Blocking hook decisions");
+    console.log("Seq\tEvent\tDecision\tRule\tReason");
+    for (const hook of summary.hooks.blocking) {
+      console.log([
+        hook.seq,
+        tableCell(hook.eventName),
+        hook.decision,
+        tableCell(hook.ruleId),
+        tableCell(hook.reason, 96),
+      ].join("\t"));
+    }
+  }
+
+  if (summary.retries.retryOfAgentRunId || summary.retries.retryAgentRunIds.length > 0) {
+    console.log("");
+    console.log(`Retry source: ${summary.retries.retryOfAgentRunId ?? "-"}`);
+    console.log(`Retry children: ${summary.retries.retryAgentRunIds.length > 0 ? summary.retries.retryAgentRunIds.join(", ") : "-"}`);
+  }
+}
+
+function printApprovals(approvals: NativeAgentApproval[]): void {
+  if (approvals.length === 0) {
+    console.log("No approvals.");
+    return;
+  }
+  console.log("ID\tStatus\tRisk\tTitle\tRequestedBy\tResolvedBy");
+  for (const approval of approvals) {
+    console.log([
+      approval.id,
+      approval.status,
+      approval.risk,
+      tableCell(approval.title),
+      tableCell(approval.requestedBy),
+      tableCell(approval.resolvedBy),
+    ].join("\t"));
+  }
+}
+
+function isReplay(value: unknown): value is NativeAgentReplay {
+  return typeof value === "object"
+    && value !== null
+    && "summary" in value
+    && "events" in value
+    && "approvals" in value;
+}
+
+function isApprovalsOutput(value: unknown): value is { approvals: NativeAgentApproval[] } {
+  return typeof value === "object"
+    && value !== null
+    && "approvals" in value
+    && Array.isArray((value as { approvals?: unknown }).approvals);
+}
+
+function tableCell(value: unknown, maxLength = 48): string {
+  const text = oneLine(typeof value === "string" ? value : value === undefined || value === null ? "-" : String(value));
+  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1))}...` : text;
+}
+
+function oneLine(value: string): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  return text || "-";
 }
 
 function parseArgs(args: string[]): ParsedArgs {

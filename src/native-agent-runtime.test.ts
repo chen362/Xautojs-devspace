@@ -68,12 +68,13 @@ const workspaceStore = {
     /native-workflow-pack\/v1/,
   );
 
-  const startHook = store.hooks.find((hook) => String(hook.hookEventName) === "Start");
-  assert.equal((startHook?.payload.executionPlan as JsonObject | undefined)?.version, "native-workflow-pack/v1");
-  assert.equal(startHook?.payload.workflowId, "github-pr-review");
-  const stepHook = store.hooks.find((hook) => String(hook.hookEventName) === "WorkflowStep" && hook.payload.stepId === "normalize-event");
-  assert.equal(stepHook?.payload.stepPhase, "plan");
-  assert.equal(stepHook?.payload.stepAction, "observe");
+  const hookEvents = events.filter((event) => event.type === "run.hook.decision");
+  const startHook = hookEvents.find((event) => event.payload.hookEventName === "Start");
+  assert.equal(((startHook?.payload.hookPayload as JsonObject | undefined)?.executionPlan as JsonObject | undefined)?.version, "native-workflow-pack/v1");
+  assert.equal((startHook?.payload.hookPayload as JsonObject | undefined)?.workflowId, "github-pr-review");
+  const stepHook = hookEvents.find((event) => event.payload.hookEventName === "WorkflowStep" && (event.payload.hookPayload as JsonObject | undefined)?.stepId === "normalize-event");
+  assert.equal((stepHook?.payload.hookPayload as JsonObject | undefined)?.stepPhase, "plan");
+  assert.equal((stepHook?.payload.hookPayload as JsonObject | undefined)?.stepAction, "observe");
   assert.ok(store.hooks.some((hook) => hook.hookEventName === "PreToolUse"));
   assert.ok(store.hooks.some((hook) => hook.hookEventName === "PostToolUse"));
   assert.ok(store.hooks.some((hook) => hook.hookEventName === "Stop"));
@@ -157,9 +158,10 @@ const workspaceStore = {
   assert.equal(result.status, "failed");
   assert.equal(result.errorCode, "NATIVE_RUNTIME_HOOK_BLOCKED");
   assert.equal(store.toolCalls.size, 0);
-  const ruleHook = store.hooks.find((hook) => String(hook.result.ruleId) === "block-feature-plan-step");
-  assert.equal(String(ruleHook?.hookEventName), "WorkflowStep");
-  assert.equal(ruleHook?.payload.stepPhase, "plan");
+  const events = await store.readRunEvents({ agentRunId: run.id });
+  const ruleHook = events.find((event) => event.type === "run.hook.decision" && event.payload.ruleId === "block-feature-plan-step");
+  assert.equal(ruleHook?.payload.hookEventName, "WorkflowStep");
+  assert.equal((ruleHook?.payload.hookPayload as JsonObject | undefined)?.stepPhase, "plan");
 }
 
 {

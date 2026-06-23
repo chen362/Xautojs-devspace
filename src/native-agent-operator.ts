@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   isTerminalNativeAgentRunStatus,
+  type NativeAgentPermissionProfile,
   type NativeAgentRun,
   type NativeAgentRunEvent,
+  type NativeAgentRunStatus,
   type NativeAgentStore,
   type NativeAgentToolRisk,
+  type NativeRuntimeHookDecision,
 } from "./native-agent-store.js";
 import type { JsonObject, JsonValue } from "./postgres-automation-store.js";
 
@@ -27,10 +30,80 @@ export interface NativeAgentApproval {
   expiresAt?: string;
 }
 
+export interface NativeAgentReplayHookDecision {
+  seq: number;
+  eventName: string;
+  decision: NativeRuntimeHookDecision;
+  continue: boolean;
+  auditOnly: boolean;
+  blocking: boolean;
+  createdAt: string;
+  stage?: string;
+  workflowId?: string;
+  stepId?: string;
+  stepPhase?: string;
+  toolName?: string;
+  risk?: NativeAgentToolRisk;
+  ruleId?: string;
+  reason?: string;
+}
+
+export interface NativeAgentReplayWorkflowStep {
+  seq: number;
+  id: string;
+  title?: string;
+  phase?: string;
+  action?: string;
+  expectedOutput?: string;
+  acceptanceCriteria: string[];
+  suggestedTools: string[];
+  createdAt: string;
+  status: "recorded" | "blocked";
+  hookDecision?: NativeRuntimeHookDecision;
+  hookRuleId?: string;
+  hookReason?: string;
+  hookContinue?: boolean;
+  hookCreatedAt?: string;
+}
+
+export interface NativeAgentReplaySummary {
+  agentRunId: string;
+  workflowId: string;
+  status: NativeAgentRunStatus;
+  attempt: number;
+  permissionProfile: NativeAgentPermissionProfile;
+  terminal: boolean;
+  eventCount: number;
+  nextSeq: number;
+  approvals: {
+    total: number;
+    pending: number;
+    approved: number;
+    denied: number;
+    latestPending?: NativeAgentApproval;
+  };
+  hooks: {
+    total: number;
+    allow: number;
+    ask: number;
+    block: number;
+    deny: number;
+    auditOnly: number;
+    blocking: NativeAgentReplayHookDecision[];
+    latest: NativeAgentReplayHookDecision[];
+  };
+  workflowSteps: NativeAgentReplayWorkflowStep[];
+  retries: {
+    retryOfAgentRunId?: string;
+    retryAgentRunIds: string[];
+  };
+}
+
 export interface NativeAgentReplay {
   agentRunId: string;
   events: NativeAgentRunEvent[];
   approvals: NativeAgentApproval[];
+  summary: NativeAgentReplaySummary;
   nextSeq: number;
   terminal: boolean;
 }
@@ -190,13 +263,16 @@ export async function replayNativeAgentRun(
 ): Promise<NativeAgentReplay> {
   const run = await requireRun(store, input.agentRunId);
   const events = await readAllRunEvents(store, input.agentRunId);
+  const approvals = approvalsFromEvents(events);
   const nextSeq = events.length > 0 ? events[events.length - 1]!.seq + 1 : 1;
+  const terminal = isTerminalNativeAgentRunStatus(run.status);
   return {
     agentRunId: input.agentRunId,
     events,
-    approvals: approvalsFromEvents(events),
+    approvals,
+    summary: replaySummary(run, events, approvals, nextSeq, terminal),
     nextSeq,
-    terminal: isTerminalNativeAgentRunStatus(run.status),
+    terminal,
   };
 }
 
@@ -240,6 +316,130 @@ export async function createNativeAgentRetry(
   });
 
   return retry;
+}
+
+function replaySummary(
+  run: NativeAgentRun,
+  events: NativeAgentRunEvent[],
+  approvals: NativeAgentApproval[],
+  nextSeq: number,
+  terminal: boolean,
+): NativeAgentReplaySummary {
+  const hooks = hookDecisionsFromEvents(events);
+  const approvalSummary = approvalCounts(approvals);
+  return {
+    agentRunId: run.id,
+    workflowId: run.workflowId,
+    status: run.status,
+    attempt: run.attempt,
+    permissionProfile: run.permissionProfile,
+    terminal,
+    eventCount: events.length,
+    nextSeq,
+    approvals: approvalSummary,
+    hooks: hookSummary(hooks),
+    workflowSteps: workflowStepsFromEvents(events, hooks),
+    retries: retrySummary(events),
+  };
+}
+
+function approvalCounts(approvals: NativeAgentApproval[]): NativeAgentReplaySummary["approvals"] {
+  const pending = approvals.filter((approval) => approval.status === "pending");
+  return {
+    total: approvals.length,
+    pending: pending.length,
+    approved: approvals.filter((approval) => approval.status === "approved").length,
+    denied: approvals.filter((approval) => approval.status === "denied").length,
+    latestPending: pending.at(-1),
+  };
+}
+
+function hookSummary(hooks: NativeAgentReplayHookDecision[]): NativeAgentReplaySummary["hooks"] {
+  return {
+    total: hooks.length,
+    allow: hooks.filter((hook) => hook.decision === "allow").length,
+    ask: hooks.filter((hook) => hook.decision === "ask").length,
+    block: hooks.filter((hook) => hook.decision === "block").length,
+    deny: hooks.filter((hook) => hook.decision === "deny").length,
+    auditOnly: hooks.filter((hook) => hook.decision === "audit_only").length,
+    blocking: hooks.filter((hook) => hook.blocking),
+    latest: hooks.slice(-10),
+  };
+}
+
+function workflowStepsFromEvents(
+  events: NativeAgentRunEvent[],
+  hooks: NativeAgentReplayHookDecision[],
+): NativeAgentReplayWorkflowStep[] {
+  const workflowStepHooks = new Map<string, NativeAgentReplayHookDecision>();
+  for (const hook of hooks) {
+    if (hook.eventName !== "WorkflowStep" || !hook.stepId) continue;
+    workflowStepHooks.set(hook.stepId, hook);
+  }
+
+  return events
+    .filter((event) => event.type === "run.loop.step")
+    .map((event) => {
+      const id = stringJson(event.payload.id) ?? `step-${event.seq}`;
+      const hook = workflowStepHooks.get(id);
+      return {
+        seq: event.seq,
+        id,
+        title: stringJson(event.payload.title),
+        phase: stringJson(event.payload.phase),
+        action: stringJson(event.payload.action),
+        expectedOutput: stringJson(event.payload.expectedOutput),
+        acceptanceCriteria: stringArrayJson(event.payload.acceptanceCriteria),
+        suggestedTools: stringArrayJson(event.payload.suggestedTools),
+        createdAt: event.createdAt,
+        status: hook?.blocking ? "blocked" : "recorded",
+        hookDecision: hook?.decision,
+        hookRuleId: hook?.ruleId,
+        hookReason: hook?.reason,
+        hookContinue: hook?.continue,
+        hookCreatedAt: hook?.createdAt,
+      };
+    });
+}
+
+function hookDecisionsFromEvents(events: NativeAgentRunEvent[]): NativeAgentReplayHookDecision[] {
+  return events
+    .filter((event) => event.type === "run.hook.decision")
+    .map((event) => {
+      const hookPayload = objectJson(event.payload.hookPayload) ?? {};
+      const decision = nativeHookDecision(event.payload.decision);
+      const continueValue = booleanJson(event.payload.continue) ?? true;
+      return {
+        seq: event.seq,
+        eventName: stringJson(event.payload.hookEventName) ?? "unknown",
+        decision,
+        continue: continueValue,
+        auditOnly: booleanJson(event.payload.auditOnly) ?? decision === "audit_only",
+        blocking: !continueValue || decision === "block" || decision === "deny",
+        createdAt: event.createdAt,
+        stage: stringJson(hookPayload.stage),
+        workflowId: stringJson(hookPayload.workflowId),
+        stepId: stringJson(hookPayload.stepId ?? hookPayload.id),
+        stepPhase: stringJson(hookPayload.stepPhase ?? hookPayload.phase),
+        toolName: stringJson(hookPayload.toolName),
+        risk: nativeRiskOrUndefined(hookPayload.risk),
+        ruleId: stringJson(event.payload.ruleId),
+        reason: stringJson(event.payload.reason),
+      };
+    });
+}
+
+function retrySummary(events: NativeAgentRunEvent[]): NativeAgentReplaySummary["retries"] {
+  return {
+    retryOfAgentRunId: events
+      .filter((event) => event.type === "run.retry.source")
+      .map((event) => stringJson(event.payload.sourceAgentRunId))
+      .find(Boolean),
+    retryAgentRunIds: events
+      .filter((event) => event.type === "run.retry.created")
+      .map((event) => stringJson(event.payload.retryAgentRunId))
+      .filter((value): value is string => Boolean(value)),
+  };
 }
 
 function approvalsFromEvents(events: NativeAgentRunEvent[]): NativeAgentApproval[] {
@@ -345,12 +545,29 @@ function stringJson(value: JsonValue | undefined): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function booleanJson(value: JsonValue | undefined): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function stringArrayJson(value: JsonValue | undefined): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim())) : [];
+}
+
 function objectJson(value: JsonValue | undefined): JsonObject | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
 
 function nativeRisk(value: JsonValue | undefined): NativeAgentToolRisk {
   return value === "low" || value === "medium" || value === "high" ? value : "medium";
+}
+
+function nativeRiskOrUndefined(value: JsonValue | undefined): NativeAgentToolRisk | undefined {
+  return value === "low" || value === "medium" || value === "high" ? value : undefined;
+}
+
+function nativeHookDecision(value: JsonValue | undefined): NativeRuntimeHookDecision {
+  if (value === "allow" || value === "block" || value === "ask" || value === "deny" || value === "audit_only") return value;
+  return "audit_only";
 }
 
 function approvalDecision(value: JsonValue | undefined): NativeAgentApprovalDecision {
