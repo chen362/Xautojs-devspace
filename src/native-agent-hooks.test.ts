@@ -59,6 +59,12 @@ assert.throws(
 
 {
   const store = new InMemoryNativeAgentStore();
+  await store.createAgentRun({
+    id: "agent_run_hook_test",
+    owner: { tenantId: "tenant-a", userId: "alice" },
+    workflowId: "feature-dev",
+    status: "running",
+  });
   const hooks = defaultNativeRuntimeHooks({
     enabled: true,
     rules: [
@@ -80,6 +86,7 @@ assert.throws(
     payload: {
       stage: "before",
       workflowId: "feature-dev",
+      stepId: "plan",
       stepPhase: "plan",
     },
   });
@@ -87,9 +94,13 @@ assert.throws(
   assert.equal(result.decision, "block");
   assert.equal(result.continue, false);
   assert.equal(result.ruleId, "block-feature-plan");
-  assert.equal(String(store.hooks.at(-1)?.hookEventName), "WorkflowStep");
-  assert.equal(store.hooks.at(-1)?.decision, "block");
-  assert.equal(store.hooks.at(-1)?.result.ruleId, "block-feature-plan");
+  assert.equal(store.hooks.length, 0);
+  const events = await store.readRunEvents({ agentRunId: "agent_run_hook_test" });
+  const hookEvent = events.find((event) => event.type === "run.hook.decision");
+  assert.equal(hookEvent?.payload.hookEventName, "WorkflowStep");
+  assert.equal(hookEvent?.payload.decision, "block");
+  assert.equal(hookEvent?.payload.ruleId, "block-feature-plan");
+  assert.equal((hookEvent?.payload.hookPayload as { stepId?: string } | undefined)?.stepId, "plan");
 }
 
 {
