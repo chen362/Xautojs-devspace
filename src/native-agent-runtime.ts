@@ -41,11 +41,13 @@ export async function dispatchNativeAgentOnce(
   options: NativeAgentDispatchOptions = {},
   dependencies?: Partial<NativeAgentRuntimeDependencies>,
 ): Promise<NativeAgentDispatchResult> {
-  if (config.database.provider !== "postgres" && !dependencies?.store) {
+  const store = dependencies?.store ?? (
+    config.database.provider === "postgres" ? new PostgresNativeAgentStore(config.database) : undefined
+  );
+  if (!store) {
     throw new Error("Native agent dispatch requires DEVSPACE_DATABASE_PROVIDER=postgres.");
   }
 
-  const store = dependencies?.store ?? new PostgresNativeAgentStore(config.database);
   const workspaceStore = dependencies?.workspaceStore ?? createWorkspaceStore(config.database);
   const processManager = dependencies?.processManager ?? new NativeProcessManager();
   const hooks = dependencies?.hooks ?? defaultNativeRuntimeHooks();
@@ -77,7 +79,7 @@ export async function dispatchNativeAgentOnce(
     });
     const execution = buildNativeWorkflowExecution(workflowInput);
     const policy = evaluateNativeCommandPolicy({
-      permissionProfile: claimed.permissionProfile,
+      permissionProfile: execution.permissionProfile,
       argv: execution.argv,
       cwd: workspaceRoot,
       workspaceRoot,
@@ -89,6 +91,8 @@ export async function dispatchNativeAgentOnce(
       hookEventName: "PreToolUse",
       payload: {
         toolName: "process",
+        workflowId: execution.workflow.id,
+        permissionProfile: execution.permissionProfile,
         risk: policy.risk,
         decision: policy.decision,
         reason: policy.reason,
@@ -179,6 +183,16 @@ export async function dispatchNativeAgentOnce(
       id: toolCall.id,
       status: "succeeded",
       result: { processId, workflowId: execution.workflow.id },
+    });
+    await hooks.run(store, {
+      agentRunId: claimed.id,
+      hookEventName: "PostToolUse",
+      payload: {
+        toolName: "process",
+        toolCallId: toolCall.id,
+        workflowId: execution.workflow.id,
+        status: "succeeded",
+      },
     });
     await hooks.run(store, {
       agentRunId: claimed.id,
