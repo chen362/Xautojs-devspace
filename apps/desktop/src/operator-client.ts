@@ -54,18 +54,59 @@ export interface OperatorRun {
   errorMessage?: string;
 }
 
+export interface OperatorApproval {
+  id: string;
+  status: "pending" | "approved" | "denied";
+  title: string;
+  message: string;
+  risk: "low" | "medium" | "high";
+  requestedAt: string;
+  resolvedAt?: string;
+  requestedBy?: string;
+  resolvedBy?: string;
+  request: Record<string, unknown>;
+  response: Record<string, unknown>;
+}
+
 export interface OperatorApprovalSummary {
   total: number;
   pending: number;
   approved: number;
   denied: number;
-  latestPending?: {
-    id: string;
-    title: string;
-    message: string;
-    risk: "low" | "medium" | "high";
-    requestedAt: string;
-  };
+  latestPending?: OperatorApproval;
+}
+
+export interface OperatorHookDecision {
+  seq: number;
+  eventName: string;
+  decision: string;
+  continue: boolean;
+  auditOnly: boolean;
+  blocking: boolean;
+  createdAt: string;
+  stage?: string;
+  workflowId?: string;
+  stepId?: string;
+  stepPhase?: string;
+  toolName?: string;
+  risk?: string;
+  ruleId?: string;
+  reason?: string;
+}
+
+export interface OperatorWorkflowStep {
+  seq: number;
+  id: string;
+  title?: string;
+  phase?: string;
+  action?: string;
+  expectedOutput?: string;
+  acceptanceCriteria: string[];
+  suggestedTools: string[];
+  createdAt: string;
+  status: "recorded" | "blocked";
+  hookDecision?: string;
+  hookReason?: string;
 }
 
 export interface OperatorReplaySummary {
@@ -85,18 +126,10 @@ export interface OperatorReplaySummary {
     block: number;
     deny: number;
     auditOnly: number;
-    blocking: Array<Record<string, unknown>>;
-    latest: Array<Record<string, unknown>>;
+    blocking: OperatorHookDecision[];
+    latest: OperatorHookDecision[];
   };
-  workflowSteps: Array<{
-    seq: number;
-    id: string;
-    title?: string;
-    phase?: string;
-    status: "recorded" | "blocked";
-    hookDecision?: string;
-    hookReason?: string;
-  }>;
+  workflowSteps: OperatorWorkflowStep[];
   retries: {
     retryOfAgentRunId?: string;
     retryAgentRunIds: string[];
@@ -113,7 +146,7 @@ export interface OperatorReplayEvent {
 export interface OperatorReplay {
   agentRunId: string;
   events: OperatorReplayEvent[];
-  approvals: Array<Record<string, unknown>>;
+  approvals: OperatorApproval[];
   summary: OperatorReplaySummary;
   nextSeq: number;
   terminal: boolean;
@@ -135,6 +168,66 @@ export interface OperatorClientOptions {
   token?: string;
   selectedRunId?: string;
   fetchImpl?: FetchLike;
+}
+
+export interface OperatorActionOptions {
+  daemonUrl?: string;
+  token: string;
+  agentRunId: string;
+  fetchImpl?: FetchLike;
+}
+
+export interface DispatchOnceOptions {
+  daemonUrl?: string;
+  token: string;
+  workspaceRoot?: string;
+  workflowId?: string;
+  automationRunId?: string;
+  timeoutMs?: number;
+  approvalTimeoutMs?: number;
+  fetchImpl?: FetchLike;
+}
+
+export interface ReplayStreamOptions {
+  daemonUrl?: string;
+  token: string;
+  agentRunId: string;
+  afterSeq?: number;
+  pollMs?: number;
+  maxEvents?: number;
+  signal?: AbortSignal;
+  fetchImpl?: FetchLike;
+  onMessage: (message: ReplayStreamMessage) => void;
+}
+
+export interface ParsedSseMessage {
+  event: string;
+  data: unknown;
+}
+
+export interface ReplaySnapshotPayload {
+  agentRunId: string;
+  events: OperatorReplayEvent[];
+  approvals: OperatorApproval[];
+  summary: OperatorReplaySummary;
+  nextSeq: number;
+  terminal: boolean;
+  requestId?: string;
+}
+
+export interface ReplayDeltaPayload {
+  agentRunId: string;
+  event?: OperatorReplayEvent;
+  summary?: OperatorReplaySummary;
+  nextSeq?: number;
+  terminal?: boolean;
+  requestId?: string;
+  error?: OperatorApiErrorBody;
+}
+
+export interface ReplayStreamMessage {
+  event: string;
+  data: ReplaySnapshotPayload | ReplayDeltaPayload | Record<string, unknown>;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -193,16 +286,9 @@ export async function loadOperatorSnapshot(options: OperatorClientOptions = {}):
   }
 
   try {
-    const runsResult = await fetchJson<{ runs: OperatorRun[] }>(fetchImpl, operatorApiUrl(daemonUrl, "/runs?limit=50"), {
-      headers: authHeaders(token),
-    });
-    const runs = sortRuns(runsResult.body.runs ?? []);
+    const runs = await listOperatorRuns({ daemonUrl, token, fetchImpl });
     const selectedRunId = chooseRunId(runs, options.selectedRunId);
-    const replay = selectedRunId
-      ? (await fetchJson<{ replay: OperatorReplay }>(fetchImpl, operatorApiUrl(daemonUrl, `/runs/${encodeURIComponent(selectedRunId)}/replay`), {
-          headers: authHeaders(token),
-        })).body.replay
-      : undefined;
+    const replay = selectedRunId ? await fetchOperatorReplay({ daemonUrl, token, agentRunId: selectedRunId, fetchImpl }) : undefined;
 
     return {
       status: "connected",
@@ -226,6 +312,161 @@ export async function loadOperatorSnapshot(options: OperatorClientOptions = {}):
       readiness: readinessResult.body,
     });
   }
+}
+
+export async function listOperatorRuns(options: { daemonUrl?: string; token: string; fetchImpl?: FetchLike; limit?: number }): Promise<OperatorRun[]> {
+  const daemonUrl = normalizeDaemonUrl(options.daemonUrl);
+  const limit = options.limit ?? 50;
+  const result = await fetchJson<{ runs: OperatorRun[] }>(options.fetchImpl ?? fetch, operatorApiUrl(daemonUrl, `/runs?limit=${limit}`), {
+    headers: authHeaders(options.token),
+  });
+  return sortRuns(result.body.runs ?? []);
+}
+
+export async function fetchOperatorReplay(options: OperatorActionOptions): Promise<OperatorReplay> {
+  const daemonUrl = normalizeDaemonUrl(options.daemonUrl);
+  const result = await fetchJson<{ replay: OperatorReplay }>(options.fetchImpl ?? fetch, operatorApiUrl(daemonUrl, `/runs/${encodeURIComponent(options.agentRunId)}/replay`), {
+    headers: authHeaders(options.token),
+  });
+  return result.body.replay;
+}
+
+export async function resolveOperatorApproval(
+  options: OperatorActionOptions & { approvalId: string; decision: "approved" | "denied"; message?: string },
+): Promise<OperatorApproval> {
+  const daemonUrl = normalizeDaemonUrl(options.daemonUrl);
+  const result = await fetchJson<{ approval: OperatorApproval }>(options.fetchImpl ?? fetch, operatorApiUrl(daemonUrl, `/runs/${encodeURIComponent(options.agentRunId)}/approvals/${encodeURIComponent(options.approvalId)}/resolve`), {
+    method: "POST",
+    headers: authHeaders(options.token),
+    body: compactBody({
+      decision: options.decision,
+      resolvedBy: "xautojs-desktop",
+      message: options.message,
+    }),
+  });
+  return result.body.approval;
+}
+
+export async function resumeOperatorRun(options: OperatorActionOptions & { workspaceRoot?: string }): Promise<Record<string, unknown>> {
+  return operatorPost(options, `/runs/${encodeURIComponent(options.agentRunId)}/resume`, {
+    workspaceRoot: options.workspaceRoot,
+  });
+}
+
+export async function retryOperatorRun(options: OperatorActionOptions & { reason?: string }): Promise<Record<string, unknown>> {
+  return operatorPost(options, `/runs/${encodeURIComponent(options.agentRunId)}/retry`, {
+    reason: options.reason,
+  });
+}
+
+export async function cancelOperatorRun(options: OperatorActionOptions & { reason?: string }): Promise<Record<string, unknown>> {
+  return operatorPost(options, `/runs/${encodeURIComponent(options.agentRunId)}/cancel`, {
+    reason: options.reason,
+  });
+}
+
+export async function dispatchOperatorOnce(options: DispatchOnceOptions): Promise<Record<string, unknown>> {
+  const daemonUrl = normalizeDaemonUrl(options.daemonUrl);
+  const result = await fetchJson<Record<string, unknown>>(options.fetchImpl ?? fetch, operatorApiUrl(daemonUrl, "/dispatch/once"), {
+    method: "POST",
+    headers: authHeaders(options.token),
+    body: compactBody({
+      workspaceRoot: options.workspaceRoot,
+      workflowId: options.workflowId || "manual",
+      automationRunId: options.automationRunId,
+      timeoutMs: options.timeoutMs,
+      approvalTimeoutMs: options.approvalTimeoutMs,
+    }),
+  });
+  return result.body;
+}
+
+export async function streamOperatorReplay(options: ReplayStreamOptions): Promise<void> {
+  const daemonUrl = normalizeDaemonUrl(options.daemonUrl);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const query = new URLSearchParams({
+    afterSeq: String(options.afterSeq ?? 0),
+    pollMs: String(options.pollMs ?? 1_000),
+    maxEvents: String(options.maxEvents ?? 100),
+  });
+  const response = await fetchImpl(operatorApiUrl(daemonUrl, `/runs/${encodeURIComponent(options.agentRunId)}/stream?${query.toString()}`), {
+    headers: authHeaders(options.token),
+    signal: options.signal,
+  });
+  if (!response.ok) {
+    const body = await parseJsonBody<unknown>(response);
+    const error = errorBody(body);
+    throw new OperatorClientError(
+      response.status,
+      error?.code ?? `HTTP_${response.status}`,
+      error?.message ?? `Replay stream failed with HTTP ${response.status}.`,
+      error?.retryable ?? response.status >= 500,
+    );
+  }
+  if (!response.body) {
+    throw new OperatorClientError(0, "REPLAY_STREAM_UNAVAILABLE", "Replay stream response body is unavailable.", true);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffered += decoder.decode(chunk.value, { stream: true });
+      const parsed = parseSseMessages(buffered);
+      buffered = parsed.rest;
+      for (const message of parsed.messages) options.onMessage(message as ReplayStreamMessage);
+    }
+    buffered += decoder.decode();
+    const parsed = parseSseMessages(`${buffered}\n\n`);
+    for (const message of parsed.messages) options.onMessage(message as ReplayStreamMessage);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export function parseSseMessages(input: string): { messages: ParsedSseMessage[]; rest: string } {
+  const normalized = input.replaceAll("\r\n", "\n");
+  const parts = normalized.split("\n\n");
+  const rest = parts.pop() ?? "";
+  const messages = parts.map(parseSseBlock).filter((message): message is ParsedSseMessage => Boolean(message));
+  return { messages, rest };
+}
+
+export function mergeReplayStreamMessage(current: OperatorReplay | undefined, message: ReplayStreamMessage): OperatorReplay | undefined {
+  if (message.event === "replay.snapshot") {
+    const snapshot = message.data as ReplaySnapshotPayload;
+    return {
+      agentRunId: snapshot.agentRunId,
+      events: snapshot.events ?? [],
+      approvals: snapshot.approvals ?? [],
+      summary: snapshot.summary,
+      nextSeq: snapshot.nextSeq,
+      terminal: snapshot.terminal,
+    };
+  }
+  if (!current || message.event === "heartbeat" || message.event === "error") return current;
+
+  const delta = message.data as ReplayDeltaPayload;
+  const event = delta.event;
+  const events = event && !current.events.some((existing) => existing.seq === event.seq)
+    ? [...current.events, event].sort((left, right) => left.seq - right.seq)
+    : current.events;
+
+  return {
+    ...current,
+    events,
+    summary: delta.summary ?? current.summary,
+    nextSeq: delta.nextSeq ?? current.nextSeq,
+    terminal: delta.terminal ?? current.terminal,
+  };
+}
+
+export function pendingApproval(replay?: OperatorReplay): OperatorApproval | undefined {
+  return replay?.summary.approvals.latestPending
+    ?? replay?.approvals.find((approval) => approval.status === "pending");
 }
 
 export function normalizeDaemonUrl(value: string | undefined): string {
@@ -273,12 +514,24 @@ export function statusLabel(status: OperatorConnectionStatus): string {
   }
 }
 
-function authHeaders(token: string): HeadersInit {
+async function operatorPost(options: OperatorActionOptions, path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const daemonUrl = normalizeDaemonUrl(options.daemonUrl);
+  const result = await fetchJson<Record<string, unknown>>(options.fetchImpl ?? fetch, operatorApiUrl(daemonUrl, path), {
+    method: "POST",
+    headers: authHeaders(options.token),
+    body: compactBody(body),
+  });
+  return result.body;
+}
+
+function authHeaders(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` };
 }
 
 interface JsonFetchOptions {
-  headers?: HeadersInit;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: Record<string, unknown>;
   allowHttpError?: boolean;
 }
 
@@ -288,7 +541,12 @@ interface JsonFetchResult<T> {
 }
 
 async function fetchJson<T>(fetchImpl: FetchLike, url: string, options: JsonFetchOptions = {}): Promise<JsonFetchResult<T>> {
-  const response = await fetchImpl(url, { headers: options.headers });
+  const headers = options.body ? { ...options.headers, "content-type": "application/json" } : options.headers;
+  const response = await fetchImpl(url, {
+    method: options.method ?? "GET",
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
   const body = await parseJsonBody<T>(response);
   if (!response.ok && !options.allowHttpError) {
     const error = errorBody(body);
@@ -312,6 +570,31 @@ async function parseJsonBody<T>(response: Response): Promise<T> {
   }
 }
 
+function parseSseBlock(block: string): ParsedSseMessage | undefined {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const rawLine of block.split("\n")) {
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+  if (dataLines.length === 0) return undefined;
+  const dataText = dataLines.join("\n");
+  let data: unknown;
+  try {
+    data = JSON.parse(dataText);
+  } catch {
+    data = dataText;
+  }
+  return { event, data };
+}
+
 function errorBody(value: unknown): OperatorApiErrorBody | undefined {
   if (!value || typeof value !== "object") return undefined;
   const direct = value as { error?: OperatorApiErrorBody } & OperatorApiErrorBody;
@@ -321,6 +604,12 @@ function errorBody(value: unknown): OperatorApiErrorBody | undefined {
 function errorMessageFromBody(value: unknown): string | undefined {
   const error = errorBody(value);
   return error?.message ?? error?.code;
+}
+
+function compactBody(body: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(body).filter(([, value]) => value !== undefined && value !== null && value !== ""),
+  );
 }
 
 function snapshot(
