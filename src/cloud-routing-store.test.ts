@@ -118,6 +118,17 @@ await assertRoutingError(
 );
 
 await assertRoutingError(
+  () => store.resolveWorkspaceRoute({
+    owner,
+    workspaceId: "mcp_ws_a",
+    mcpSessionId: "mcp_session_a",
+    conversationSessionId: "conv_a",
+    toolCallId: " ",
+  }),
+  "INVALID_ROUTE_INPUT",
+);
+
+await assertRoutingError(
   () => store.bindWorkspaceRoute({
     owner: otherOwner,
     deviceId: "dev_a",
