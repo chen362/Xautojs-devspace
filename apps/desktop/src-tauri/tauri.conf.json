@@ -26,7 +26,26 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all"
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "msi",
+      "appimage",
+      "deb"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Local operator desktop for Xautojs native agent runs.",
+    "longDescription": "Xautojs Desktop is the local-first operator shell for native agent runs, approvals, replay, hook decisions, workflow steps, and packaging-safe local operator workflows.",
+    "copyright": "Copyright (c) Xautojs contributors.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }
