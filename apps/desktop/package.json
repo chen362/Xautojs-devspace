@@ -11,6 +11,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 4177",
     "test": "tsx src/operator-client.test.ts",
     "icons:generate": "node scripts/generate-icons.mjs",
+    "artifacts:checksums": "node scripts/write-artifact-checksums.mjs",
     "tauri:dev": "npm run icons:generate && tauri dev",
     "tauri:build": "npm run icons:generate && tauri build",
     "tauri:build:debug": "npm run icons:generate && tauri build --debug",
