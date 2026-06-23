@@ -10,8 +10,13 @@
     "build": "tsc -p tsconfig.json --noEmit && npm run build:web",
     "preview": "vite preview --host 127.0.0.1 --port 4177",
     "test": "tsx src/operator-client.test.ts",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "icons:generate": "node scripts/generate-icons.mjs",
+    "tauri:dev": "npm run icons:generate && tauri dev",
+    "tauri:build": "npm run icons:generate && tauri build",
+    "tauri:build:debug": "npm run icons:generate && tauri build --debug",
+    "bundle:macos": "npm run icons:generate && tauri build --bundles app,dmg",
+    "bundle:windows": "npm run icons:generate && tauri build --bundles nsis,msi",
+    "bundle:linux": "npm run icons:generate && tauri build --bundles appimage,deb"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.2",

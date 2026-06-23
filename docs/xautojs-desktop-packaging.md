@@ -1,0 +1,200 @@
+# Xautojs Desktop Packaging
+
+Last updated: 2026-06-23
+
+## Decision
+
+Xautojs Desktop is packaged as release artifacts, not as part of the CLI npm
+package.
+
+```text
+npm package: xautojs-devspace
+CLI binary: devspace
+Desktop app: Xautojs Desktop
+Desktop artifacts: GitHub Actions release artifacts first
+```
+
+This keeps the CLI install path small and avoids accidentally publishing desktop
+installers inside the npm package.
+
+## Current PR42 State
+
+PR42 establishes the packaging surface:
+
+```text
+Tauri bundle mode enabled
+stable app identifier: app.xautojs.desktop
+local app name: Xautojs Desktop
+macOS targets: app, dmg
+Windows targets: nsis, msi
+Linux targets: appimage, deb
+generated PNG, ICO, and ICNS icons
+manual GitHub Actions artifact workflow
+signing placeholders documented
+updater intentionally deferred
+```
+
+The workflow is an artifact build entrypoint. It is not yet an automatic public
+release publisher.
+
+## Icon Strategy
+
+The icon source lives in:
+
+```text
+apps/desktop/scripts/generate-icons.mjs
+```
+
+The script uses only Node standard library APIs and generates:
+
+```text
+apps/desktop/src-tauri/icons/32x32.png
+apps/desktop/src-tauri/icons/128x128.png
+apps/desktop/src-tauri/icons/128x128@2x.png
+apps/desktop/src-tauri/icons/icon.png
+apps/desktop/src-tauri/icons/icon.ico
+apps/desktop/src-tauri/icons/icon.icns
+```
+
+The generated files are produced before `tauri dev` and `tauri build`. They do not
+need to be committed as binary blobs.
+
+## Local Packaging Commands
+
+From the repository root:
+
+```bash
+npm ci
+npm --prefix apps/desktop install --no-package-lock
+npm run desktop:typecheck
+npm run desktop:test
+npm run desktop:bundle
+```
+
+Platform-specific bundle commands:
+
+```bash
+npm --prefix apps/desktop run bundle:macos
+npm --prefix apps/desktop run bundle:windows
+npm --prefix apps/desktop run bundle:linux
+```
+
+Run each platform command on the matching OS. Tauri does not provide a complete
+cross-platform installer build from one host.
+
+## GitHub Artifact Workflow
+
+Manual workflow:
+
+```text
+.github/workflows/desktop-release.yml
+```
+
+Trigger:
+
+```text
+Actions -> Desktop Release Artifacts -> Run workflow
+```
+
+Inputs:
+
+```text
+desktop_version: artifact label, default 0.1.0
+release_channel: unsigned-smoke or release-candidate
+```
+
+Artifacts are uploaded from:
+
+```text
+apps/desktop/src-tauri/target/release/bundle/**/*
+```
+
+Expected outputs:
+
+```text
+macOS: .app and .dmg bundle outputs
+Windows: NSIS installer and MSI installer outputs
+Linux: AppImage and Debian package outputs
+```
+
+## Signing Placeholders
+
+Unsigned artifacts are acceptable for smoke builds. Production promotion requires
+platform signing.
+
+macOS placeholders:
+
+```text
+XAUTOJS_APPLE_CERTIFICATE
+XAUTOJS_APPLE_CERTIFICATE_PASSWORD
+XAUTOJS_APPLE_SIGNING_IDENTITY
+XAUTOJS_APPLE_ID
+XAUTOJS_APPLE_PASSWORD
+XAUTOJS_APPLE_TEAM_ID
+```
+
+Windows placeholders:
+
+```text
+XAUTOJS_WINDOWS_CERTIFICATE
+XAUTOJS_WINDOWS_CERTIFICATE_PASSWORD
+```
+
+Linux packages are not code-signed in PR42. Repository package signing, checksum
+publication, and provenance attestations should be added before public stable
+release.
+
+## Updater Decision
+
+Do not enable Tauri updater artifacts in PR42.
+
+Reason:
+
+```text
+Updater channels must not exist before signed artifacts, stable release hosting,
+rollback policy, and update key handling are defined.
+```
+
+Future updater PR requirements:
+
+```text
+configure Tauri updater plugin
+create and store updater signing keys outside the repository
+publish latest.json or channel metadata from a trusted release host
+separate stable, beta, and nightly channels
+document rollback and revoked update behavior
+verify update signatures in a packaged smoke test
+```
+
+## Production Release Gates
+
+Before calling a desktop build production-ready, require:
+
+```text
+apps/desktop dependency lock strategy
+apps/desktop/src-tauri/Cargo.lock committed
+macOS signing and notarization configured
+Windows signing configured
+checksums generated for every artifact
+artifact provenance or attestation configured
+production smoke on a clean macOS, Windows, and Linux machine
+updater decision implemented or explicitly disabled in release notes
+```
+
+## Smoke Checklist
+
+For every release artifact:
+
+```text
+install or open the bundle
+start node dist/cli.js operator serve on 127.0.0.1
+connect Xautojs Desktop to the local daemon
+verify token missing state
+verify daemon unavailable state
+verify connected empty state
+select a run and load replay
+approve or deny a pending approval when available
+verify hook decision and workflow step cards render
+retry or cancel a disposable run
+close and reopen the app
+```
