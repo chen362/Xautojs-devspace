@@ -31,6 +31,7 @@ workflow packs with stable plan/execute/verify/handoff steps
 event-sourced approval request/resolve records
 terminal-run retry creation
 operator-focused replay summaries
+browser operator console
 operator HTTP APIs
 operator CLI commands
 ```
@@ -500,6 +501,23 @@ and whether the step was recorded or blocked.
 denied progress. `summary.hooks.latest[]` gives recent hook decisions for quick
 inspection without reading the entire raw event stream.
 
+## Operator Console
+
+The browser operator console is served at:
+
+```text
+/operator
+```
+
+It is a first-party UI over the operator API. It shows run queue state, replay
+summary, raw event timeline, pending approvals, hook decisions, workflow steps,
+retry links, resume/retry/cancel controls, and manual dispatch.
+
+The console authenticates by exchanging `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN`
+for a signed HttpOnly session cookie. The token is not stored in browser local
+storage. See [Native Agent Operator Console](native-agent-operator-console.md)
+for the full browser workflow and smoke checks.
+
 ## Operator API
 
 The operator API is mounted under:
@@ -508,17 +526,52 @@ The operator API is mounted under:
 /api/native-agent
 ```
 
-It requires:
+It accepts either:
 
 ```text
 Authorization: Bearer <DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN>
+```
+
+or the signed operator session cookie minted by:
+
+```text
+POST /api/native-agent/operator/session
 ```
 
 Operator APIs require Postgres mode with ready migrations. In local source
 checkouts, use `node dist/cli.js db status --json` and `node dist/cli.js db migrate`
 to prepare the schema.
 
-Available endpoints:
+Session endpoints:
+
+```text
+POST   /api/native-agent/operator/session
+GET    /api/native-agent/operator/session
+DELETE /api/native-agent/operator/session
+```
+
+Session login request:
+
+```json
+{
+  "token": "replace-with-operator-token"
+}
+```
+
+Stable session response:
+
+```json
+{
+  "session": {
+    "authenticated": true,
+    "method": "session",
+    "expiresAt": "2026-06-23T12:00:00.000Z"
+  },
+  "requestId": "..."
+}
+```
+
+Run and dispatch endpoints:
 
 ```text
 GET  /api/native-agent/runs
@@ -630,7 +683,7 @@ proxying /v1/responses as the core runtime
 general remote code execution outside allowed roots
 raw webhook payload execution
 multi-machine worker scheduling
-full browser UI for workflow and source policy editing
+browser UI for workflow pack and source policy editing
 ```
 
 ## Verification
@@ -646,6 +699,7 @@ src/native-agent-store.test.ts
 src/native-agent-operator.test.ts
 src/native-agent-runtime.test.ts
 src/native-agent-api.test.ts
+src/operator-console-ui.test.ts
 ```
 
 Run:
