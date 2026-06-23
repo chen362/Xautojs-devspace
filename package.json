@@ -2,6 +2,14 @@
   "name": "xautojs-devspace",
   "version": "1.0.1",
   "description": "Self-hosted MCP workspace bridge and native local agent runtime for ChatGPT.",
+  "homepage": "https://github.com/chen362/Xautojs-devspace#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chen362/Xautojs-devspace.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chen362/Xautojs-devspace/issues"
+  },
   "type": "module",
   "main": "dist/server.js",
   "engines": {
