@@ -13,6 +13,7 @@ import {
   resolveNativeAgentApproval,
   type NativeAgentApprovalDecision,
 } from "./native-agent-operator.js";
+import type { JsonObject, JsonValue } from "./postgres-automation-store.js";
 
 const JSON_BODY_LIMIT = "64kb";
 const ROUTE_PREFIX = "/api/native-agent";
@@ -170,7 +171,9 @@ export function registerNativeAgentApiRoutes(
         title: bodyString(request.body, "title") ?? "Approval requested",
         message: bodyString(request.body, "message") ?? "Native agent approval requested.",
         risk: bodyRisk(request.body),
+        request: bodyJsonObject(request.body, "request"),
         requestedBy: bodyString(request.body, "requestedBy"),
+        expiresAt: bodyString(request.body, "expiresAt"),
       });
       response.status(201).json({ approval, requestId });
     } catch (error) {
@@ -187,9 +190,26 @@ export function registerNativeAgentApiRoutes(
         agentRunId: routeParam(request.params.agentRunId),
         approvalId: routeParam(request.params.approvalId),
         decision: bodyApprovalDecision(request.body),
+        response: bodyJsonObject(request.body, "response") ?? responseFromMessage(request.body),
         resolvedBy: bodyString(request.body, "resolvedBy"),
       });
       response.json({ approval, requestId });
+    } catch (error) {
+      sendError(response, requestId, error);
+    }
+  });
+
+  app.post(`${ROUTE_PREFIX}/runs/:agentRunId/resume`, jsonBody, async (request, response) => {
+    const requestId = requestIdFor(request, response);
+    try {
+      requireOperator(request, operatorToken);
+      const result = await dispatchNativeAgentRunOnce(config, {
+        agentRunId: routeParam(request.params.agentRunId),
+        workspaceRoot: bodyString(request.body, "workspaceRoot"),
+        timeoutMs: bodyNumber(request.body, "timeoutMs"),
+        approvalTimeoutMs: bodyNumber(request.body, "approvalTimeoutMs"),
+      }, store ? { store } : undefined);
+      response.status(result.claimed ? 202 : 200).json({ ...result, requestId });
     } catch (error) {
       sendError(response, requestId, error);
     }
@@ -204,6 +224,7 @@ export function registerNativeAgentApiRoutes(
         workspaceRoot: bodyString(request.body, "workspaceRoot"),
         workflowId: bodyString(request.body, "workflowId"),
         timeoutMs: bodyNumber(request.body, "timeoutMs"),
+        approvalTimeoutMs: bodyNumber(request.body, "approvalTimeoutMs"),
       });
       response.status(result.claimed ? 202 : 200).json({ ...result, requestId });
     } catch (error) {
@@ -221,6 +242,7 @@ export function registerNativeAgentApiRoutes(
         agentRunId,
         workspaceRoot: bodyString(request.body, "workspaceRoot"),
         timeoutMs: bodyNumber(request.body, "timeoutMs"),
+        approvalTimeoutMs: bodyNumber(request.body, "approvalTimeoutMs"),
       }, store ? { store } : undefined);
       response.status(result.claimed ? 202 : 200).json({ ...result, requestId });
     } catch (error) {
@@ -322,6 +344,17 @@ function bodyNumber(body: unknown, key: string): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function bodyJsonObject(body: unknown, key: string): JsonObject | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const value = (body as Record<string, unknown>)[key];
+  return value && typeof value === "object" && !Array.isArray(value) && isJsonValue(value) ? value as JsonObject : undefined;
+}
+
+function responseFromMessage(body: unknown): JsonObject | undefined {
+  const message = bodyString(body, "message");
+  return message ? { message } : undefined;
+}
+
 function bodyRisk(body: unknown): NativeAgentToolRisk | undefined {
   const value = bodyString(body, "risk");
   if (!value) return undefined;
@@ -333,4 +366,13 @@ function bodyApprovalDecision(body: unknown): NativeAgentApprovalDecision {
   const value = bodyString(body, "decision");
   if (value === "approved" || value === "denied") return value;
   throw new NativeAgentApiError(400, "INVALID_APPROVAL_DECISION", "Approval decision must be approved or denied.", false);
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null) return true;
+  if (typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).every(isJsonValue);
+  return false;
 }

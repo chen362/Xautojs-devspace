@@ -108,6 +108,14 @@ export interface FinishAgentRunInput {
   errorMessage?: string;
 }
 
+export interface UpdateAgentRunStatusInput {
+  agentRunId: string;
+  status: Extract<NativeAgentRunStatus, "queued" | "claiming" | "running" | "waiting_input">;
+  result?: JsonObject;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
 export interface ReadAgentRunEventsInput {
   agentRunId: string;
   afterSeq?: number;
@@ -132,6 +140,7 @@ export interface NativeAgentStore {
   }): Promise<NativeAgentRunEvent>;
   readRunEvents(input: ReadAgentRunEventsInput): Promise<NativeAgentRunEvent[]>;
   finishAgentRun(input: FinishAgentRunInput): Promise<NativeAgentRun | undefined>;
+  setAgentRunStatus(input: UpdateAgentRunStatusInput): Promise<NativeAgentRun | undefined>;
   cancelAgentRun(input: { agentRunId: string; reason?: string }): Promise<NativeAgentRun | undefined>;
   recordToolCallStart(input: {
     id?: string;
@@ -596,6 +605,66 @@ export class PostgresNativeAgentStore implements NativeAgentStore {
     return run;
   }
 
+  async setAgentRunStatus(input: UpdateAgentRunStatusInput): Promise<NativeAgentRun | undefined> {
+    const now = new Date().toISOString();
+    const result = await this.query<AgentRunRow>({
+      text: `
+        update agent_runs
+        set status = $2,
+            result = case when $3::jsonb is null then result else $3::jsonb end,
+            error_code = $4,
+            error_message = $5,
+            claimed_at = case
+              when $2 in ('claiming', 'running', 'waiting_input') then coalesce(claimed_at, $6::timestamptz)
+              else claimed_at
+            end,
+            started_at = case
+              when $2 in ('running', 'waiting_input') then coalesce(started_at, $6::timestamptz)
+              else started_at
+            end,
+            updated_at = $6::timestamptz
+        where id = $1
+          and status not in ('succeeded', 'failed', 'cancelled', 'timed_out')
+        returning
+          id, tenant_id, user_id, automation_run_id, workspace_session_id, workflow_id,
+          status, attempt, permission_profile, input, result, error_code, error_message,
+          created_at, claimed_at, started_at, finished_at, updated_at
+      `,
+      values: [
+        input.agentRunId,
+        input.status,
+        input.result ? stringifyJson(input.result) : null,
+        input.errorCode ?? null,
+        input.errorMessage ?? null,
+        now,
+      ],
+    });
+    const row = result.rows[0];
+    if (!row) return undefined;
+
+    const run = rowToAgentRun(row);
+    if (run.automationRunId) {
+      await this.query({
+        text: `
+          update automation_runs
+          set status = $2,
+              result = $3::jsonb,
+              error_code = $4,
+              error_message = $5
+          where id = $1
+        `,
+        values: [
+          run.automationRunId,
+          automationStatusForAgentStatus(run.status),
+          stringifyJson(run.result),
+          run.errorCode ?? null,
+          run.errorMessage ?? null,
+        ],
+      });
+    }
+    return run;
+  }
+
   async cancelAgentRun(input: { agentRunId: string; reason?: string }): Promise<NativeAgentRun | undefined> {
     await this.appendRunEvent({
       agentRunId: input.agentRunId,
@@ -848,6 +917,29 @@ export class InMemoryNativeAgentStore implements NativeAgentStore {
         automationRun.errorCode = run.errorCode;
         automationRun.errorMessage = run.errorMessage;
         automationRun.finishedAt = now;
+      }
+    }
+    return run;
+  }
+
+  async setAgentRunStatus(input: UpdateAgentRunStatusInput): Promise<NativeAgentRun | undefined> {
+    const run = this.agentRuns.get(input.agentRunId);
+    if (!run || isTerminalNativeAgentRunStatus(run.status)) return undefined;
+    const now = new Date().toISOString();
+    run.status = input.status;
+    run.result = input.result ?? run.result;
+    run.errorCode = input.errorCode;
+    run.errorMessage = input.errorMessage;
+    if (input.status === "claiming" || input.status === "running" || input.status === "waiting_input") run.claimedAt ??= now;
+    if (input.status === "running" || input.status === "waiting_input") run.startedAt ??= now;
+    run.updatedAt = now;
+    if (run.automationRunId) {
+      const automationRun = this.automationRuns.get(run.automationRunId);
+      if (automationRun) {
+        automationRun.status = automationStatusForAgentStatus(run.status);
+        automationRun.result = run.result;
+        automationRun.errorCode = run.errorCode;
+        automationRun.errorMessage = run.errorMessage;
       }
     }
     return run;

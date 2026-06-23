@@ -19,6 +19,13 @@ const run = await store.createAgentRun({
   input: { text: "inspect workspace" },
 });
 await store.appendRunEvent({ agentRunId: run.id, type: "run.started", payload: { workflowId: "manual" } });
+await store.createAgentRun({
+  id: "agent_run_resume_api",
+  owner: { tenantId: "tenant-a", userId: "alice" },
+  workflowId: "feature-dev",
+  status: "queued",
+  input: { text: "resume through operator API" },
+});
 
 const app = express();
 const registration = registerNativeAgentApiRoutes(app, config, { store, operatorToken: "operator-token" });
@@ -39,7 +46,7 @@ try {
     });
     const body = await response.json() as { runs: Array<{ id: string }>; requestId: string };
     assert.equal(response.status, 200);
-    assert.equal(body.runs[0]?.id, "agent_run_api");
+    assert.ok(body.runs.some((entry) => entry.id === "agent_run_api"));
     assert.ok(body.requestId);
   }
 
@@ -71,11 +78,20 @@ try {
         authorization: "Bearer operator-token",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ title: "Run tests", message: "Allow npm test", risk: "medium", requestedBy: "api-test" }),
+      body: JSON.stringify({
+        title: "Run tests",
+        message: "Allow npm test",
+        risk: "medium",
+        requestedBy: "api-test",
+        request: { command: "npm test" },
+        expiresAt: "2026-06-23T01:00:00.000Z",
+      }),
     });
-    const body = await response.json() as { approval: { id: string; status: string } };
+    const body = await response.json() as { approval: { id: string; status: string; request: { command: string }; expiresAt: string } };
     assert.equal(response.status, 201);
     assert.equal(body.approval.status, "pending");
+    assert.equal(body.approval.request.command, "npm test");
+    assert.equal(body.approval.expiresAt, "2026-06-23T01:00:00.000Z");
     approvalId = body.approval.id;
   }
 
@@ -86,13 +102,14 @@ try {
         authorization: "Bearer operator-token",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ decision: "approved", resolvedBy: "owner" }),
+      body: JSON.stringify({ decision: "approved", resolvedBy: "owner", response: { message: "ok" } }),
     });
-    const body = await response.json() as { approval: { id: string; status: string; resolvedBy: string } };
+    const body = await response.json() as { approval: { id: string; status: string; resolvedBy: string; response: { message: string } } };
     assert.equal(response.status, 200);
     assert.equal(body.approval.id, approvalId);
     assert.equal(body.approval.status, "approved");
     assert.equal(body.approval.resolvedBy, "owner");
+    assert.equal(body.approval.response.message, "ok");
   }
 
   {
@@ -103,6 +120,22 @@ try {
     assert.equal(response.status, 200);
     assert.equal(body.replay.approvals[0]?.status, "approved");
     assert.ok(body.replay.events.some((event) => event.type === "run.approval.requested"));
+  }
+
+  {
+    const response = await fetch(`${baseUrl}/api/native-agent/runs/agent_run_resume_api/resume`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer operator-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ workspaceRoot: process.cwd(), timeoutMs: 5_000, approvalTimeoutMs: 60_000 }),
+    });
+    const body = await response.json() as { status: string; agentRun: { id: string; status: string } };
+    assert.equal(response.status, 202);
+    assert.equal(body.status, "succeeded");
+    assert.equal(body.agentRun.id, "agent_run_resume_api");
+    assert.equal(body.agentRun.status, "succeeded");
   }
 
   {

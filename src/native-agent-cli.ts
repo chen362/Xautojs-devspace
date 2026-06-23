@@ -8,13 +8,13 @@ import {
   replayNativeAgentRun,
   requestNativeAgentApproval,
   resolveNativeAgentApproval,
-  type NativeAgentApprovalDecision,
 } from "./native-agent-operator.js";
 import { listNativeWorkflowPacks } from "./native-agent-workflows.js";
 
 const ACTIONS = new Set([
   "dispatch-once",
   "dispatch-run",
+  "resume",
   "list",
   "events",
   "replay",
@@ -30,6 +30,7 @@ const ACTIONS = new Set([
 type AgentAction =
   | "dispatch-once"
   | "dispatch-run"
+  | "resume"
   | "list"
   | "events"
   | "replay"
@@ -50,7 +51,7 @@ interface ParsedArgs {
 export async function runNativeAgentCommand(args: string[], config: ServerConfig): Promise<void> {
   const [action, ...rest] = args;
   if (!isAgentAction(action)) {
-    throw new Error("Usage: devspace agent <dispatch-once|dispatch-run|list|events|replay|cancel|retry|approvals|request-approval|approve|deny|workflows> [...options]");
+    throw new Error("Usage: devspace agent <dispatch-once|dispatch-run|resume|list|events|replay|cancel|retry|approvals|request-approval|approve|deny|workflows> [...options]");
   }
 
   const parsed = parseArgs(rest);
@@ -73,15 +74,18 @@ export async function runNativeAgentCommand(args: string[], config: ServerConfig
         workspaceRoot: optionalString(parsed.flags, "workspace-root"),
         workflowId: optionalString(parsed.flags, "workflow-id"),
         timeoutMs: optionalNumber(parsed.flags, "timeout-ms"),
+        approvalTimeoutMs: optionalNumber(parsed.flags, "approval-timeout-ms"),
       });
       printOutput(result, json);
       return;
     }
-    case "dispatch-run": {
+    case "dispatch-run":
+    case "resume": {
       const result = await dispatchNativeAgentRunOnce(config, {
         agentRunId: requiredString(parsed.flags, "id"),
         workspaceRoot: optionalString(parsed.flags, "workspace-root"),
         timeoutMs: optionalNumber(parsed.flags, "timeout-ms"),
+        approvalTimeoutMs: optionalNumber(parsed.flags, "approval-timeout-ms"),
       });
       printOutput(result, json);
       return;
@@ -170,6 +174,7 @@ export async function runNativeAgentCommand(args: string[], config: ServerConfig
           message: requiredString(parsed.flags, "message"),
           risk: optionalRisk(parsed.flags),
           requestedBy: optionalString(parsed.flags, "requested-by"),
+          expiresAt: optionalString(parsed.flags, "expires-at"),
         });
         printOutput({ approval }, json);
       } finally {

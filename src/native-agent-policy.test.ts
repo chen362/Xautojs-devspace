@@ -54,7 +54,20 @@ assert.equal(classifyNativeToolRisk("custom", { command: "rm -rf dist" }), "high
     cwd: workspaceRoot,
     workspaceRoot,
   });
-  assert.equal(policy.decision, "block");
+  assert.equal(policy.decision, "ask");
+  assert.equal(policy.risk, "high");
+  assert.match(policy.approvalTitle ?? "", /high-risk/i);
+}
+
+{
+  const policy = evaluateNativeCommandPolicy({
+    permissionProfile: "workspace_write",
+    argv: ["curl", "https://example.com"],
+    cwd: workspaceRoot,
+    workspaceRoot,
+    network: true,
+  });
+  assert.equal(policy.decision, "ask");
   assert.equal(policy.risk, "high");
 }
 
