@@ -12,6 +12,7 @@ interface StoredWorkspaceSessionRow {
   id: string;
   tenant_id: string;
   user_id: string;
+  mcp_session_id: string | null;
   root: string;
   status: string;
   mode: string;
@@ -46,22 +47,28 @@ const runner: PostgresQueryRunner = async <Row>(
       id: stringValue(query.values[0]),
       tenant_id: stringValue(query.values[1]),
       user_id: stringValue(query.values[2]),
-      root: stringValue(query.values[3]),
-      status: stringValue(query.values[4]),
-      mode: stringValue(query.values[5]),
-      source_root: nullableStringValue(query.values[6]),
-      base_ref: nullableStringValue(query.values[7]),
-      base_sha: nullableStringValue(query.values[8]),
-      managed: Boolean(query.values[9]),
-      created_at: stringValue(query.values[10]),
-      last_used_at: stringValue(query.values[11]),
+      mcp_session_id: nullableStringValue(query.values[3]),
+      root: stringValue(query.values[4]),
+      status: stringValue(query.values[5]),
+      mode: stringValue(query.values[6]),
+      source_root: nullableStringValue(query.values[7]),
+      base_ref: nullableStringValue(query.values[8]),
+      base_sha: nullableStringValue(query.values[9]),
+      managed: Boolean(query.values[10]),
+      created_at: stringValue(query.values[11]),
+      last_used_at: stringValue(query.values[12]),
     });
     return { rows: [], rowCount: 1 };
   }
 
   if (normalizedSql.startsWith("delete from workspace_sessions where id")) {
     const id = stringValue(query.values[0]);
-    if (!sessionMatchesOwner(id, stringValue(query.values[1]), stringValue(query.values[2]))) {
+    if (!sessionMatchesOwner(
+      id,
+      stringValue(query.values[1]),
+      stringValue(query.values[2]),
+      nullableStringValue(query.values[3]),
+    )) {
       return { rows: [], rowCount: 0 };
     }
 
@@ -80,6 +87,7 @@ const runner: PostgresQueryRunner = async <Row>(
       stringValue(query.values[0]),
       stringValue(query.values[1]),
       stringValue(query.values[2]),
+      nullableStringValue(query.values[3]),
     );
     if (!ownsSession) return { rows: [], rowCount: 0 };
 
@@ -95,17 +103,22 @@ const runner: PostgresQueryRunner = async <Row>(
 
   if (normalizedSql.startsWith("insert into loaded_agent_files")) {
     const workspaceSessionId = stringValue(query.values[0]);
-    if (!sessionMatchesOwner(workspaceSessionId, stringValue(query.values[1]), stringValue(query.values[2]))) {
+    if (!sessionMatchesOwner(
+      workspaceSessionId,
+      stringValue(query.values[1]),
+      stringValue(query.values[2]),
+      nullableStringValue(query.values[3]),
+    )) {
       return { rows: [], rowCount: 0 };
     }
 
     const nextRow: StoredLoadedAgentFileRow = {
       workspace_session_id: workspaceSessionId,
-      path: stringValue(query.values[3]),
-      content_hash: stringValue(query.values[4]),
-      content: stringValue(query.values[5]),
-      loaded_at: stringValue(query.values[6]),
-      last_seen_at: stringValue(query.values[7]),
+      path: stringValue(query.values[4]),
+      content_hash: stringValue(query.values[5]),
+      content: stringValue(query.values[6]),
+      loaded_at: stringValue(query.values[7]),
+      last_seen_at: stringValue(query.values[8]),
     };
     const existingIndex = agentFileRows.findIndex(
       (row) => row.workspace_session_id === nextRow.workspace_session_id && row.path === nextRow.path,
@@ -120,7 +133,12 @@ const runner: PostgresQueryRunner = async <Row>(
       .filter(
         (row) =>
           row.workspace_session_id === query.values[0] &&
-          sessionMatchesOwner(row.workspace_session_id, stringValue(query.values[1]), stringValue(query.values[2])),
+          sessionMatchesOwner(
+            row.workspace_session_id,
+            stringValue(query.values[1]),
+            stringValue(query.values[2]),
+            nullableStringValue(query.values[3]),
+          ),
       )
       .sort((a, b) => a.path.localeCompare(b.path));
     return { rows: matches as Row[], rowCount: matches.length };
@@ -131,7 +149,8 @@ const runner: PostgresQueryRunner = async <Row>(
       (row) =>
         row.id === query.values[0] &&
         row.tenant_id === query.values[1] &&
-        row.user_id === query.values[2],
+        row.user_id === query.values[2] &&
+        (query.values[3] === null || row.mcp_session_id === query.values[3]),
     );
     return { rows: matches as Row[], rowCount: matches.length };
   }
@@ -142,9 +161,10 @@ const runner: PostgresQueryRunner = async <Row>(
       if (
         row.id === query.values[0] &&
         row.tenant_id === query.values[1] &&
-        row.user_id === query.values[2]
+        row.user_id === query.values[2] &&
+        (query.values[3] === null || row.mcp_session_id === query.values[3])
       ) {
-        row.last_used_at = stringValue(query.values[3]);
+        row.last_used_at = stringValue(query.values[4]);
         rowCount += 1;
       }
     }
@@ -174,11 +194,14 @@ const bob = createOidcIdentity({
   subject: "bob",
   scopes: ["devspace"],
 });
+const mcpSessionA = { mcpSessionId: "mcp_pg_a" };
+const mcpSessionB = { mcpSessionId: "mcp_pg_b" };
 
 const created = await store.createSession({
   owner: alice,
   id: "ws_postgres_1",
   root: "/repo",
+  mcpSessionId: mcpSessionA.mcpSessionId,
   mode: "worktree",
   sourceRoot: "/source",
   baseRef: "main",
@@ -189,30 +212,36 @@ const created = await store.createSession({
 assert.equal(created.id, "ws_postgres_1");
 assert.equal(created.tenantId, alice.tenantId);
 assert.equal(created.userId, alice.userId);
+assert.equal(created.mcpSessionId, mcpSessionA.mcpSessionId);
 assert.equal(created.mode, "worktree");
 assert.equal(created.managed, true);
 assert.match(calls[0]?.text ?? "", /insert into workspace_sessions/i);
 assert.equal(calls[0]?.values[0], "ws_postgres_1");
+assert.equal(calls[0]?.values[3], mcpSessionA.mcpSessionId);
 assert.equal(calls[0]?.text.includes("ws_postgres_1"), false);
 
 const loaded = await store.getSession("ws_postgres_1", alice);
 assert.equal(loaded?.id, "ws_postgres_1");
+assert.equal(loaded?.mcpSessionId, mcpSessionA.mcpSessionId);
 assert.equal(loaded?.sourceRoot, "/source");
 assert.equal(loaded?.baseRef, "main");
 assert.equal(loaded?.baseSha, "abc123");
 assert.equal(loaded?.managed, true);
 
+assert.equal((await store.getSession("ws_postgres_1", alice, mcpSessionA))?.id, "ws_postgres_1");
+assert.equal(await store.getSession("ws_postgres_1", alice, mcpSessionB), undefined);
 assert.equal(await store.getSession("ws_postgres_1", bob), undefined);
 
 await store.saveLoadedAgentFiles({
   owner: alice,
   workspaceSessionId: "ws_postgres_1",
+  scope: mcpSessionA,
   files: [
     { path: "/repo/AGENTS.md", content: "root instructions\n" },
     { path: "/repo/nested/AGENTS.md", content: "nested instructions\n" },
   ],
 });
-const loadedAgentFiles = await store.getLoadedAgentFiles("ws_postgres_1", alice);
+const loadedAgentFiles = await store.getLoadedAgentFiles("ws_postgres_1", alice, mcpSessionA);
 assert.deepEqual(
   loadedAgentFiles.map((file) => ({ path: file.path, content: file.content })),
   [
@@ -223,6 +252,7 @@ assert.deepEqual(
 assert.equal(loadedAgentFiles[0]?.contentHash, hashContent("root instructions\n"));
 assert.match(loadedAgentFiles[0]?.loadedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
 assert.deepEqual(await store.getLoadedAgentFiles("ws_postgres_1", bob), []);
+assert.deepEqual(await store.getLoadedAgentFiles("ws_postgres_1", alice, mcpSessionB), []);
 
 await store.saveLoadedAgentFiles({
   owner: bob,
@@ -231,11 +261,22 @@ await store.saveLoadedAgentFiles({
 });
 assert.equal(agentFileRows.length, 2);
 
+await store.saveLoadedAgentFiles({
+  owner: alice,
+  workspaceSessionId: "ws_postgres_1",
+  scope: mcpSessionB,
+  files: [{ path: "/repo/WRONG_SESSION.md", content: "wrong session instructions\n" }],
+});
+assert.equal(agentFileRows.length, 2);
+
 await store.touchSession("ws_postgres_1", bob);
 assert.equal(rows[0]?.last_used_at, created.lastUsedAt);
 
-await store.touchSession("ws_postgres_1", alice);
-const lastTouchValue = calls.at(-1)?.values[3];
+await store.touchSession("ws_postgres_1", alice, mcpSessionB);
+assert.equal(rows[0]?.last_used_at, created.lastUsedAt);
+
+await store.touchSession("ws_postgres_1", alice, mcpSessionA);
+const lastTouchValue = calls.at(-1)?.values[4];
 assert.equal(typeof lastTouchValue, "string");
 assert.equal(rows[0]?.last_used_at, lastTouchValue);
 
@@ -243,10 +284,12 @@ await store.createSession({
   owner: alice,
   id: "ws_postgres_expired",
   root: "/expired",
+  mcpSessionId: mcpSessionA.mcpSessionId,
 });
 await store.saveLoadedAgentFiles({
   owner: alice,
   workspaceSessionId: "ws_postgres_expired",
+  scope: mcpSessionA,
   files: [{ path: "/expired/AGENTS.md", content: "expired instructions\n" }],
 });
 const expiredRow = rows.find((row) => row.id === "ws_postgres_expired");
@@ -257,7 +300,8 @@ assert.equal(await store.getSession("ws_postgres_expired", alice), undefined);
 assert.deepEqual(await store.getLoadedAgentFiles("ws_postgres_expired", alice), []);
 
 assert.equal(await store.deleteSession("ws_postgres_1", bob), false);
-assert.equal(await store.deleteSession("ws_postgres_1", alice), true);
+assert.equal(await store.deleteSession("ws_postgres_1", alice, mcpSessionB), false);
+assert.equal(await store.deleteSession("ws_postgres_1", alice, mcpSessionA), true);
 assert.equal(await store.getSession("ws_postgres_1", alice), undefined);
 assert.deepEqual(await store.getLoadedAgentFiles("ws_postgres_1", alice), []);
 
@@ -271,8 +315,19 @@ function nullableStringValue(value: unknown): string | null {
   return stringValue(value);
 }
 
-function sessionMatchesOwner(id: string, tenantId: string, userId: string): boolean {
-  return rows.some((row) => row.id === id && row.tenant_id === tenantId && row.user_id === userId);
+function sessionMatchesOwner(
+  id: string,
+  tenantId: string,
+  userId: string,
+  mcpSessionId: string | null = null,
+): boolean {
+  return rows.some(
+    (row) =>
+      row.id === id &&
+      row.tenant_id === tenantId &&
+      row.user_id === userId &&
+      (mcpSessionId === null || row.mcp_session_id === mcpSessionId),
+  );
 }
 
 function deleteWorkspaceSessionRows(predicate: (row: StoredWorkspaceSessionRow) => boolean): number {
