@@ -177,6 +177,7 @@ devspace doctor
 - [Configuration Reference](docs/configuration.md)
 - [Production Smoke Check](docs/production-smoke.md)
 - [DevSpace Automation Ingress Plan](docs/devspace-automation-ingress-plan.md)
+- [Native Agent Runtime](docs/native-agent-runtime.md)
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)
 
