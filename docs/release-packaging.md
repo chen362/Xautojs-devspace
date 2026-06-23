@@ -10,7 +10,7 @@ DevSpace package name.
 | Surface | Value | Notes |
 | --- | --- | --- |
 | GitHub repository | `chen362/Xautojs-devspace` | Public source repository. |
-| Default branch | `Xautojs-devspace` | Release candidates branch from here. |
+| Default branch | `main` | Release candidates branch from here. |
 | npm package name | `xautojs-devspace` | Do not publish new releases as `@waishnav/devspace`. |
 | Installed CLI binary | `devspace` | Kept for compatibility with existing config, scripts, and docs. |
 | Source-checkout command | `node dist/cli.js ...` | Preferred in docs until a public npm release exists. |
@@ -90,8 +90,7 @@ Sync Package Lock Release Identity
 ```
 
 It can be triggered manually from the Actions tab. It also runs automatically on
-`Xautojs-devspace` when package metadata, release scripts, or the workflow itself
-changes.
+`main` when package metadata, release scripts, or the workflow itself changes.
 
 The workflow:
 
@@ -110,7 +109,7 @@ Manual inputs:
 
 | Input | Default | Purpose |
 | --- | --- | --- |
-| `base_branch` | `Xautojs-devspace` | Branch to sync from. |
+| `base_branch` | `main` | Branch to sync from. |
 | `work_branch` | `automation/package-lock-release-identity` | Branch that receives the generated lockfile commit. |
 | `commit_message` | `Fix package-lock release identity` | Commit message for the generated lockfile update. |
 
@@ -167,7 +166,7 @@ notes are needed, document them as migration guidance, not as npm identity.
 
 ## Pre-Publish Checklist
 
-Run from a clean checkout of `Xautojs-devspace`:
+Run from a clean checkout of `main`:
 
 ```bash
 npm ci
