@@ -1,0 +1,30 @@
+{
+  "name": "@xautojs/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Xautojs local operator desktop shell.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5177",
+    "build:web": "vite build",
+    "build": "tsc -p tsconfig.json --noEmit && npm run build:web",
+    "preview": "vite preview --host 127.0.0.1 --port 4177",
+    "test": "tsx src/operator-client.test.ts",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.2",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "vite": "^8.0.14"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  }
+}
