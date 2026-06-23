@@ -2,11 +2,21 @@ import express, { type Express, type Request, type Response } from "express";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { ServerConfig } from "./config.js";
 import { isPostgresDatabaseConfig } from "./db/types.js";
-import { PostgresNativeAgentStore, type NativeAgentStore } from "./native-agent-store.js";
+import { PostgresNativeAgentStore, type NativeAgentRunStatus, type NativeAgentStore } from "./native-agent-store.js";
 import { dispatchNativeAgentOnce } from "./native-agent-runtime.js";
 
 const JSON_BODY_LIMIT = "64kb";
 const ROUTE_PREFIX = "/api/native-agent";
+const RUN_STATUSES = new Set<NativeAgentRunStatus>([
+  "queued",
+  "claiming",
+  "running",
+  "waiting_input",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+]);
 
 export interface NativeAgentApiRegistration {
   close(): Promise<void>;
@@ -73,12 +83,13 @@ export function registerNativeAgentApiRoutes(
       requireOperator(request, operatorToken);
       if (!store) throw unavailable();
       const agentRunId = routeParam(request.params.agentRunId);
+      const afterSeq = optionalPositiveInt(request.query.afterSeq, 0);
       const events = await store.readRunEvents({
         agentRunId,
-        afterSeq: optionalPositiveInt(request.query.afterSeq, 0),
+        afterSeq,
         maxEvents: optionalPositiveInt(request.query.maxEvents, 100),
       });
-      const nextSeq = events.length > 0 ? events[events.length - 1]!.seq + 1 : optionalPositiveInt(request.query.afterSeq, 0) + 1;
+      const nextSeq = events.length > 0 ? events[events.length - 1]!.seq + 1 : afterSeq + 1;
       response.json({ agentRunId, events, nextSeq, requestId });
     } catch (error) {
       sendError(response, requestId, error);
@@ -111,7 +122,7 @@ export function registerNativeAgentApiRoutes(
         workflowId: bodyString(request.body, "workflowId"),
         timeoutMs: bodyNumber(request.body, "timeoutMs"),
       });
-      response.status(result.claimed ? 202 : 204).json({ ...result, requestId });
+      response.status(result.claimed ? 202 : 200).json({ ...result, requestId });
     } catch (error) {
       sendError(response, requestId, error);
     }
@@ -187,8 +198,10 @@ function routeParam(value: string | string[] | undefined): string {
   return value ?? "";
 }
 
-function optionalStatus(value: unknown) {
-  return typeof value === "string" && value.length > 0 ? value as never : undefined;
+function optionalStatus(value: unknown): NativeAgentRunStatus | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && RUN_STATUSES.has(value as NativeAgentRunStatus)) return value as NativeAgentRunStatus;
+  throw new NativeAgentApiError(400, "INVALID_AGENT_RUN_STATUS", "Native agent run status filter is invalid.", false);
 }
 
 function optionalPositiveInt(value: unknown, fallback: number): number {
