@@ -4,9 +4,9 @@ Xautojs Desktop is the local-first operator shell for the native agent runtime.
 It connects to the local operator daemon introduced by PR39 and keeps the daemon
 as the only backend trust boundary.
 
-## Current Scaffold
+## Current MVP
 
-Implemented in this scaffold:
+Implemented now:
 
 ```text
 Tauri 2 + React app shell
@@ -15,18 +15,27 @@ in-memory operator token input
 health and readiness checks
 runs list from /api/native-agent/runs
 selected run replay from /api/native-agent/runs/:agentRunId/replay
+live replay through /api/native-agent/runs/:agentRunId/stream
+polling fallback when the stream is unavailable
 clear states for daemon unavailable, schema not ready, token missing, token rejected, and no runs
+dispatch once
+approve pending approval
+deny pending approval
+resume selected run
+retry selected run
+cancel selected run
+hook decision cards from replay.summary.hooks
+workflow step state from replay.summary.workflowSteps
 ```
 
-Not implemented yet:
+Still intentionally deferred:
 
 ```text
 OS keychain session storage
 pairing code flow
-SSE live replay subscription
-approve / deny / resume / retry / cancel actions
 desktop notifications
 packaged installers
+remembered approval policy edits
 ```
 
 ## Run The Daemon
@@ -73,9 +82,22 @@ npm run desktop:test
 npm run desktop:build
 ```
 
+## Operator Flow
+
+1. Start `node dist/cli.js operator serve` with Postgres ready.
+2. Open Xautojs Desktop.
+3. Confirm daemon URL, usually `http://127.0.0.1:7677`.
+4. Enter the same token configured as `DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN`.
+5. Dispatch a run or select an existing run.
+6. Use the inspector to approve, deny, resume, retry, cancel, and inspect hooks or workflow steps.
+
+Live replay uses the SSE stream with an Authorization header via `fetch`. If the
+stream fails, the UI falls back to periodic replay polling so the selected run
+remains usable.
+
 ## Security Notes
 
-The scaffold intentionally does not store the raw operator token in
+The desktop MVP intentionally does not store the raw operator token in
 `localStorage`. The daemon URL can be remembered, but the token stays in renderer
 memory for the current window only. Keychain-backed local sessions and pairing
 codes belong in the later auth polish PR.
