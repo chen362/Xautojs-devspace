@@ -51,6 +51,16 @@ src/roots.ts
   allowedRoots path enforcement
 ```
 
+Phase 1.1 implementation status:
+
+```text
+DevspaceToolExecutionContext now carries mcpSessionId and owner identity.
+Workspace sessions persist mcp_session_id when a scoped MCP session opens a workspace.
+Workspace restore, touch, and loaded-agent-file lookup can require the current MCP session scope.
+A workspaceId created in one MCP session is rejected as unknown in another MCP session.
+conversationSessionId, deviceId, and toolCallId remain reserved in the execution context for cloud mode.
+```
+
 This is correct for self-hosted use. Public customer mode needs an additional split:
 
 ```text
