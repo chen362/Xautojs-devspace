@@ -1,730 +1,677 @@
-# DevSpace Automation Ingress Plan
+# Xautojs / DevSpace Automation And Native Agent Plan
 
-Last updated: 2026-06-22
+Last updated: 2026-06-23
 
-## 0. Executive Decision
+## 0. Current Position
 
-DevSpace should add a first-class automation ingress layer before revisiting any
-Codex Responses API compatibility work.
+Xautojs is no longer just planning automation ingress. The project already has a
+working local MCP workspace layer, production identity/state foundations, and a
+Postgres-backed automation ingress line.
 
-The product direction is:
-
-```text
-Strengthen the native DevSpace MCP / local workspace / Postgres path first.
-Add event-driven automation entry points that can create auditable DevSpace work.
-Keep Codex Responses proxying out of scope until the native path is stronger.
-```
-
-This plan covers three automation entry points:
+The current stage is:
 
 ```text
-HTTP trigger:
-  a backend, script, CI job, or internal tool asks DevSpace to start or record work
-
-GitHub webhook:
-  GitHub events create DevSpace automation events and future workspace tasks
-
-runtime hook callback:
-  DevSpace runtime events such as tool use, permission requests, and compaction
-  can be observed or controlled through a typed internal hook protocol
+Local workspace MCP bridge: done
+Production identity, owner scoping, readiness: done
+Automation source/event/run capture: done
+HTTP automation trigger: done
+Automation source token CLI: done
+GitHub webhook receiver: done
+GitHub webhook source policy/routing: done
+Owner-token OAuth SQLite persistence: done
+Native local agent runtime: next
 ```
 
-This is intentionally similar in spirit to modern agent automation systems, but
-it stays inside DevSpace's own trust, session, and workspace model.
-
-## 1. Non-Goals
-
-Do not implement these in this plan PR:
+The most important product decision for the next phase:
 
 ```text
-No runtime endpoint code.
-No database migrations.
-No background worker.
-No GitHub webhook receiver implementation.
-No Workspace Agents trigger integration.
-No Codex /v1/responses proxy.
-No attempt to replace Codex's model/tool loop.
+Xautojs should become its own independent native local agent runtime.
+Codex and Claude Code are reference/absorption layers, not runtime dependencies.
+Do not turn Xautojs into a wrapper around Codex or Claude Code.
 ```
 
-Future Workspace Agents integration remains optional and asynchronous. It must
-not be used as a live replacement for MCP tools or local workspace execution
-unless the upstream API later supports retrievable or streaming run output.
+Codex is useful as a reference for process/session/policy design. Claude Code is
+useful as a reference for commands, hooks, workflow packs, and specialized agent
+organization. Xautojs should absorb the ideas and keep the implementation,
+storage, contracts, and runtime independent.
 
-## 2. Core Architecture
+## 1. What Already Exists
 
-The shared automation flow is:
+### 1.1 Local MCP Workspace Core
+
+Xautojs already exposes a real local coding workspace through MCP tools.
+
+Implemented capabilities:
 
 ```text
-incoming event
-  -> authenticate or verify signature
-  -> validate size and schema
-  -> derive source event identity
-  -> apply idempotency check
-  -> redact sensitive fields
-  -> persist automation event
-  -> create or link automation run
-  -> optionally enqueue future work
-  -> return stable acknowledgement
+open_workspace
+read/read_file
+write/write_file
+edit/edit_file
+grep/grep_files
+glob/find_files
+ls/list_directory
+bash/run_shell
+show_changes when change widgets are enabled
 ```
 
-Initial service boundary:
+Workspace behavior already includes:
 
 ```text
-src/automation/types.ts
-src/automation/ingress.ts
-src/automation/redaction.ts
-src/automation/idempotency.ts
-src/automation/store.ts
-src/automation/http-trigger.ts
-src/automation/github-webhook.ts
-src/automation/runtime-hooks.ts
+allowed root enforcement
+checkout and managed worktree modes
+workspaceId reuse across tool calls
+workspace session persistence and restoration
+loaded AGENTS.md and CLAUDE.md files
+nested AGENTS.md and CLAUDE.md discovery
+local skill discovery and skill file activation
+review checkpoints and aggregate diff cards
 ```
 
-The first implementation PRs should add contracts and storage before they run
-any agentic work. Durable event capture is the foundation.
+This means the missing piece is not local file access or local command execution.
+Those are already present.
 
-## 3. Identity And Trust
+### 1.2 Identity, Storage, And Production Readiness
 
-Trusted identity sources:
+Implemented production foundations:
 
 ```text
-HTTP trigger:
-  source token or HMAC secret bound to automation_sources.id
-
-GitHub webhook:
-  raw-body HMAC signature using the source's configured webhook secret
-
-runtime hook callback:
-  internal relay credential or local agent device credential
-
-Workspace/user mapping:
-  server-side source configuration, not caller-supplied userId
+owner-token local auth
+OIDC auth mode
+DevSpace identity derived from auth context
+tenantId/userId owner scoping for workspace sessions
+MCP session identity mismatch protection
+SQLite workspace state for local use
+Postgres workspace state for production use
+Postgres schema migrations and readiness checks
+GET /healthz liveness
+GET /readyz readiness
+workspace session TTL cleanup
 ```
 
-Never trust these fields directly from a request body:
+Implemented local OAuth persistence:
 
 ```text
-userId
-tenantId
-workspaceSessionId
-devspaceConversationId
-localAgentId
-conversationKey
-repository path
-branch name
-shell command
+OAuth clients persisted in SQLite
+access tokens persisted by hash
+refresh tokens persisted by hash
+transactional refresh-token rotation
+refresh-token reuse rejection
+SQLite state directory 0700 where supported
+SQLite database file 0600 where supported
+WAL, synchronous=NORMAL, busy_timeout, foreign keys
+versioned SQLite migrations
+clean SQLite close on shutdown path
 ```
 
-Caller-provided identifiers are hints. DevSpace must resolve ownership and
-routing from authenticated source configuration, tenant membership, and stored
-workspace/session rows.
+### 1.3 Automation Ingress
 
-## 4. Endpoint Contracts
-
-### 4.1 Generic HTTP Trigger
+Implemented automation storage and API foundation:
 
 ```text
-POST /api/automation/triggers/{triggerId}/fire
+automation_sources
+automation_events
+automation_runs
+source token hashes
+source enable/disable status
+owner-scoped source/event/run access
+idempotency by source_event_id and idempotency_key
+request fingerprint conflict detection
+queued automation run creation
 ```
 
-Use this when a backend, CI job, scheduled script, or internal system wants to
-start a DevSpace automation run.
+Implemented generic trigger endpoint:
 
-Authentication:
+```text
+POST /api/automation/triggers/:triggerId/fire
+```
+
+Contract highlights:
 
 ```text
 Authorization: Bearer <automation-source-token>
+Idempotency-Key: <stable-key>
+body requires text or payload
+optional sourceEventId/eventId, conversationKey, workspaceHint, metadata
+202 returns automationRunId and automationEventId
+409 returns IDEMPOTENCY_CONFLICT for reused keys with different fingerprints
 ```
 
-Idempotency:
+Implemented automation source CLI:
 
 ```text
-Idempotency-Key: <stable-key-for-this-source-event>
+devspace automation source create
+devspace automation source list
+devspace automation source rotate-token
 ```
 
-The idempotency key is required by default. A source may explicitly allow
-unkeyed events for development, but production sources should reject unkeyed
-requests with `IDEMPOTENCY_KEY_REQUIRED`.
+CLI behavior:
 
-Request body:
+```text
+requires Postgres and ready schema
+supports local owner mode in local deployment
+requires explicit owner binding in production
+shows raw token only on create/rotate
+stores only sha256 token hashes
+supports --json output
+```
 
-```ts
-interface AutomationTriggerRequest {
-  eventId?: string;
-  text?: string;
-  payload?: Record<string, unknown> | string;
-  conversationKey?: string;
-  workspaceHint?: {
-    repository?: string;
-    branch?: string;
-    rootLabel?: string;
-    workspaceSessionId?: string;
-    devspaceConversationId?: string;
-  };
-  metadata?: Record<string, string | number | boolean | null>;
+### 1.4 GitHub Webhook Ingress
+
+Implemented GitHub webhook endpoint:
+
+```text
+POST /api/automation/github/webhooks/:sourceId
+```
+
+Implemented verification and normalization:
+
+```text
+requires source kind github_webhook
+requires enabled source
+requires secretRef=env:VARIABLE_NAME
+verifies X-Hub-Signature-256 over raw body
+requires X-GitHub-Event
+requires X-GitHub-Delivery
+uses X-GitHub-Delivery as sourceEventId and idempotency key
+normalizes eventType as github.<event>.<action>
+extracts repository, sender, and branch metadata when present
+```
+
+Implemented GitHub routing policy:
+
+```json
+{
+  "events": {
+    "pull_request": ["opened", "synchronize", "closed"],
+    "release": ["published"]
+  },
+  "repositories": ["chen362/Xautojs-devspace"],
+  "branches": ["Xautojs-devspace"]
 }
 ```
 
-Validation rules:
+Routing rules:
 
 ```text
-At least one of text or payload is required.
-eventId, when present, must be stable for the source event.
-conversationKey is caller-defined but not trusted for ownership.
-workspaceHint is advisory and must be resolved server-side.
-metadata values must be scalar and bounded.
-request body size defaults to 256 KiB unless source config allows more.
+If config.events is omitted, default routable events are:
+  pull_request.opened
+  pull_request.synchronize
+  pull_request.closed
+  release.published
+
+If config.events is present, only explicitly listed event/action pairs route.
+If config.repositories is present, repository.full_name must match.
+If config.branches is present, branch matching uses:
+  pull_request.base.ref
+  release.target_commitish
+  push.ref with refs/heads/ stripped
 ```
 
-Success response:
-
-```ts
-interface AutomationAcceptedResponse {
-  automationRunId: string;
-  automationEventId: string;
-  status: "queued" | "accepted" | "duplicate";
-  duplicate: boolean;
-  dedupeGuaranteed: boolean;
-  conversationKey?: string;
-  createdAt: string;
-}
-```
-
-Status codes:
+Delivery outcomes:
 
 ```text
-202 Accepted:
-  new event accepted or duplicate resolved to the original run
+queued:
+  store automation_event with status=accepted
+  create or reuse queued automation_run
 
-400 Bad Request:
-  invalid payload, missing text/payload, malformed eventId, oversized metadata
+ignored:
+  store automation_event with status=rejected
+  do not create automation_run
+  still return 202 so GitHub does not retry intentionally ignored work
 
-401 Unauthorized:
-  missing or invalid source token
-
-403 Forbidden:
-  source token is valid but disabled or not allowed to fire this trigger
-
-404 Not Found:
-  triggerId is unknown or hidden from the caller
-
-409 Conflict:
-  same idempotency key was reused with a different request fingerprint
-
-413 Payload Too Large:
-  request exceeds configured source limit
-
-429 Too Many Requests:
-  source rate limit exceeded
+duplicate:
+  return original event/run ids when the fingerprint matches
+  return 409 IDEMPOTENCY_CONFLICT when the same delivery/key has a new fingerprint
 ```
 
-### 4.2 GitHub Webhook Receiver
+## 2. Real Gap Now
+
+The remaining product gap is not ingress. The gap is execution.
+
+Today, an automation source can create a queued automation run, and GitHub
+webhooks can decide whether a delivery is runnable or audit-only. But queued
+runs do not yet enter a native Xautojs agent runtime.
+
+Missing pieces:
 
 ```text
-POST /api/webhooks/github/{sourceId}
+native agent run store and event stream
+native agent worker/dispatcher
+run claiming and concurrency control
+streaming output with sequence cursors
+stdin/input write path for interactive runs
+cancel/timeout handling
+agent tool call audit records
+permission/policy engine for file, shell, network, and patch operations
+workflow packs for repeatable tasks such as PR review and feature development
+runtime hooks that can audit or block risky actions
+operator APIs or CLI commands to inspect/retry/cancel runs
 ```
 
-Use this when GitHub events should become DevSpace automation events.
+This is the line that turns Xautojs from a local MCP bridge plus automation
+inbox into an independent local agent platform.
 
-Required headers:
+## 3. Native Agent Direction
+
+Xautojs native agent runtime should be first-party.
+
+Non-goal:
 
 ```text
-X-GitHub-Event
-X-GitHub-Delivery
-X-Hub-Signature-256
-Content-Type: application/json
+Do not require Codex as the local runtime.
+Do not require Claude Code as the local runtime.
+Do not implement a Codex wrapper as the main architecture.
+Do not implement a Claude Code wrapper as the main architecture.
+Do not proxy /v1/responses as the core execution path.
 ```
 
-Signature rules:
+Goal:
 
 ```text
-Verify the raw request body before JSON parsing.
-Use constant-time comparison for signature checks.
-Reject missing or invalid signatures.
-Use X-GitHub-Delivery as the source event id.
+Xautojs owns the run lifecycle, storage, policy, tools, workflow packs, and audit log.
+Codex and Claude Code are studied for good ideas only.
 ```
 
-Supported v1 events:
+Absorb from Codex:
 
 ```text
-pull_request.opened
-pull_request.synchronize
-pull_request.closed
-pull_request.reopened
-release.published
-release.created
-release.deleted
+process lifecycle shape: start/read/write/signal/terminate
+streaming output chunks with afterSeq/nextSeq cursors
+session resume concepts
+explicit timeout and cancellation behavior
+command policy and approval concepts
+sandbox and network permission ideas
+output caps and runaway process protection
 ```
 
-Success response:
-
-```ts
-interface GitHubWebhookAcceptedResponse {
-  automationEventId: string;
-  automationRunId?: string;
-  status: "accepted" | "ignored" | "duplicate";
-  duplicate: boolean;
-  reason?: string;
-}
-```
-
-Event mapping rules:
+Absorb from Claude Code:
 
 ```text
-Every valid GitHub delivery is stored once, even when ignored.
-Ignored events still return 202 so GitHub does not retry intentionally ignored work.
-Events beyond source filters should be status=ignored with a reason.
-Duplicate X-GitHub-Delivery returns the original event/run identifiers.
+plugin manifest shape
+commands as reusable workflows
+specialized agents as workflow roles
+skills as reusable instruction packs
+hooks such as PreToolUse, PostToolUse, PermissionRequest, Stop/PostCompact
+code-review, feature-dev, PR review, and security guidance workflows
 ```
 
-### 4.3 Runtime Hook Callback
-
-Runtime hooks are an internal DevSpace protocol. They are not a public webhook
-surface in v1.
+Keep independent in Xautojs:
 
 ```text
-POST /api/runtime/hooks
+TypeScript/Node runtime contracts
+Postgres/SQLite storage choices
+MCP tool surface
+owner/tenant identity model
+automation source config
+audit/error model
+policy engine behavior
+workflow pack format
 ```
 
-Authentication:
+## 4. Native Agent Contract Draft
 
-```text
-Authorization: Bearer <local-agent-or-internal-relay-token>
-```
+### 4.1 Agent Run State
 
-Supported v1 hook events:
-
-```text
-PreToolUse
-PostToolUse
-PermissionRequest
-PostCompact
-```
-
-Request body:
-
-```ts
-interface RuntimeHookRequest {
-  hookEventName:
-    | "PreToolUse"
-    | "PostToolUse"
-    | "PermissionRequest"
-    | "PostCompact";
-  operationId: string;
-  requestId: string;
-  tenantId?: string;
-  userId?: string;
-  localAgentId: string;
-  workspaceSessionId?: string;
-  devspaceConversationId?: string;
-  toolName?: string;
-  toolInput?: Record<string, unknown>;
-  toolResult?: Record<string, unknown>;
-  permissionRequest?: {
-    permissionId: string;
-    action: string;
-    subject: string;
-    risk: "low" | "medium" | "high";
-  };
-  compact?: {
-    reason: string;
-    tokensBefore?: number;
-    tokensAfter?: number;
-    summaryId?: string;
-  };
-}
-```
-
-Hook response:
-
-```ts
-interface RuntimeHookResponse {
-  continue: boolean;
-  decision?: "allow" | "block" | "ask" | "deny";
-  reason?: string;
-  additionalContext?: string;
-  systemMessage?: string;
-  auditOnly?: boolean;
-}
-```
-
-Decision rules:
-
-```text
-PreToolUse may block or ask before a tool runs.
-PermissionRequest may allow, deny, or ask.
-PostToolUse cannot undo the tool run; it can add context, audit, or request follow-up.
-PostCompact cannot block completed compaction; it can audit and record quality signals.
-Timeout defaults should fail open for audit hooks and fail closed only for configured policy hooks.
-```
-
-## 5. Error Model
-
-All public automation APIs should use the same error envelope:
-
-```ts
-interface AutomationErrorResponse {
-  error: {
-    code: string;
-    message: string;
-    details?: Record<string, unknown>;
-    requestId: string;
-    retryable: boolean;
-  };
-}
-```
-
-Required error codes:
-
-```text
-AUTOMATION_SOURCE_NOT_FOUND
-AUTOMATION_SOURCE_DISABLED
-AUTOMATION_TOKEN_INVALID
-AUTOMATION_SIGNATURE_INVALID
-AUTOMATION_EVENT_UNSUPPORTED
-AUTOMATION_PAYLOAD_INVALID
-AUTOMATION_PAYLOAD_TOO_LARGE
-IDEMPOTENCY_KEY_REQUIRED
-IDEMPOTENCY_CONFLICT
-RATE_LIMITED
-WORKSPACE_HINT_UNRESOLVED
-WORKSPACE_SESSION_NOT_FOUND
-CONVERSATION_NOT_FOUND
-RUNTIME_HOOK_NOT_ALLOWED
-INTERNAL_ERROR
-```
-
-## 6. Data Model
-
-Production storage uses Postgres. SQLite may be used only for local development
-or tests through the existing store abstraction.
-
-### 6.1 automation_sources
-
-```sql
-create table automation_sources (
-  id uuid primary key,
-  tenant_id uuid not null,
-  owner_user_id uuid,
-  kind text not null,
-  display_name text not null,
-  status text not null,
-  secret_ref text,
-  config jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-```
-
-Suggested `kind` values:
-
-```text
-http_trigger
-github_webhook
-runtime_hook
-workspace_agent_bridge
-```
-
-Suggested indexes:
-
-```sql
-create index automation_sources_tenant_kind_idx
-  on automation_sources (tenant_id, kind, status);
-```
-
-### 6.2 automation_events
-
-```sql
-create table automation_events (
-  id uuid primary key,
-  tenant_id uuid not null,
-  source_id uuid not null references automation_sources(id),
-  source_event_id text not null,
-  event_type text not null,
-  idempotency_key text,
-  request_fingerprint text not null,
-  conversation_key text,
-  payload_redacted jsonb not null default '{}'::jsonb,
-  payload_digest text not null,
-  status text not null,
-  received_at timestamptz not null default now(),
-  accepted_at timestamptz,
-  error_code text,
-  error_message text
-);
-```
-
-Required constraints:
-
-```sql
-create unique index automation_events_source_event_unique
-  on automation_events (source_id, source_event_id);
-
-create unique index automation_events_idempotency_unique
-  on automation_events (source_id, idempotency_key)
-  where idempotency_key is not null;
-
-create index automation_events_tenant_received_idx
-  on automation_events (tenant_id, received_at desc);
-```
-
-### 6.3 automation_runs
-
-```sql
-create table automation_runs (
-  id uuid primary key,
-  tenant_id uuid not null,
-  user_id uuid,
-  source_id uuid not null references automation_sources(id),
-  event_id uuid not null references automation_events(id),
-  devspace_conversation_id uuid,
-  workspace_session_id uuid,
-  context_window_id uuid,
-  kind text not null,
-  status text not null,
-  input_text text,
-  payload_redacted jsonb not null default '{}'::jsonb,
-  result_summary text,
-  error_code text,
-  error_message text,
-  retry_count integer not null default 0,
-  created_at timestamptz not null default now(),
-  started_at timestamptz,
-  completed_at timestamptz,
-  updated_at timestamptz not null default now()
-);
-```
-
-Suggested statuses:
+Suggested native status model:
 
 ```text
 queued
+claiming
 running
+waiting_input
 succeeded
 failed
-canceled
-ignored
-duplicate
+cancelled
+timed_out
 ```
 
-Suggested indexes:
+`automation_runs.status` can remain the coarse automation state. Native agent
+execution should have its own detailed run state so one automation run can later
+support retries, attempts, or multiple workflow phases.
 
-```sql
-create index automation_runs_tenant_status_idx
-  on automation_runs (tenant_id, status, created_at desc);
-
-create index automation_runs_workspace_idx
-  on automation_runs (tenant_id, workspace_session_id, created_at desc);
-
-create index automation_runs_conversation_idx
-  on automation_runs (tenant_id, devspace_conversation_id, created_at desc);
-```
-
-## 7. Idempotency Rules
-
-Idempotency key scope:
+Suggested entities:
 
 ```text
-source_id + idempotency_key
+agent_runs
+agent_run_events
+agent_tool_calls
+agent_processes
 ```
 
-Source event id scope:
+Minimum `agent_runs` fields:
 
 ```text
-source_id + source_event_id
+id
+tenant_id
+user_id
+automation_run_id
+workspace_session_id
+workflow_id
+status
+attempt
+input_json
+result_json
+error_code
+error_message
+created_at
+claimed_at
+started_at
+finished_at
+updated_at
 ```
 
-Request fingerprint should include:
+Minimum `agent_run_events` fields:
 
 ```text
-trigger id or source id
-event type
-normalized text
-normalized payload digest
-conversationKey
-workspaceHint
-metadata
+id
+agent_run_id
+seq
+event_type
+payload_json
+created_at
 ```
 
-Duplicate behavior:
+Useful event types:
 
 ```text
-Same source_event_id and same fingerprint:
-  return the original event/run ids with duplicate=true
-
-Same idempotency_key and same fingerprint:
-  return the original event/run ids with duplicate=true
-
-Same idempotency_key and different fingerprint:
-  return 409 IDEMPOTENCY_CONFLICT
-
-GitHub redelivery with same X-GitHub-Delivery:
-  return the original event/run ids with duplicate=true
+run.started
+run.output_delta
+run.tool_call.started
+run.tool_call.completed
+run.permission.requested
+run.permission.resolved
+run.input.requested
+run.cancel_requested
+run.succeeded
+run.failed
+run.timed_out
 ```
 
-Retention:
+### 4.2 Native Agent Control Surface
+
+A future MCP or internal API surface should expose the same stable semantics
+whether the run was created by a webhook, CLI, or ChatGPT MCP session.
+
+Suggested operations:
 
 ```text
-Keep automation events and runs for audit by default.
-If retention is configured, preserve tombstone rows for idempotency until the
-source-specific dedupe window expires.
+start_agent_run
+read_agent_run
+write_agent_run
+cancel_agent_run
+get_agent_run
 ```
 
-## 8. Conversation And Workspace Routing
+Draft contract:
 
-Automation ingress must not assume a current chat window.
+```ts
+interface StartAgentRunRequest {
+  workspaceId: string;
+  workflowId?: string;
+  prompt: string;
+  input?: Record<string, unknown>;
+  permissionProfile?: "read_only" | "workspace_write" | "trusted_local";
+  timeoutSeconds?: number;
+}
 
-Routing order:
+interface StartAgentRunResponse {
+  agentRunId: string;
+  status: "queued" | "running";
+  createdAt: string;
+}
+
+interface ReadAgentRunRequest {
+  agentRunId: string;
+  afterSeq?: number;
+  maxEvents?: number;
+  waitMs?: number;
+}
+
+interface ReadAgentRunResponse {
+  agentRunId: string;
+  status: string;
+  events: Array<{
+    seq: number;
+    type: string;
+    payload: Record<string, unknown>;
+    createdAt: string;
+  }>;
+  nextSeq: number;
+  terminal: boolean;
+}
+
+interface WriteAgentRunRequest {
+  agentRunId: string;
+  inputId: string;
+  content: string;
+}
+
+interface CancelAgentRunRequest {
+  agentRunId: string;
+  reason?: string;
+}
+```
+
+Idempotency and consistency:
 
 ```text
-1. Resolve tenant and source from auth/signature.
-2. Resolve source default user, local agent, repository, or workspace policy.
-3. If conversationKey is supplied, look up a matching DevSpace conversation owned by the tenant/user.
-4. If workspaceHint is supplied, validate it against source policy and allowed roots.
-5. If exactly one workspace mapping is valid, link the automation run to that workspace session.
-6. If mapping is ambiguous, store the run as queued/pending_selection.
-7. If mapping is invalid, store the event and create an ignored or failed run with a stable error.
+start_agent_run may accept an idempotency key when started from automation.
+read_agent_run is cursor-based with afterSeq/nextSeq.
+write_agent_run requires inputId to reject duplicate user input writes.
+cancel_agent_run is idempotent and returns the current terminal/running state.
+terminal event order must be stable and replayable from storage.
 ```
 
-Do not create local file access from a webhook alone. A later worker must still
-validate local agent availability, workspace ownership, allowed roots, and policy.
+### 4.3 Native Process Engine
 
-## 9. Redaction And Audit
+The native process engine should support local tools and long-running agent work
+without depending on external agent CLIs.
 
-Redact before persistence:
+Minimum process contract:
 
 ```text
-Authorization headers
-cookies
-x-api-key
-access tokens
-refresh tokens
-private keys
-connection strings
-password fields
-known secret-looking values
+processId scoped to agentRunId
+argv/cwd/env policy
+pty or non-pty mode
+stdout/stderr output chunks
+sequence cursor
+stdin writes when enabled
+interrupt/terminate
+hard timeout
+output byte cap
+process exit event
 ```
 
-Store:
+This engine can begin as an internal service and later become a public local
+runtime protocol if needed.
+
+### 4.4 Policy And Approval
+
+Xautojs should add its own permission profile model.
+
+Initial profiles:
 
 ```text
-payload_digest for dedupe/debugging
-payload_redacted for audit UI
-source id, event type, request id, timestamps
-routing decision
-run status and error code
+read_only:
+  read/search/list allowed
+  write/edit/shell/network denied
+
+workspace_write:
+  read/search/list/write/edit allowed inside workspace
+  shell allowed only through policy-reviewed commands
+  network denied by default
+
+trusted_local:
+  read/write/edit/shell allowed inside workspace
+  network allowed only if explicitly configured
 ```
 
-Do not store raw webhook bodies by default. If a deployment needs raw-body
-retention for forensic reasons, store it behind an explicit encrypted blob
-reference and short retention period.
-
-## 10. Platform And Deployment Notes
-
-The server-side automation ingress is platform independent. It should run the
-same on Ubuntu/Linux, macOS, and Windows when started through Node.
-
-Deployment requirements:
+Policy inputs:
 
 ```text
-Public webhook endpoints require HTTPS on a reachable host.
-Local-only 127.0.0.1 endpoints require a tunnel or reverse proxy for external webhooks.
-GitHub webhook signature verification must use the exact raw bytes received.
-Body parsers must not mutate the body before signature verification.
+tenant/user identity
+workspace root
+source kind
+workflow id
+tool name
+tool arguments
+file paths
+command argv
+network target if any
+risk classification
 ```
 
-Ubuntu/Linux and macOS environment example:
-
-```bash
-export DEVSPACE_AUTOMATION_BASE_URL="https://devspace.example.com"
-export DEVSPACE_AUTOMATION_MAX_BODY_BYTES="262144"
-```
-
-Windows PowerShell environment example:
-
-```powershell
-$env:DEVSPACE_AUTOMATION_BASE_URL = "https://devspace.example.com"
-$env:DEVSPACE_AUTOMATION_MAX_BODY_BYTES = "262144"
-```
-
-Runtime hook portability:
+Policy outputs:
 
 ```text
-Prefer HTTP callbacks or Node scripts for cross-platform hooks.
-Do not make Bash-only hooks the product contract.
-If shell hooks are added later, provide Bash and PowerShell examples.
-Use URL/path normalization before matching workspace hints.
+allow
+block
+ask
+audit_only
 ```
 
-## 11. Security Rules
-
-Minimum required controls:
+Dangerous defaults to keep:
 
 ```text
-source-level enable/disable switch
-secret rotation path
-HMAC or bearer token verification
-raw-body signature verification for GitHub
-constant-time signature comparison
-request size limits
-source rate limits
-payload redaction
-idempotency conflict detection
-tenant/user ownership checks before workspace routing
-no local command execution from webhook receipt alone
-audit log for every accepted, ignored, duplicate, and failed event
+No shell command directly from webhook payload.
+No filesystem path trust from external callers.
+No cross-owner workspace selection.
+No raw token or secret logging.
+No bypass around allowedRoots/worktreeRoot.
+No agent execution until source config maps to a valid workflow and workspace policy.
 ```
 
-Dangerous defaults to avoid:
+## 5. Automation Routing Into Native Agent Runs
+
+Automation source config should eventually decide which native workflow starts.
+
+Example GitHub source config extension:
+
+```json
+{
+  "events": {
+    "pull_request": ["opened", "synchronize", "closed"],
+    "release": ["published"]
+  },
+  "repositories": ["chen362/Xautojs-devspace"],
+  "branches": ["Xautojs-devspace"],
+  "workflow": {
+    "id": "github-pr-review",
+    "permissionProfile": "workspace_write",
+    "workspace": {
+      "rootLabel": "xautojs-main",
+      "mode": "worktree"
+    }
+  }
+}
+```
+
+Dispatch flow:
 
 ```text
-Do not execute shell commands directly from a webhook payload.
-Do not trust repository instructions as security policy.
-Do not route by raw local filesystem path from the caller.
-Do not allow a webhook to select another user's local agent.
-Do not log tokens or full secret-bearing payloads.
-Do not make non-2xx webhook responses for intentionally ignored GitHub events.
+GitHub webhook accepted
+  -> automation_event status=accepted
+  -> automation_run status=queued
+  -> dispatcher claims queued run
+  -> resolves source workflow config
+  -> resolves workspace policy and workspace session/worktree
+  -> creates agent_run
+  -> streams agent_run_events
+  -> updates automation_run terminal status/result
 ```
 
-## 12. Implementation Sequence
+Ignored events should remain audit-only and must not create native agent runs.
+
+## 6. Updated Implementation Sequence
+
+Completed:
+
+```text
+PR17: Automation ingress plan
+PR18: Postgres automation event/run store
+PR19: Generic API trigger endpoint
+PR20: Automation source token management CLI
+PR21: GitHub webhook receiver
+PR22: GitHub webhook policy/routing
+PR23: Owner-token OAuth SQLite persistence and SQLite hardening
+```
 
 Recommended next PRs:
 
 ```text
-PR18: Automation Event Store
-  migrations, store interfaces, unit tests, JSON-safe redaction helpers
+PR24: Native Agent Core Store And Contract
+  Add agent_runs and agent_run_events migrations.
+  Add TypeScript types and store methods.
+  Add status transition validation.
+  Add cursor-based event append/read tests.
+  Do not run real agent work yet.
 
-PR19: Generic API Trigger
-  POST /api/automation/triggers/{triggerId}/fire, auth, idempotency, accepted response
+PR25: Native Agent Dispatcher And Process Engine
+  Claim queued automation_runs safely.
+  Create agent_runs from automation source workflow config.
+  Implement local process lifecycle with start/read/write/cancel/timeout.
+  Persist output deltas as agent_run_events.
+  Keep the first engine first-party, not Codex/Claude backed.
 
-PR20: GitHub Webhook Receiver
-  raw-body HMAC validation, supported PR/release events, source filters, event dedupe
+PR26: Native Tool Policy And Approval Layer
+  Add permission profiles.
+  Classify read/write/edit/shell/network risk.
+  Gate destructive/open-world operations.
+  Store permission requests and decisions as run events.
 
-PR21: Runtime Hook Callback
-  internal hook protocol for PreToolUse, PostToolUse, PermissionRequest, PostCompact
+PR27: Native Workflow Packs
+  Add first-party workflows for github-pr-review, feature-dev, security-review, test-fix.
+  Absorb Claude Code workflow organization ideas without depending on Claude Code.
+  Make workflows selectable from automation source config.
 
-PR22: Workspace Agents Optional Async Bridge
-  outbound trigger helper, token secret ref, conversation_key generator, trigger audit log
+PR28: Runtime Hooks
+  Add internal hook events for PreToolUse, PostToolUse, PermissionRequest, and PostCompact/Stop.
+  Allow audit-only and blocking hooks according to policy.
+  Keep hooks typed and owner-scoped.
+
+PR29: Operator UX
+  Add CLI/API inspection for automation runs and native agent runs.
+  Support retry, cancel, and event tailing.
+  Add docs for GitHub source setup and workflow mapping.
 ```
 
-Keep each implementation PR independently shippable. Do not add a background
-worker until events, runs, and idempotency are stable.
+Keep every PR independently shippable. The storage and contract PR should land
+before execution. The execution PR should land before workflow packs. Workflow
+packs should not be allowed to bypass policy.
 
-## 13. Acceptance Criteria
+## 7. Acceptance Criteria For The Native Agent Line
 
-The automation ingress line is ready when:
+The next phase is ready when:
 
 ```text
-HTTP triggers return stable 202 responses with automationRunId.
-GitHub redeliveries are deduped by X-GitHub-Delivery.
-Idempotency-Key conflicts return 409.
-Payloads are redacted before durable storage.
-Every accepted event creates an automation_event row.
-Runnable events create an automation_run row.
-Ignored events are still auditable.
-Workspace routing never trusts caller-supplied user/session ids.
-Runtime hooks can add audit/context and, where allowed, block risky actions.
-Docs include Ubuntu/Linux, macOS, and Windows operator guidance.
-Workspace Agents remain optional async integration, not the live local execution path.
-Codex Responses proxy remains explicitly out of scope for this line.
+Queued automation runs can be claimed exactly once.
+Each claimed run creates a native agent_run.
+Agent run events are durable and cursor-readable.
+A caller can read output using afterSeq/nextSeq.
+A caller can cancel a running agent_run.
+Timeouts produce stable timed_out terminal state.
+Permission decisions are recorded and replayable.
+Tool calls are audited with sanitized inputs/results.
+GitHub routable events can start configured native workflows.
+Ignored GitHub events remain audit-only.
+No Codex or Claude Code binary is required for the core runtime.
+Codex/Claude-inspired features are reimplemented as Xautojs-native contracts.
 ```
+
+## 8. Remaining Non-Goals
+
+Still out of scope for this line:
+
+```text
+Codex /v1/responses proxy as the primary runtime
+hard dependency on Codex CLI
+hard dependency on Claude Code CLI
+web UI for editing every source policy
+GitHub App installation auth
+multi-machine distributed worker scheduling
+general remote code execution outside allowed roots
+raw webhook body retention by default
+```
+
+These can be revisited later only after the native Xautojs runtime is stable.
