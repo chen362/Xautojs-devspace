@@ -96,11 +96,16 @@ assert.throws(
   assert.equal(result.ruleId, "block-feature-plan");
   assert.equal(store.hooks.length, 0);
   const events = await store.readRunEvents({ agentRunId: "agent_run_hook_test" });
-  const hookEvent = events.find((event) => event.type === "run.hook.decision");
+  const hookEvents = events.filter((event) => event.type === "run.hook.decision");
+  const hookEvent = hookEvents.find((event) => event.payload.ruleId === "block-feature-plan");
   assert.equal(hookEvent?.payload.hookEventName, "WorkflowStep");
   assert.equal(hookEvent?.payload.decision, "block");
   assert.equal(hookEvent?.payload.ruleId, "block-feature-plan");
   assert.equal((hookEvent?.payload.hookPayload as { stepId?: string } | undefined)?.stepId, "plan");
+  assert.deepEqual(
+    hookEvents.map((event) => event.payload.decision),
+    ["audit_only", "block"],
+  );
 }
 
 {
