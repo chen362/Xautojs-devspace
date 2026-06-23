@@ -10,9 +10,9 @@ import type {
   ReadFileToolInput,
   RunShellToolInput,
   ShowChangesToolInput,
+  ToolResponse,
   WriteFileToolInput,
 } from "./mcp-tool-executor.js";
-import type { ToolResponse } from "./pi-tools.js";
 import type { ReviewChangesResult } from "./review-checkpoints.js";
 import type { WorkspaceContext } from "./workspaces.js";
 
