@@ -48,8 +48,8 @@ execution:
 - browser operator console for run replay, approvals, hook decisions, workflow
   step state, dispatch, resume, retry, and cancel
 - operator CLI commands for dispatch, replay, approvals, retry, and cancel
-- planned Xautojs Desktop operator for a local-first Codex/Claude-style
-  workspace, approval, replay, and workflow UI
+- Xautojs Desktop operator for a local-first Codex/Claude-style workspace,
+  approval, replay, workflow UI, and desktop release artifact path
 
 Codex and Claude Code are reference systems for good ideas. The runtime, storage,
 policy, hooks, workflow packs, and operator controls are Xautojs-native and do
@@ -322,10 +322,21 @@ setup, session configuration, UI workflow, and production smoke commands.
 
 ## Xautojs Desktop Direction
 
-The planned desktop operator is the local-first default interface for daily
-native-agent work. It should feel closer to a desktop coding assistant than a
-browser admin dashboard: projects and runs on the left, a chat-style run
-workspace in the center, and an operator inspector on the right.
+Xautojs Desktop is the local-first default interface for daily native-agent work.
+It is a Tauri desktop app that connects to the local loopback operator daemon,
+shows live replay, exposes approvals and run controls, and packages separately
+from the CLI npm package.
+
+Current desktop packaging state:
+
+```text
+Tauri app shell and operator MVP are implemented
+local daemon connection, replay stream, actions, hook cards, and workflow cards are implemented
+app icon generation is built into the desktop package scripts
+macOS, Windows, and Linux bundle targets are configured
+manual GitHub artifact workflow exists for unsigned smoke and release-candidate builds
+signed production installers and updater channels are still deferred
+```
 
 The browser `/operator` console remains the remote, admin, CI, and fallback
 surface. Desktop uses a local loopback daemon and the same operator API contract
@@ -333,7 +344,8 @@ instead of reading Postgres directly.
 
 See [Xautojs Desktop Operator Architecture](docs/xautojs-desktop-operator.md) for
 the daemon contract, Tauri app plan, permission UX, streaming model, roadmap, and
-acceptance criteria.
+acceptance criteria. See [Xautojs Desktop Packaging](docs/xautojs-desktop-packaging.md)
+for installer targets, signing placeholders, release artifacts, and updater policy.
 
 ## Operator API
 
@@ -401,6 +413,7 @@ node dist/cli.js doctor
 - [Native Agent Operator Guide](docs/native-agent-operator-guide.md)
 - [Native Agent Operator Console](docs/native-agent-operator-console.md)
 - [Xautojs Desktop Operator Architecture](docs/xautojs-desktop-operator.md)
+- [Xautojs Desktop Packaging](docs/xautojs-desktop-packaging.md)
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)
 
