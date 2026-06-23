@@ -9,7 +9,6 @@ import {
   type BindCloudWorkspaceRouteInput,
   type CloudRoutingDeviceRecord,
   type CloudRoutingToolCallRecord,
-  type CloudRoutingToolCallStatus,
   type CloudRoutingWorkspaceRouteRecord,
   type CompleteCloudToolCallRouteInput,
   type RegisterCloudRoutingDeviceInput,
@@ -131,6 +130,9 @@ export class InMemoryCloudRoutingStore implements CloudRoutingStore {
       "conversationSessionId",
     );
     const workspaceId = normalizeRequiredCloudRoutingId(input.workspaceId, "workspaceId");
+    const toolCallId = input.toolCallId === undefined
+      ? undefined
+      : normalizeRequiredCloudRoutingId(input.toolCallId, "toolCallId");
     const now = routeNow(input.now);
     const routeKey = scopedKey(owner, workspaceId);
     const route = this.workspaceRoutes.get(routeKey);
@@ -149,11 +151,11 @@ export class InMemoryCloudRoutingStore implements CloudRoutingStore {
     const updatedRoute: CloudRoutingWorkspaceRouteRecord = { ...route, lastRoutedAt: now };
     this.workspaceRoutes.set(routeKey, updatedRoute);
 
-    const toolCall = input.toolCallId
+    const toolCall = toolCallId
       ? this.recordToolCallRoute({
           owner,
           route: updatedRoute,
-          toolCallId: input.toolCallId,
+          toolCallId,
           tool: input.tool,
           now,
           deadlineAt: input.deadlineAt,
