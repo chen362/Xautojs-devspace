@@ -7,6 +7,59 @@ on:
   pull_request:
 
 jobs:
+  # TEMP-DESKTOP-LOCKFILE-SYNC-START
+  desktop-lockfile-sync:
+    name: Desktop lockfile sync
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      CARGO_HTTP_MULTIPLEXING: "false"
+      CARGO_NET_RETRY: "10"
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Generate desktop npm lockfile
+        run: npm --prefix apps/desktop install --package-lock-only --ignore-scripts
+
+      - name: Generate desktop Cargo lockfile
+        run: cargo generate-lockfile --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Remove temporary lockfile sync job
+        shell: bash
+        run: perl -0pi -e 's/^  # TEMP-DESKTOP-LOCKFILE-SYNC-START\n.*?^  # TEMP-DESKTOP-LOCKFILE-SYNC-END\n//ms' .github/workflows/ci.yml
+
+      - name: Commit generated desktop lockfiles
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/ci.yml apps/desktop/package-lock.json apps/desktop/src-tauri/Cargo.lock
+          if git diff --cached --quiet; then
+            echo "No desktop lockfile changes to commit."
+            exit 0
+          fi
+          git commit -m "Add generated desktop lockfiles"
+          git push
+  # TEMP-DESKTOP-LOCKFILE-SYNC-END
+
   smoke:
     name: Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
