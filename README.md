@@ -4,33 +4,81 @@
   </picture>
 </p>
 
-<h1 align="center">DevSpace</h1>
+<h1 align="center">Xautojs DevSpace</h1>
 
-<p align="center">Bring a Codex-style coding workflow to ChatGPT.</p>
+<p align="center">A self-hosted MCP workspace bridge and native local agent runtime for ChatGPT.</p>
+
+<p align="center">
+  English | <a href="README-cn.md">中文</a>
+</p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@waishnav/devspace"><img alt="npm" src="https://img.shields.io/npm/v/%40waishnav%2Fdevspace?style=flat-square" /></a>
-  <a href="https://github.com/Waishnav/devspace/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Waishnav/devspace/ci.yml?style=flat-square&branch=main" /></a>
-  <a href="https://github.com/Waishnav/devspace/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/npm/l/%40waishnav%2Fdevspace?style=flat-square" /></a>
+  <a href="https://github.com/chen362/Xautojs-devspace/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/chen362/Xautojs-devspace/ci.yml?style=flat-square&branch=Xautojs-devspace" /></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/npm/l/%40waishnav%2Fdevspace?style=flat-square" /></a>
 </p>
 
 [![DevSpace connected to ChatGPT](docs/assets/devspace-screenshot.png)](docs/assets/devspace-screenshot.png)
 
-**Give ChatGPT a secure connection to your own machine and Turn ChatGPT into Codex**
+## What This Project Is
 
-DevSpace is a self-hosted MCP server that lets ChatGPT read, edit, search, and run code in your real local projects — your files, your tools, your terminal — without uploading anything to a third party. You run it on your machine, expose it through a tunnel you control, and approve the connection with a password only you have.
+Xautojs DevSpace starts from DevSpace's local MCP workspace model and extends it
+into an independent native local agent runtime.
 
-## Installation
+It lets ChatGPT or another MCP-capable host work with selected local project
+folders through explicit tools, while keeping execution on your machine:
+
+- open approved local workspaces
+- read, write, edit, search, and inspect project files
+- run local commands for tests, builds, git, and package scripts
+- use isolated Git worktrees for parallel coding sessions
+- load project instructions from `AGENTS.md` and `CLAUDE.md`
+- discover local agent skills
+- expose change widgets in ChatGPT Apps-compatible hosts
+
+The Xautojs branch also adds production-oriented automation and native agent
+execution:
+
+- Postgres-backed workspace, automation, and native agent state
+- generic automation triggers and GitHub webhook ingress
+- GitHub webhook signature verification and routing policy
+- first-party native agent runs, events, process execution, and workflow packs
+- permission profiles, approval pause/resume, runtime hooks, retry, replay, and
+  operator APIs
+- operator CLI commands for dispatch, replay, approvals, retry, and cancel
+
+Codex and Claude Code are reference systems for good ideas. The runtime, storage,
+policy, hooks, workflow packs, and operator controls are Xautojs-native and do
+not require a Codex or Claude Code binary.
+
+## Package Note
+
+This repository currently keeps the upstream CLI package name:
+
+```bash
+@waishnav/devspace
+```
+
+The default development branch is:
+
+```text
+Xautojs-devspace
+```
+
+Use the default branch documentation as the source of truth for the Xautojs
+runtime features.
+
+## Quick Start
 
 DevSpace requires Node `>=20.12 <27`. Node 22 LTS is recommended.
 
-Install the DevSpace CLI:
+Install the CLI:
 
 ```bash
 npm install -g @waishnav/devspace
 ```
 
-Then initialize and start the server:
+Initialize and start the server:
 
 ```bash
 devspace init
@@ -46,10 +94,10 @@ npx @waishnav/devspace serve
 
 During setup, DevSpace asks for:
 
-- the local project folders ChatGPT is allowed to open through DevSpace
+- the local project folders ChatGPT is allowed to open
 - the local port, usually `7676`
-- your public HTTPS base URL from Cloudflare Tunnel, ngrok, Pinggy, Tailscale Funnel, or
-  another reverse proxy
+- your public HTTPS base URL from Cloudflare Tunnel, ngrok, Pinggy, Tailscale
+  Funnel, or another reverse proxy
 
 Use the public origin without `/mcp` during setup:
 
@@ -57,7 +105,11 @@ Use the public origin without `/mcp` during setup:
 https://your-tunnel-host.example.com
 ```
 
-You will configure your MCP client with the public `/mcp` URL after setup.
+Configure your MCP client with the public `/mcp` URL:
+
+```text
+https://your-tunnel-host.example.com/mcp
+```
 
 When the client connects, DevSpace opens an Owner password approval page. Enter
 the Owner password printed by `devspace init`. It is also stored in:
@@ -68,43 +120,14 @@ the Owner password printed by `devspace init`. It is also stored in:
 
 Keep that password private.
 
-## Connect Your MCP Client
-
-The default local endpoint is:
-
-```text
-http://127.0.0.1:7676/mcp
-```
-
-Most users should connect through a public HTTPS tunnel:
-
-```text
-https://your-tunnel-host.example.com/mcp
-```
-
-## What ChatGPT Can Do
-
-Once connected, ChatGPT can open one of your approved project folders as a
-workspace. From there, it can inspect the repo, make scoped edits, run commands,
-and show you what changed.
-
-DevSpace gives ChatGPT tools to:
-
-- read, write, and edit files inside the opened workspace
-- search code and inspect directories
-- run shell commands for tests, builds, git, and package scripts
-- use isolated Git worktrees for parallel coding sessions
-- follow project instructions from `AGENTS.md` and `CLAUDE.md`
-- discover local agent skills from your skill folders
-- show tool cards and optional change summaries in ChatGPT Apps-compatible hosts
-
 ## Mental Model
 
 DevSpace is remote access to selected local folders.
 
-You decide which roots are allowed. The MCP client still has powerful local
-capabilities inside the opened workspace, including shell execution. Treat a
-connected client like a trusted coding partner with access to your machine.
+You decide which roots are allowed. A connected MCP client can still have
+powerful local capabilities inside an opened workspace, including shell
+execution. Treat a connected client like a trusted coding partner with access to
+that part of your machine.
 
 For a normal ChatGPT coding session:
 
@@ -112,12 +135,14 @@ For a normal ChatGPT coding session:
 2. Run `devspace serve`.
 3. Connect the MCP client to your public `/mcp` URL.
 4. Approve the connection with the Owner password.
-5. Ask ChatGPT to open a project inside one of your allowed roots.
+5. Ask ChatGPT to open one of your allowed project folders.
 
 ## Production Postgres
 
-SQLite remains the default for local use. For production deployments, run
-DevSpace with OIDC auth and Postgres-backed workspace state:
+SQLite remains the default for local use. Postgres is required for production
+workspace state, automation ingress, and native agent operator workflows.
+
+Run migrations before serving production traffic:
 
 ```bash
 DEVSPACE_DEPLOYMENT_MODE="production" \
@@ -130,7 +155,7 @@ DEVSPACE_POSTGRES_SSL_MODE="require" \
 npx @waishnav/devspace db migrate
 ```
 
-Check schema readiness in a deployment script with JSON output:
+Check schema readiness with JSON output:
 
 ```bash
 DEVSPACE_DATABASE_PROVIDER="postgres" \
@@ -139,30 +164,146 @@ npx @waishnav/devspace db status --json
 ```
 
 Then start the server with the same database settings. `devspace serve` checks
-that migrations are current before accepting traffic. `devspace doctor --json`
-reports the resolved production config, redacted Postgres URL, and schema
-readiness for smoke checks. Runtime probes are available at `/healthz` for
-liveness and `/readyz` for readiness; `/readyz` returns HTTP 503 when Postgres
-schema status is not ready or cannot be read. Long-running deployments can enable
-session expiry with `DEVSPACE_WORKSPACE_SESSION_TTL_SECONDS`; loaded AGENTS/CLAUDE
-file snapshots are deleted automatically when their workspace session is cleaned
-up.
+that migrations are current before accepting traffic. Runtime probes are
+available at `/healthz` for liveness and `/readyz` for readiness.
 
-For a full Ubuntu/Linux, macOS, and Windows production smoke flow, see
-[Production Smoke Check](docs/production-smoke.md). A copyable environment
-reference lives at [`examples/production.env.example`](examples/production.env.example).
+## Automation Ingress
+
+Automation sources are owner-scoped and Postgres-backed. Supported ingress paths
+include:
+
+```text
+POST /api/automation/triggers/:triggerId/fire
+POST /api/automation/github/webhooks/:sourceId
+```
+
+The GitHub webhook path verifies `X-Hub-Signature-256`, deduplicates deliveries,
+applies source routing policy, and either queues automation work or stores the
+event as audit-only ignored work.
+
+Source tokens are managed with:
+
+```bash
+devspace automation source create
+devspace automation source list
+devspace automation source rotate-token
+```
+
+## Native Agent Runtime
+
+The native runtime turns queued automation work into auditable local execution.
+It provides:
+
+```text
+agent_runs
+agent_run_events
+agent_tool_calls
+agent_runtime_hooks
+```
+
+Native run status is more detailed than coarse automation status:
+
+```text
+queued -> claiming -> running -> waiting_input -> succeeded | failed | cancelled | timed_out
+```
+
+Built-in workflow packs include:
+
+```text
+manual
+github-pr-review
+feature-dev
+security-review
+test-fix
+```
+
+Runtime hooks are typed and replayable:
+
+```text
+Start
+WorkflowStep
+PreToolUse
+PostToolUse
+PermissionRequest
+PostCompact
+Stop
+```
+
+Every hook decision is mirrored into the run event stream as
+`run.hook.decision`, so operator replay can show lifecycle and workflow-step
+state. Legacy hook table records are still kept for `PreToolUse`, `PostToolUse`,
+`PermissionRequest`, `PostCompact`, and `Stop`.
+
+## Operator CLI
+
+Native agent commands require Postgres. Operator HTTP APIs additionally require:
+
+```text
+DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN
+```
+
+Common CLI flow:
+
+```bash
+devspace agent workflows
+devspace agent dispatch-once --workspace-root /path/to/workspace
+devspace agent list
+devspace agent replay --id <agentRunId>
+devspace agent approvals --id <agentRunId>
+devspace agent approve --id <agentRunId> --approval-id <approvalId>
+devspace agent deny --id <agentRunId> --approval-id <approvalId>
+devspace agent resume --id <agentRunId> --workspace-root /path/to/workspace
+devspace agent retry --id <agentRunId>
+devspace agent cancel --id <agentRunId>
+```
+
+`devspace agent replay --id <agentRunId>` now prints an operator-focused summary
+by default: status, workflow, approval counts, hook decision counts, workflow
+step state, pending approval, blocking hooks, and retry links. Use `--json` for
+the full machine-readable event stream.
+
+## Operator API
+
+The native agent operator API is mounted under:
+
+```text
+/api/native-agent
+```
+
+It requires:
+
+```text
+Authorization: Bearer <DEVSPACE_NATIVE_AGENT_OPERATOR_TOKEN>
+```
+
+Important endpoints:
+
+```text
+GET  /api/native-agent/runs
+GET  /api/native-agent/runs/:agentRunId/events
+GET  /api/native-agent/runs/:agentRunId/replay
+GET  /api/native-agent/runs/:agentRunId/approvals
+POST /api/native-agent/runs/:agentRunId/approvals
+POST /api/native-agent/runs/:agentRunId/approvals/:approvalId/resolve
+POST /api/native-agent/runs/:agentRunId/resume
+POST /api/native-agent/runs/:agentRunId/retry
+POST /api/native-agent/runs/:agentRunId/cancel
+POST /api/native-agent/dispatch/once
+POST /api/native-agent/dispatch/run
+```
+
+See [Native Agent Runtime](docs/native-agent-runtime.md) for the full contract.
 
 ## Platform Support
 
-DevSpace supports Linux, macOS, and Windows environments with a Bash-compatible
-shell.
+DevSpace supports Linux, macOS, and Windows environments.
 
-| Platform                                          | Status            | Notes                                          |
-| ------------------------------------------------- | ----------------- | ---------------------------------------------- |
-| Linux                                             | Supported         | Requires Node, npm, Git, and Bash.             |
-| macOS                                             | Supported         | Requires Node, npm, Git, and Bash.             |
-| Windows with Git Bash, WSL, MSYS2, or Cygwin Bash | Supported         | Git Bash is the simplest native Windows setup. |
-| Windows PowerShell or `cmd.exe` only              | Not supported yet | Install Git Bash or use WSL.                   |
+| Platform | Status | Notes |
+| --- | --- | --- |
+| Linux | Supported | Requires Node, npm, Git, and Bash for MCP shell workflows. |
+| macOS | Supported | Requires Node, npm, Git, and Bash for MCP shell workflows. |
+| Windows with Git Bash, WSL, MSYS2, or Cygwin Bash | Supported | Git Bash is the simplest native Windows setup. |
+| Windows PowerShell or `cmd.exe` only | Partial | The native agent process engine avoids shell assumptions, but MCP shell workflows still expect a Bash-compatible shell. |
 
 Run this to inspect your local setup:
 
@@ -172,6 +313,7 @@ devspace doctor
 
 ## Documentation
 
+- [中文 README](README-cn.md)
 - [Setup Guide](docs/setup.md)
 - [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
 - [Configuration Reference](docs/configuration.md)
@@ -181,34 +323,9 @@ devspace doctor
 - [Security Model](docs/security.md)
 - [Troubleshooting Gotchas](docs/gotchas.md)
 
-## Philosophy
-
-Every piece of software is becoming conversational. Natural language is
-redefining how we interact with tools, workflows, and systems.
-
-My bet is that ChatGPT becomes the operating system for everything. Once we
-reach AGI, we will simply talk to ChatGPT, and it will prompt, coordinate, and
-orchestrate sub-agents that set up the right loops for us.
-
-We are not there yet.
-
-DevSpace is one attempt to fast-forward that future: a way for MCP-capable
-hosts like ChatGPT and Claude to work directly with local project files through
-explicit, inspectable tools.
-
-## Built by Waishnav
-
-I'm Waishnav, the creator of [GitCMS](https://gitcms.dev/), a Git-backed CMS
-for markdown sites.
-
-I like building opinionated products, and DevSpace is another example of that.
-I'm on a journey to build a single-person company doing multiple millions in
-revenue. If you want to watch the failures, wins, lessons, and everything in
-between, come hang out with me on [X](https://x.com/wshxnv).
-
 ## Local Development
 
-For working on DevSpace itself:
+For working on this repository:
 
 ```bash
 npm install --include=dev
@@ -218,3 +335,15 @@ npm test
 npm run build
 npm run start
 ```
+
+Run the Postgres integration test when a database is available:
+
+```bash
+DEVSPACE_DATABASE_URL="postgres://devspace:secret@127.0.0.1:5432/devspace_test" \
+DEVSPACE_POSTGRES_SSL_MODE="disable" \
+npm run test:postgres
+```
+
+## License
+
+MIT.
