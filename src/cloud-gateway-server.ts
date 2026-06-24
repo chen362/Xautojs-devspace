@@ -9,10 +9,13 @@ import type { CloudRoutingStore } from "./cloud-routing-store.js";
 import { InMemoryCloudRoutingStore } from "./cloud-routing-store.js";
 import type { CloudSessionBindingService } from "./cloud-session-binding.js";
 import { InMemoryCloudSessionBindingService } from "./cloud-session-binding.js";
+import type { CloudWorkspaceCatalogStore } from "./cloud-workspace-catalog-store.js";
+import { InMemoryCloudWorkspaceCatalogStore } from "./cloud-workspace-catalog-store.js";
 import { GatewayMcpToolExecutor } from "./gateway-mcp-tool-executor.js";
 import { PostgresCloudDeviceConnectionStore } from "./postgres-cloud-device-connection-store.js";
 import { PostgresCloudRoutingStore } from "./postgres-cloud-routing-store.js";
 import { PostgresCloudSessionBindingService } from "./postgres-cloud-session-binding.js";
+import { PostgresCloudWorkspaceCatalogStore } from "./postgres-cloud-workspace-catalog-store.js";
 import { WebSocketDeviceChannel } from "./websocket-device-channel.js";
 
 export interface CloudGatewayRuntimeOptions {
@@ -20,6 +23,7 @@ export interface CloudGatewayRuntimeOptions {
   sessionBindings?: CloudSessionBindingService;
   deviceChannel?: CloudDeviceChannel;
   deviceConnectionStore?: CloudDeviceConnectionStore;
+  workspaceCatalogStore?: CloudWorkspaceCatalogStore;
   desktopToolService?: CloudDesktopToolService;
 }
 
@@ -28,6 +32,7 @@ export interface CloudGatewayRuntime {
   sessionBindings: CloudSessionBindingService;
   deviceChannel: CloudDeviceChannel;
   deviceConnectionStore: CloudDeviceConnectionStore;
+  workspaceCatalogStore: CloudWorkspaceCatalogStore;
   desktopToolService: CloudDesktopToolService;
   toolExecutor: GatewayMcpToolExecutor;
   close(): Promise<void>;
@@ -41,9 +46,11 @@ export function createCloudGatewayRuntime(
   const sessionBindings = options.sessionBindings ?? createDefaultSessionBindings(config, routingStore);
   const deviceChannel = options.deviceChannel ?? new WebSocketDeviceChannel();
   const deviceConnectionStore = options.deviceConnectionStore ?? createDefaultDeviceConnectionStore(config);
+  const workspaceCatalogStore = options.workspaceCatalogStore ?? createDefaultWorkspaceCatalogStore(config);
   const desktopToolService = options.desktopToolService ?? new CloudDesktopToolService(
     sessionBindings,
     deviceConnectionStore,
+    workspaceCatalogStore,
   );
   const toolExecutor = new GatewayMcpToolExecutor(routingStore, deviceChannel, sessionBindings);
 
@@ -52,11 +59,13 @@ export function createCloudGatewayRuntime(
     sessionBindings,
     deviceChannel,
     deviceConnectionStore,
+    workspaceCatalogStore,
     desktopToolService,
     toolExecutor,
     close: async () => {
       await closeIfPresent(deviceChannel);
       await closeIfPresent(deviceConnectionStore);
+      await closeIfPresent(workspaceCatalogStore);
       await closeIfPresent(sessionBindings);
       await closeIfPresent(routingStore);
     },
@@ -81,6 +90,11 @@ function createDefaultSessionBindings(
 function createDefaultDeviceConnectionStore(config: ServerConfig): CloudDeviceConnectionStore {
   if (isPostgresDatabaseConfig(config.database)) return new PostgresCloudDeviceConnectionStore(config.database);
   return new InMemoryCloudDeviceConnectionStore();
+}
+
+function createDefaultWorkspaceCatalogStore(config: ServerConfig): CloudWorkspaceCatalogStore {
+  if (isPostgresDatabaseConfig(config.database)) return new PostgresCloudWorkspaceCatalogStore(config.database);
+  return new InMemoryCloudWorkspaceCatalogStore();
 }
 
 async function closeIfPresent(value: unknown): Promise<void> {
