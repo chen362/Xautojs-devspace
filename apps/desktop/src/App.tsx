@@ -9,6 +9,11 @@ import {
   type DesktopCloudConnectionSettings,
 } from "./cloud-connection-client.js";
 import {
+  startDesktopCloudLifecycle,
+  stopDesktopCloudLifecycle,
+  type DesktopCloudLifecycleBridgeStatus,
+} from "./tauri-cloud-lifecycle-client.js";
+import {
   DEFAULT_DAEMON_URL,
   cancelOperatorRun,
   dispatchOperatorOnce,
@@ -33,7 +38,7 @@ import {
 const DAEMON_URL_STORAGE_KEY = "xautojs.desktop.daemonUrl";
 
 type StreamState = "idle" | "connecting" | "live" | "polling" | "ended" | "error";
-type CloudLifecycleState = "stopped" | "ready";
+type CloudLifecycleState = DesktopCloudLifecycleBridgeStatus | "ready";
 
 const initialSnapshot: OperatorConnectionSnapshot = {
   status: "checking",
@@ -202,25 +207,43 @@ export default function App() {
     setCloudError(undefined);
   }
 
-  function handleCloudSettingsSubmit(event: FormEvent<HTMLFormElement>): void {
+  async function handleCloudSettingsSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setCloudNotice(undefined);
     setCloudError(undefined);
     try {
       const payload = buildDesktopCloudLifecyclePayload(cloudSettings);
       storeCloudConnectionSettings(cloudSettings);
-      setCloudLifecycleState("ready");
-      setCloudNotice(`Lifecycle payload ready for ${payload.deviceId} with ${payload.workspaceCatalog.workspaces.length} workspace(s).`);
+      const bridge = await startDesktopCloudLifecycle(payload);
+      setCloudLifecycleState(bridge.status === "stopped" ? "ready" : bridge.status);
+      if (bridge.status === "error") {
+        setCloudError(bridge.lastError ?? "Cloud lifecycle failed to start.");
+        return;
+      }
+      if (bridge.status === "unsupported") {
+        setCloudNotice(`Lifecycle payload saved for ${payload.deviceId}; Tauri bridge is unavailable in this browser session.`);
+        return;
+      }
+      setCloudNotice(`Cloud lifecycle running for ${payload.deviceId} with ${payload.workspaceCatalog.workspaces.length} workspace(s).`);
     } catch (error) {
       setCloudLifecycleState("stopped");
       setCloudError(error instanceof Error ? error.message : String(error));
     }
   }
 
-  function handleCloudStop(): void {
-    setCloudLifecycleState("stopped");
-    setCloudNotice("Cloud outbound lifecycle stopped for this Desktop window.");
+  async function handleCloudStop(): Promise<void> {
+    setCloudNotice(undefined);
     setCloudError(undefined);
+    const bridge = await stopDesktopCloudLifecycle();
+    if (bridge.status === "error") {
+      setCloudLifecycleState("error");
+      setCloudError(bridge.lastError ?? "Cloud lifecycle failed to stop.");
+      return;
+    }
+    setCloudLifecycleState("stopped");
+    setCloudNotice(bridge.status === "unsupported"
+      ? "Cloud setup marked stopped for this Desktop window; Tauri bridge is unavailable in this browser session."
+      : "Cloud outbound lifecycle stopped for this Desktop window.");
   }
 
   async function handleDispatch(event: FormEvent<HTMLFormElement>) {
@@ -901,12 +924,17 @@ function cloudReadinessTone(status: DesktopCloudConnectionReadiness): string {
 }
 
 function cloudLifecycleLabel(state: CloudLifecycleState, readiness: DesktopCloudConnectionReadiness): string {
+  if (state === "running") return "Lifecycle running";
   if (state === "ready") return "Lifecycle ready";
+  if (state === "unsupported") return "Bridge unavailable";
+  if (state === "error") return "Lifecycle error";
   return readiness === "ready" ? "Stopped" : "Needs setup";
 }
 
 function cloudLifecycleTone(state: CloudLifecycleState, readiness: DesktopCloudConnectionReadiness): string {
-  if (state === "ready") return "success";
+  if (state === "running" || state === "ready") return "success";
+  if (state === "unsupported") return "warning";
+  if (state === "error") return "danger";
   return readiness === "ready" ? "muted" : cloudReadinessTone(readiness);
 }
 
