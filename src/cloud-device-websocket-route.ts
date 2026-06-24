@@ -10,11 +10,15 @@ import {
   type CloudDeviceGatewayMessage,
   type CloudDeviceAgentHelloMessage,
   type CloudDeviceHeartbeatMessage,
+  type CloudDeviceWorkspaceCatalogMessage,
 } from "./cloud-device-channel-protocol.js";
 import type { WorkspaceIdentity } from "./identity.js";
 
 export interface CloudDeviceWebSocketAuthContext {
   owner: WorkspaceIdentity;
+  deviceId?: string;
+  desktopInstanceId?: string;
+  expiresAt?: string;
 }
 
 export type CloudDeviceWebSocketAuthenticator = (
@@ -55,10 +59,9 @@ export function attachCloudDeviceWebSocketRoute(
       return;
     }
 
-    const owner = auth.owner;
     wss.handleUpgrade(request, socket, head, (websocket) => {
       wss.emit("connection", websocket, request);
-      void handleDeviceSocket({ websocket, owner, runtime: input.runtime });
+      void handleDeviceSocket({ websocket, auth, runtime: input.runtime });
     });
   };
 
@@ -75,7 +78,7 @@ export function attachCloudDeviceWebSocketRoute(
 
 async function handleDeviceSocket(input: {
   websocket: WebSocket;
-  owner: WorkspaceIdentity;
+  auth: CloudDeviceWebSocketAuthContext;
   runtime: CloudGatewayRuntime & { deviceChannel: WebSocketDeviceChannel };
 }): Promise<void> {
   let hello: CloudDeviceAgentHelloMessage | undefined;
@@ -103,14 +106,19 @@ async function handleDeviceSocket(input: {
           input.websocket.close(1008, "hello_required");
           return;
         }
+        if (!helloMatchesAuth(message, input.auth)) {
+          input.websocket.close(1008, "auth_device_mismatch");
+          return;
+        }
 
         hello = message;
         await input.runtime.routingStore.registerDevice({
-          owner: input.owner,
+          owner: input.auth.owner,
           deviceId: message.deviceId,
           capabilities: message.capabilities,
           status: "online",
           now: message.time,
+          expiresAt: input.auth.expiresAt,
         });
         const registered = input.runtime.deviceChannel.registerConnection({
           deviceId: message.deviceId,
@@ -121,7 +129,7 @@ async function handleDeviceSocket(input: {
         const registeredConnectionId = registered.connectionId;
         connectionId = registeredConnectionId;
         await input.runtime.deviceConnectionStore.recordConnected({
-          owner: input.owner,
+          owner: input.auth.owner,
           deviceId: message.deviceId,
           connectionId: registeredConnectionId,
           capabilities: message.capabilities,
@@ -141,9 +149,18 @@ async function handleDeviceSocket(input: {
       if (message.type === "agent.heartbeat") {
         await handleHeartbeat({
           message,
-          owner: input.owner,
+          owner: input.auth.owner,
           runtime: input.runtime,
           connectionId,
+        });
+        return;
+      }
+
+      if (message.type === "workspace.catalog") {
+        await handleWorkspaceCatalog({
+          message,
+          owner: input.auth.owner,
+          runtime: input.runtime,
         });
         return;
       }
@@ -159,12 +176,12 @@ async function handleDeviceSocket(input: {
       if (!hello || !connectionId) return;
       input.runtime.deviceChannel.unregisterConnection(hello.deviceId, "websocket_closed");
       await input.runtime.routingStore.setDeviceStatus({
-        owner: input.owner,
+        owner: input.auth.owner,
         deviceId: hello.deviceId,
         status: "offline",
       }).catch(() => undefined);
       await input.runtime.deviceConnectionStore.recordDisconnected({
-        owner: input.owner,
+        owner: input.auth.owner,
         deviceId: hello.deviceId,
         connectionId,
       }).catch(() => undefined);
@@ -195,6 +212,26 @@ async function handleHeartbeat(input: {
   }
 }
 
+async function handleWorkspaceCatalog(input: {
+  message: CloudDeviceWorkspaceCatalogMessage;
+  owner: WorkspaceIdentity;
+  runtime: CloudGatewayRuntime & { deviceChannel: WebSocketDeviceChannel };
+}): Promise<void> {
+  await input.runtime.workspaceCatalogStore.recordCatalog({
+    owner: input.owner,
+    deviceId: input.message.deviceId,
+    catalogVersion: input.message.catalogVersion,
+    workspaces: input.message.workspaces,
+    now: input.message.time,
+  });
+}
+
+function helloMatchesAuth(message: CloudDeviceAgentHelloMessage, auth: CloudDeviceWebSocketAuthContext): boolean {
+  if (auth.deviceId && auth.deviceId !== message.deviceId) return false;
+  if (auth.desktopInstanceId && auth.desktopInstanceId !== message.desktopInstanceId) return false;
+  return true;
+}
+
 function matchesPath(request: IncomingMessage, path: string): boolean {
   const url = new URL(request.url ?? "/", "http://localhost");
   return url.pathname === path;
@@ -215,6 +252,7 @@ function isAgentMessage(value: unknown): value is CloudDeviceAgentMessage {
   if (typeof value.type !== "string") return false;
   if (value.type === "agent.hello") return isHelloMessage(value);
   if (value.type === "agent.heartbeat") return isHeartbeatMessage(value);
+  if (value.type === "workspace.catalog") return isWorkspaceCatalogMessage(value);
   if (value.type === "tool.result") return isToolResultMessage(value);
   return false;
 }
@@ -237,6 +275,28 @@ function isHeartbeatMessage(value: Record<string, unknown>): value is CloudDevic
     typeof value.deviceId === "string" &&
     typeof value.time === "string" &&
     (value.connectionId === undefined || typeof value.connectionId === "string")
+  );
+}
+
+function isWorkspaceCatalogMessage(value: Record<string, unknown>): value is CloudDeviceWorkspaceCatalogMessage {
+  return (
+    value.type === "workspace.catalog" &&
+    typeof value.deviceId === "string" &&
+    typeof value.time === "string" &&
+    (value.catalogVersion === undefined || typeof value.catalogVersion === "string") &&
+    Array.isArray(value.workspaces) &&
+    value.workspaces.every(isWorkspaceCatalogEntry)
+  );
+}
+
+function isWorkspaceCatalogEntry(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.workspaceRef === "string" &&
+    typeof value.displayName === "string" &&
+    typeof value.rootLabel === "string" &&
+    Array.isArray(value.capabilities) &&
+    value.capabilities.every((capability) => typeof capability === "string")
   );
 }
 
