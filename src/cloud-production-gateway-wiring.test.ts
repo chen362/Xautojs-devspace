@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { AddressInfo } from "node:net";
+import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import { attachCloudDeviceWebSocketRoute } from "./cloud-device-websocket-route.js";
 import { InMemoryCloudDeviceConnectionStore } from "./cloud-device-connection-store.js";
