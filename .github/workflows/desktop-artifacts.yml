@@ -109,6 +109,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential curl wget file libssl-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
 
+      - name: Sync root package lock
+        run: npm install --package-lock-only --ignore-scripts
+
       - name: Install root dependencies
         run: npm ci
 
@@ -187,6 +190,7 @@ jobs:
         with:
           name: xautojs-desktop-lockfiles-${{ matrix.artifact_suffix }}-${{ github.event.inputs.desktop_version || github.sha }}
           path: |
+            package-lock.json
             apps/desktop/package-lock.json
             apps/desktop/src-tauri/Cargo.lock
           if-no-files-found: error
