@@ -3,11 +3,13 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
+import { createSignedCloudDeviceWebSocketAuthenticator, issueCloudGatewayDeviceToken } from "./cloud-gateway-auth.js";
 import { attachCloudDeviceWebSocketRoute } from "./cloud-device-websocket-route.js";
 import { InMemoryCloudDeviceConnectionStore } from "./cloud-device-connection-store.js";
 import { CloudDesktopToolService } from "./cloud-desktop-tool-service.js";
 import { InMemoryCloudRoutingStore } from "./cloud-routing-store.js";
 import { InMemoryCloudSessionBindingService } from "./cloud-session-binding.js";
+import { InMemoryCloudWorkspaceCatalogStore } from "./cloud-workspace-catalog-store.js";
 import type { CloudGatewayRuntime } from "./cloud-gateway-server.js";
 import { GatewayMcpToolExecutor } from "./gateway-mcp-tool-executor.js";
 import type { WorkspaceIdentity } from "./identity.js";
@@ -16,16 +18,27 @@ import { WebSocketDeviceChannel } from "./websocket-device-channel.js";
 import { CLOUD_DEVICE_CHANNEL_PROTOCOL_VERSION } from "./cloud-device-channel-protocol.js";
 
 const owner: WorkspaceIdentity = { tenantId: "tenant_prod", userId: "user_prod" };
+const authSecret = "prod_test_secret";
+const deviceToken = issueCloudGatewayDeviceToken({
+  tenantId: owner.tenantId,
+  userId: owner.userId,
+  deviceId: "dev_prod_a",
+  desktopInstanceId: "desk_prod_a",
+  issuedAt: "2026-06-24T00:00:00.000Z",
+  expiresAt: "2026-06-24T01:00:00.000Z",
+}, authSecret);
 const routingStore = new InMemoryCloudRoutingStore();
 const sessionBindings = new InMemoryCloudSessionBindingService(routingStore);
 const deviceChannel = new WebSocketDeviceChannel({ toolCallTimeoutMs: 500 });
 const deviceConnectionStore = new InMemoryCloudDeviceConnectionStore();
-const desktopToolService = new CloudDesktopToolService(sessionBindings, deviceConnectionStore);
+const workspaceCatalogStore = new InMemoryCloudWorkspaceCatalogStore();
+const desktopToolService = new CloudDesktopToolService(sessionBindings, deviceConnectionStore, workspaceCatalogStore);
 const runtime: CloudGatewayRuntime & { deviceChannel: WebSocketDeviceChannel } = {
   routingStore,
   sessionBindings,
   deviceChannel,
   deviceConnectionStore,
+  workspaceCatalogStore,
   desktopToolService,
   toolExecutor: new GatewayMcpToolExecutor(routingStore, deviceChannel, sessionBindings),
   close: async () => undefined,
@@ -34,14 +47,19 @@ const server = createServer();
 const route = attachCloudDeviceWebSocketRoute({
   server,
   runtime,
-  authenticate: () => ({ owner }),
+  authenticate: createSignedCloudDeviceWebSocketAuthenticator({
+    secret: authSecret,
+    now: () => "2026-06-24T00:05:00.000Z",
+  }),
 });
 
 try {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const { port } = server.address() as AddressInfo;
-  const websocket = new WebSocket(`ws://127.0.0.1:${port}${route.path}`);
+  const websocket = new WebSocket(`ws://127.0.0.1:${port}${route.path}`, {
+    headers: { authorization: `Bearer ${deviceToken}` },
+  });
   await once(websocket, "open");
 
   websocket.send(JSON.stringify({
@@ -64,9 +82,28 @@ try {
   assert.equal(connected.status, "connected");
   assert.equal(connected.deviceId, "dev_prod_a");
 
+  websocket.send(JSON.stringify({
+    type: "workspace.catalog",
+    protocolVersion: CLOUD_DEVICE_CHANNEL_PROTOCOL_VERSION,
+    deviceId: "dev_prod_a",
+    catalogVersion: "catalog_v1",
+    time: "2026-06-24T00:00:02.000Z",
+    workspaces: [{
+      workspaceRef: "workspace_prod_a",
+      displayName: "Production Workspace",
+      rootLabel: "~/projects/prod",
+      capabilities: ["read", "write", "read"],
+    }],
+  }));
+  await waitFor(async () =>
+    (await workspaceCatalogStore.listWorkspaces({ owner, deviceId: "dev_prod_a" })).length === 1,
+  );
+
   const workspaces = await desktopToolService.listWorkspaces(context());
   assert.equal(workspaces.deviceId, "dev_prod_a");
-  assert.equal(workspaces.catalogPending, true);
+  assert.equal(workspaces.catalogPending, false);
+  assert.equal(workspaces.workspaces[0]?.workspaceRef, "workspace_prod_a");
+  assert.deepEqual(workspaces.workspaces[0]?.capabilities, ["read", "write"]);
 
   websocket.send(JSON.stringify({
     type: "agent.heartbeat",
