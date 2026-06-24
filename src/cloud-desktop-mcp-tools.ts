@@ -102,7 +102,7 @@ export function registerCloudDesktopMcpTools(
       const result = await service.listWorkspaces(getExecutionContext(), input);
       return {
         content: [text(result.catalogPending
-          ? "Workspace catalog is not available yet; open_workspace can still route through a connected Desktop device."
+          ? "Workspace catalog is not available yet; connect_workspace requires a catalog entry reported by the Desktop device."
           : `Found ${result.workspaces.length} workspace${result.workspaces.length === 1 ? "" : "s"}.`)],
         structuredContent: result,
       };
