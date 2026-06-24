@@ -45,11 +45,30 @@ await assert.rejects(
     && error.retryable,
 );
 
-await service.approve({
+const approved = await service.approve({
   userCode: created.userCode,
   owner,
   now: "2026-06-24T00:00:05.000Z",
 });
+assert.equal(approved.owner?.tenantId, owner.tenantId);
+
+const approvedReplay = await service.approve({
+  userCode: created.userCode,
+  owner,
+  deviceId: "dev_auth_a",
+  desktopInstanceId: "desk_auth_a",
+  now: "2026-06-24T00:00:06.000Z",
+});
+assert.equal(approvedReplay.owner?.userId, owner.userId);
+await assert.rejects(
+  () => service.approve({
+    userCode: created.userCode,
+    owner: { tenantId: "tenant_other", userId: "user_other" },
+    now: "2026-06-24T00:00:07.000Z",
+  }),
+  (error) => error instanceof CloudDeviceAuthorizationError && error.code === "ACCESS_DENIED",
+);
+
 const token = await service.poll({ deviceCode: created.deviceCode, now: "2026-06-24T00:00:10.000Z" });
 assert.equal(token.tokenType, "Bearer");
 assert.equal(token.deviceId, "dev_auth_a");
