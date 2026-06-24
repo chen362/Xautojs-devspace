@@ -1,12 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use keyring::{Entry, Error as KeyringError};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
+
+const CLOUD_DEVICE_TOKEN_SERVICE: &str = "xautojs-devspace";
+const CLOUD_DEVICE_TOKEN_ACCOUNT: &str = "desktop-cloud-device-token";
+const DESKTOP_AGENT_BIN: &str = "devspace-desktop-agent";
 
 #[derive(Default)]
 struct CloudLifecycleState {
@@ -153,6 +159,35 @@ fn get_cloud_lifecycle(state: State<CloudLifecycleState>) -> Result<CloudLifecyc
     Ok(snapshot.clone())
 }
 
+#[tauri::command]
+fn store_cloud_device_token(token: String) -> Result<(), String> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return Err("device token is required".to_string());
+    }
+    cloud_device_token_entry()?
+        .set_password(trimmed)
+        .map_err(format_keychain_error)
+}
+
+#[tauri::command]
+fn read_cloud_device_token() -> Result<Option<String>, String> {
+    match cloud_device_token_entry()?.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(error) => Err(format_keychain_error(error)),
+    }
+}
+
+#[tauri::command]
+fn clear_cloud_device_token() -> Result<(), String> {
+    match cloud_device_token_entry()?.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(KeyringError::NoEntry) => Ok(()),
+        Err(error) => Err(format_keychain_error(error)),
+    }
+}
+
 fn validate_lifecycle_payload(payload: &CloudLifecyclePayload) -> Result<(), String> {
     if payload.url.trim().is_empty() {
         return Err("gateway url is required".to_string());
@@ -215,13 +250,49 @@ impl LifecycleRunnerCommand {
 
 fn lifecycle_runner_command() -> LifecycleRunnerCommand {
     let command = env::var("DEVSPACE_DESKTOP_AGENT_COMMAND")
-        .unwrap_or_else(|_| "devspace-desktop-agent".to_string());
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(default_lifecycle_runner_command);
     let args = env::var("DEVSPACE_DESKTOP_AGENT_ARGS")
         .ok()
         .map(|value| split_runner_args(&value))
         .filter(|args| !args.is_empty())
         .unwrap_or_else(|| vec!["--stdin".to_string()]);
     LifecycleRunnerCommand { command, args }
+}
+
+fn default_lifecycle_runner_command() -> String {
+    packaged_runner_path()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| DESKTOP_AGENT_BIN.to_string())
+}
+
+fn packaged_runner_path() -> Option<PathBuf> {
+    let current_exe = env::current_exe().ok()?;
+    let exe_dir = current_exe.parent()?;
+    candidate_runner_paths(exe_dir)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
+fn candidate_runner_paths(exe_dir: &Path) -> Vec<PathBuf> {
+    let file_name = runner_file_name();
+    let mut paths = vec![exe_dir.join(file_name)];
+
+    if let Some(contents_dir) = exe_dir.parent() {
+        paths.push(contents_dir.join("Resources").join(file_name));
+    }
+
+    paths
+}
+
+fn runner_file_name() -> &'static str {
+    if cfg!(windows) {
+        "devspace-desktop-agent.exe"
+    } else {
+        DESKTOP_AGENT_BIN
+    }
 }
 
 fn split_runner_args(value: &str) -> Vec<String> {
@@ -281,6 +352,15 @@ fn set_error_snapshot(
     Ok(())
 }
 
+fn cloud_device_token_entry() -> Result<Entry, String> {
+    Entry::new(CLOUD_DEVICE_TOKEN_SERVICE, CLOUD_DEVICE_TOKEN_ACCOUNT)
+        .map_err(format_keychain_error)
+}
+
+fn format_keychain_error(error: KeyringError) -> String {
+    format!("desktop keychain error: {}", error)
+}
+
 fn now_marker() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -296,6 +376,9 @@ fn main() {
             start_cloud_lifecycle,
             stop_cloud_lifecycle,
             get_cloud_lifecycle,
+            store_cloud_device_token,
+            read_cloud_device_token,
+            clear_cloud_device_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Xautojs Desktop");
