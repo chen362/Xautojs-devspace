@@ -108,6 +108,41 @@ export function registerCloudDesktopMcpTools(
       };
     },
   );
+
+  registerAppTool(
+    server,
+    "connect_workspace",
+    {
+      title: "Connect Desktop workspace",
+      description:
+        "Bind a workspaceRef from list_workspaces to the current MCP session and return a cloud workspaceId for routed file tools.",
+      inputSchema: {
+        workspaceRef: z.string().describe("workspaceRef returned by list_workspaces."),
+        deviceId: z.string().optional().describe("Optional deviceId from list_devices."),
+        workspaceId: z.string().optional().describe("Optional caller-provided stable workspaceId."),
+        idempotencyKey: z.string().optional().describe("Optional idempotency key for retrying the same workspace selection."),
+      },
+      outputSchema: {
+        status: z.literal("connected"),
+        workspaceId: z.string(),
+        workspaceRef: z.string(),
+        deviceId: z.string(),
+        displayName: z.string(),
+        rootLabel: z.string(),
+        capabilities: z.array(z.string()),
+        idempotencyKey: z.string().optional(),
+        idempotentReplay: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input) => {
+      const result = await service.connectWorkspace(getExecutionContext(), input);
+      return {
+        content: [text(`Connected workspace ${result.displayName} as ${result.workspaceId}.`)],
+        structuredContent: result,
+      };
+    },
+  );
 }
 
 function text(value: string): ToolContent {
