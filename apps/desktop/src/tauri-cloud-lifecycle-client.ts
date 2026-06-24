@@ -8,6 +8,7 @@ export interface DesktopCloudLifecycleBridgeSnapshot {
   desktopInstanceId?: string;
   url?: string;
   workspaceCount: number;
+  processId?: number;
   startedAt?: string;
   stoppedAt?: string;
   lastError?: string;
@@ -69,6 +70,7 @@ function normalizeSnapshot(value: DesktopCloudLifecycleBridgeSnapshot): DesktopC
     desktopInstanceId: optionalString(value.desktopInstanceId),
     url: optionalString(value.url),
     workspaceCount: typeof value.workspaceCount === "number" ? value.workspaceCount : 0,
+    processId: typeof value.processId === "number" ? value.processId : undefined,
     startedAt: optionalString(value.startedAt),
     stoppedAt: optionalString(value.stoppedAt),
     lastError: optionalString(value.lastError),
