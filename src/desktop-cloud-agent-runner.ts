@@ -67,7 +67,7 @@ export interface StartedDesktopCloudAgent {
   snapshot: DesktopOutboundAgentSnapshot;
 }
 
-interface NormalizedDesktopCloudAgentWorkspace {
+export interface NormalizedDesktopCloudAgentWorkspace {
   workspaceRef: string;
   displayName: string;
   rootLabel: string;
