@@ -159,10 +159,6 @@ function createDefaultDeviceCodeOwnerResolver(config: ServerConfig): (request: R
     if (config.oauth.mode === "owner-token" && bearerToken(request) === config.oauth.ownerToken) {
       return LOCAL_WORKSPACE_IDENTITY;
     }
-
-    const tenantId = request.header("x-devspace-tenant-id")?.trim();
-    const userId = request.header("x-devspace-user-id")?.trim();
-    if (tenantId && userId) return { tenantId, userId };
     return undefined;
   };
 }
