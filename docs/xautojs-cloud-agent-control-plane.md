@@ -2,11 +2,25 @@
 
 Last updated: 2026-06-24
 
-This document tracks the executable cloud-agent control plane code path. It complements `xautojs-cloud-mcp-gateway.md` and focuses on the concrete Phase 3 and Phase 4 interfaces now present in the repository.
+This document tracks the executable cloud-agent control plane code path. It complements `xautojs-cloud-mcp-gateway.md` and focuses on the concrete Phase 3, Phase 4, and Phase 5 interfaces now present in the repository.
 
 ## Current Status
 
-Phase 3 introduced the outbound channel control-plane skeleton. Phase 4 wires the first production-facing gateway pieces without changing the existing self-hosted `devspace serve` mode.
+Phase 3 introduced the outbound channel control-plane skeleton. Phase 4 wired the first production-facing gateway pieces without changing the existing self-hosted `devspace serve` mode. Phase 5 adds the first real auth adapter, Desktop-managed outbound lifecycle, and workspace catalog sync.
+
+Implemented Phase 5 files:
+
+```text
+src/cloud-gateway-auth.ts
+src/cloud-workspace-catalog-store.ts
+src/postgres-cloud-workspace-catalog-store.ts
+src/desktop-outbound-agent-lifecycle.ts
+migrations/postgres/0008_cloud_workspace_catalog.sql
+src/cloud-gateway-auth.test.ts
+src/cloud-workspace-catalog-store.test.ts
+src/postgres-cloud-workspace-catalog-store.test.ts
+src/desktop-outbound-agent-lifecycle.test.ts
+```
 
 Implemented Phase 4 files:
 
@@ -50,6 +64,7 @@ ChatGPT MCP request
   -> CloudSessionBindingService
   -> WebSocketDeviceChannel
   -> authenticated outbound Desktop/local agent WebSocket
+  -> DesktopOutboundAgentLifecycle
   -> LocalAgentOutboundClient
   -> LocalAgentToolReceiver
   -> DevspaceToolExecutor on the customer machine
@@ -59,19 +74,45 @@ ChatGPT MCP request
 
 `LocalAgentToolReceiver` is the customer-machine boundary. It receives protocol `tool.call` messages and invokes the injected `DevspaceToolExecutor`, which can be the existing local executor.
 
+## Gateway Auth
+
+`cloud-gateway-auth.ts` provides a signed device-token adapter for the WebSocket upgrade route.
+
+Token rules:
+
+```text
+format: v1.<base64url-json-payload>.<hmac-sha256-signature>
+signing secret: gateway-controlled shared secret
+trusted owner source: signed token, not agent.hello
+deviceId may be bound in the token
+expiresAt is enforced before the WebSocket is accepted
+```
+
+`attachCloudDeviceWebSocketRoute()` now accepts auth context with:
+
+```text
+owner
+deviceId optional
+desktopInstanceId optional
+expiresAt optional
+```
+
+If the token binds `deviceId` or `desktopInstanceId`, the first `agent.hello` must match those values. A mismatch closes the socket with policy violation semantics.
+
 ## Production Gateway Wiring
 
 `attachCloudDeviceWebSocketRoute()` adds a real HTTP WebSocket upgrade route for outbound local agents:
 
 ```text
 default path: /cloud/devices/ws
-authenticate(request) -> owner identity
+authenticate(request) -> signed owner/device context
 first message must be agent.hello
 heartbeat updates device status and connection state
+workspace.catalog updates the device workspace catalog
 socket close marks the device offline
 ```
 
-The route does not define a public authentication scheme by itself. The production gateway must inject an authenticator that maps the incoming request to the trusted `WorkspaceIdentity` owner. The device must not self-report the owner in `agent.hello`.
+The device must not self-report the owner in `agent.hello`. The owner comes only from the gateway auth adapter.
 
 ## Device Connection Persistence
 
@@ -94,6 +135,25 @@ disconnectedAt
 
 Postgres storage lives in `cloud_device_connections` and is provided by `PostgresCloudDeviceConnectionStore`. The in-memory store remains available for tests and local harnesses.
 
+## Workspace Catalog Sync
+
+`workspace.catalog` is an agent-to-gateway protocol message. It reports the Desktop/local agent's currently approved workspace catalog for a device.
+
+Catalog entries contain:
+
+```text
+workspaceRef
+displayName
+rootLabel
+capabilities
+catalogVersion optional
+lastSeenAt from gateway receive time
+```
+
+Postgres storage lives in `cloud_workspace_catalog` and is provided by `PostgresCloudWorkspaceCatalogStore`. A new catalog snapshot replaces the previous snapshot for the same owner/device.
+
+This catalog is only discovery metadata. It does not by itself authorize file access. Routed tool calls still pass through session binding, workspace routing, device routing, and local executor checks.
+
 ## Desktop MCP Tools
 
 `registerCloudDesktopMcpTools()` registers three cloud-mode tools:
@@ -101,27 +161,38 @@ Postgres storage lives in `cloud_device_connections` and is provided by `Postgre
 ```text
 connect_desktop: bind the current MCP session to one online device
 list_devices: list visible Desktop/local agent devices for the authenticated owner
-list_workspaces: return the selected device and a pending workspace catalog placeholder
+list_workspaces: list catalog entries reported by the connected Desktop/local agent
 ```
 
 `connect_desktop` is idempotent for the same session/device pairing. When more than one device is online, callers must pass `deviceId` from `list_devices`.
 
-`list_workspaces` intentionally returns `catalogPending: true` until the Desktop/local agent reports an approved workspace catalog in a later phase.
+`list_workspaces` now returns `catalogPending: true` only when the connected device has not reported a workspace catalog yet.
 
 ## Local Agent Outbound Client
 
-`LocalAgentOutboundClient` is the real Desktop/local-agent-side client skeleton:
+`LocalAgentOutboundClient` is the Desktop/local-agent-side WebSocket client:
 
 ```text
 connect to the cloud WebSocket URL
 send agent.hello on open
 send agent.heartbeat on an interval
+send workspace.catalog on open and on a refresh interval when a catalog provider is configured
 receive tool.call and tool.cancel
 execute through LocalAgentToolReceiver
 send tool.result back to the gateway
 ```
 
-The socket factory is injectable so tests can run without a real network connection and Desktop can later provide its own lifecycle wrapper.
+`DesktopOutboundAgentLifecycle` wraps this client for Desktop ownership:
+
+```text
+start(config): creates the client, injects Authorization: Bearer <token>, and starts it
+stop(reason): closes the current socket and clears timers
+restart(): rebuilds the client using the last normalized config
+publishWorkspaceCatalog(): forces an immediate catalog sync
+current(): returns a small lifecycle snapshot
+```
+
+The socket factory remains injectable so tests can run without a real network connection and Desktop can later provide its own Tauri lifecycle wrapper.
 
 ## Protocol Messages
 
@@ -139,6 +210,7 @@ Agent to gateway:
 ```text
 agent.hello
 agent.heartbeat
+workspace.catalog
 tool.result
 ```
 
@@ -168,6 +240,7 @@ CloudRoutingStore
 CloudSessionBindingService
 CloudDeviceChannel
 CloudDeviceConnectionStore
+CloudWorkspaceCatalogStore
 CloudDesktopToolService
 GatewayMcpToolExecutor
 ```
@@ -175,13 +248,13 @@ GatewayMcpToolExecutor
 Default behavior:
 
 ```text
-Postgres database config -> Postgres stores for routing, session bindings, and device connections
+Postgres database config -> Postgres stores for routing, session bindings, device connections, and workspace catalog
 Non-Postgres config -> in-memory stores for tests and local harnesses
 No Desktop UI is created by the cloud runtime
 Self-hosted devspace serve is unchanged
 ```
 
-The production gateway server should inject `runtime.toolExecutor` into the cloud MCP server registration path, register `connect_desktop/list_devices/list_workspaces`, and attach `attachCloudDeviceWebSocketRoute()` to its HTTP server.
+The production gateway server should inject `runtime.toolExecutor` into the cloud MCP server registration path, register `connect_desktop/list_devices/list_workspaces`, attach `attachCloudDeviceWebSocketRoute()` to its HTTP server, and provide `createSignedCloudDeviceWebSocketAuthenticator()` or a stronger external auth adapter.
 
 ## Postgres Session Binding
 
@@ -206,7 +279,7 @@ expired binding or device route -> SESSION_EXPIRED
 
 ## Tests
 
-The Phase 3 and Phase 4 tests cover:
+The Phase 3, Phase 4, and Phase 5 tests cover:
 
 ```text
 heartbeat updates and capability normalization
@@ -218,8 +291,11 @@ read/write/shell route completion
 disconnected device mapping to AGENT_DISCONNECTED and failed toolCall status
 Postgres session binding persistence and isolation errors
 Postgres device connection persistence and owner isolation
-real HTTP WebSocket upgrade route registration, hello, heartbeat, close/offline state
-local outbound client hello, heartbeat, tool.call, tool.result, and stop lifecycle
+signed device token verification, expiry, and bearer extraction
+workspace catalog normalization, owner isolation, snapshot replacement, and Postgres persistence
+real HTTP WebSocket upgrade route registration, authenticated hello, catalog, heartbeat, close/offline state
+local outbound client hello, heartbeat, workspace.catalog, tool.call, tool.result, and stop lifecycle
+Desktop outbound lifecycle start/restart/stop and bearer header injection
 ```
 
 ## Non-Goals Still Open
@@ -227,21 +303,21 @@ local outbound client hello, heartbeat, tool.call, tool.result, and stop lifecyc
 ```text
 No Desktop UI pairing screen yet
 No browser-visible account/device linking flow yet
-No signed production authentication policy in this module yet
-No workspace catalog sync protocol yet
+No external IdP/OAuth device-code flow yet
+No workspace open/bind flow from catalog entry to cloud workspace route yet
 No cloud billing/quota/audit event stream yet
 No local approval prompt UI yet
 ```
 
 ## Next Production Phase
 
-The next phase should turn this wiring into a product-ready cloud entrypoint:
+The next phase should connect this wiring to user-facing product flows:
 
 ```text
 bind the cloud MCP server process to GatewayMcpToolExecutor and cloud desktop tools
-add the real gateway auth adapter for Desktop outbound connections
-add Desktop-managed lifecycle around LocalAgentOutboundClient
-add workspace catalog reporting from Desktop/local agent to cloud
-add audit/idempotency events around connect_desktop and routed tool calls
+add the real gateway auth issuer endpoint or external IdP adapter for Desktop tokens
+add Desktop UI/settings wrapper around DesktopOutboundAgentLifecycle
+add workspace catalog selection -> workspace route binding
+add audit/idempotency events around connect_desktop, workspace selection, and routed tool calls
 keep self-hosted devspace serve as the local-only mode
 ```
