@@ -2,11 +2,24 @@
 
 Last updated: 2026-06-24
 
-This document tracks the executable cloud-agent control plane code path. It complements `xautojs-cloud-mcp-gateway.md` and focuses on the concrete Phase 3, Phase 4, and Phase 5 interfaces now present in the repository.
+This document tracks the executable cloud-agent control plane code path. It complements `xautojs-cloud-mcp-gateway.md` and focuses on the concrete Phase 3 through Phase 6 interfaces now present in the repository.
 
 ## Current Status
 
-Phase 3 introduced the outbound channel control-plane skeleton. Phase 4 wired the first production-facing gateway pieces without changing the existing self-hosted `devspace serve` mode. Phase 5 adds the first real auth adapter, Desktop-managed outbound lifecycle, and workspace catalog sync.
+Phase 3 introduced the outbound channel control-plane skeleton. Phase 4 wired the first production-facing gateway pieces without changing the existing self-hosted `devspace serve` mode. Phase 5 added the first real auth adapter, Desktop-managed outbound lifecycle, and workspace catalog sync. Phase 6 now adds the first user-usable loop: device-code token issuing, Desktop cloud setup payload, catalog selection to workspace route binding, and audit/idempotency records for control-plane mutations.
+
+Implemented Phase 6 files:
+
+```text
+src/cloud-control-plane-audit.ts
+src/cloud-device-code-auth.ts
+src/cloud-workspace-selection-service.ts
+apps/desktop/src/cloud-connection-client.ts
+src/cloud-control-plane-audit.test.ts
+src/cloud-device-code-auth.test.ts
+src/cloud-workspace-selection-service.test.ts
+apps/desktop/src/cloud-connection-client.test.ts
+```
 
 Implemented Phase 5 files:
 
@@ -56,13 +69,16 @@ src/postgres-cloud-session-binding.test.ts
 ## Runtime Shape
 
 ```text
-ChatGPT MCP request
-  -> cloud MCP gateway server mode
-  -> connect_desktop/list_devices/list_workspaces MCP tools when pairing is needed
-  -> GatewayMcpToolExecutor
-  -> CloudRoutingStore
-  -> CloudSessionBindingService
-  -> WebSocketDeviceChannel
+Desktop device-code request
+  -> CloudDeviceAuthorizationService.create()
+  -> user approves code for an authenticated owner
+  -> CloudDeviceAuthorizationService.poll() returns a signed device token
+  -> Desktop cloud settings save gateway/device/token/catalog payload
+  -> Desktop outbound lifecycle starts authenticated WebSocket client
+  -> workspace.catalog reports approved local workspaces
+  -> ChatGPT MCP request calls connect_desktop/list_workspaces/connect_workspace
+  -> CloudWorkspaceSelectionService binds workspace route with audit/idempotency
+  -> GatewayMcpToolExecutor routes tool calls through WebSocketDeviceChannel
   -> authenticated outbound Desktop/local agent WebSocket
   -> DesktopOutboundAgentLifecycle
   -> LocalAgentOutboundClient
@@ -73,6 +89,31 @@ ChatGPT MCP request
 `GatewayMcpToolExecutor` remains the cloud-side execution boundary. It never imports `pi-tools`, never resolves local absolute paths, and never executes shell commands directly.
 
 `LocalAgentToolReceiver` is the customer-machine boundary. It receives protocol `tool.call` messages and invokes the injected `DevspaceToolExecutor`, which can be the existing local executor.
+
+## Device-Code Token Issuer
+
+`cloud-device-code-auth.ts` provides the first gateway-side device-code token issuer skeleton.
+
+Contract:
+
+```text
+create(input) -> deviceCode, userCode, verificationUri, expiresAt, intervalSeconds
+approve(userCode, owner) -> binds the pending device code to the authenticated owner
+poll(deviceCode) -> pending/slow_down/denied/expired errors or a signed Bearer token
+```
+
+Stable error codes:
+
+```text
+AUTHORIZATION_PENDING retryable=true
+SLOW_DOWN retryable=true
+EXPIRED_TOKEN
+ACCESS_DENIED
+INVALID_DEVICE_CODE
+INVALID_USER_CODE
+```
+
+The issued access token uses the existing signed gateway device token format from `cloud-gateway-auth.ts`, so the WebSocket upgrade route can accept tokens minted by the device-code flow without changing the route contract.
 
 ## Gateway Auth
 
@@ -152,21 +193,75 @@ lastSeenAt from gateway receive time
 
 Postgres storage lives in `cloud_workspace_catalog` and is provided by `PostgresCloudWorkspaceCatalogStore`. A new catalog snapshot replaces the previous snapshot for the same owner/device.
 
-This catalog is only discovery metadata. It does not by itself authorize file access. Routed tool calls still pass through session binding, workspace routing, device routing, and local executor checks.
+This catalog is only discovery metadata. It does not by itself authorize file access. Routed tool calls still pass through session binding, workspace routing, device routing, local executor checks, and Phase 6 workspace route selection.
+
+## Workspace Route Selection
+
+`CloudWorkspaceSelectionService` is the Phase 6 service that turns a selected catalog entry into a workspace route for the current MCP session.
+
+Stable rules:
+
+```text
+input.workspaceRef is required
+current MCP session must already be paired to an online device
+workspaceRef must exist in that device's reported catalog
+workspaceId is deterministic when caller does not supply one
+same idempotencyKey + same request replays the first result
+same idempotencyKey + different request returns TOOL_CALL_CONFLICT
+unknown workspaceRef returns WORKSPACE_NOT_FOUND
+```
+
+The deterministic workspace id is scoped by owner, MCP session, conversation session, device, and workspaceRef. That keeps shared ChatGPT-account usage from accidentally reusing a route across sessions or devices.
+
+## Control-Plane Audit And Idempotency
+
+`CloudControlPlaneAuditStore` records control-plane mutations and idempotent outcomes.
+
+Currently tracked actions:
+
+```text
+device_code.create
+device_code.approve
+device_code.poll
+connect_desktop
+connect_workspace
+route_tool_call
+```
+
+The in-memory audit store is present for tests and local harnesses. Production persistence is intentionally still a follow-up so the event schema can settle before adding a Postgres migration.
 
 ## Desktop MCP Tools
 
-`registerCloudDesktopMcpTools()` registers three cloud-mode tools:
+`registerCloudDesktopMcpTools()` registers four cloud-mode tools:
 
 ```text
 connect_desktop: bind the current MCP session to one online device
 list_devices: list visible Desktop/local agent devices for the authenticated owner
 list_workspaces: list catalog entries reported by the connected Desktop/local agent
+connect_workspace: bind a selected workspaceRef to a routeable workspaceId
 ```
 
 `connect_desktop` is idempotent for the same session/device pairing. When more than one device is online, callers must pass `deviceId` from `list_devices`.
 
-`list_workspaces` now returns `catalogPending: true` only when the connected device has not reported a workspace catalog yet.
+`list_workspaces` returns `catalogPending: true` only when the connected device has not reported a workspace catalog yet.
+
+`connect_workspace` accepts an optional `idempotencyKey` so ChatGPT retries can be retried safely without creating a different workspace route.
+
+## Desktop Cloud Settings
+
+The Desktop app now includes a cloud setup panel backed by `apps/desktop/src/cloud-connection-client.ts`.
+
+The panel stores:
+
+```text
+gateway WebSocket URL
+deviceId
+desktopInstanceId optional
+device token
+workspace catalog text
+```
+
+Saving the panel validates and builds a `DesktopCloudLifecyclePayload` that matches the `DesktopOutboundAgentLifecycle.start()` shape: normalized WebSocket URL, bearer token, device identity, and workspace catalog snapshot. The UI does not yet directly start the Rust/Tauri-managed outbound client; that bridge is still a product integration step.
 
 ## Local Agent Outbound Client
 
@@ -241,6 +336,8 @@ CloudSessionBindingService
 CloudDeviceChannel
 CloudDeviceConnectionStore
 CloudWorkspaceCatalogStore
+CloudControlPlaneAuditStore
+CloudWorkspaceSelectionService
 CloudDesktopToolService
 GatewayMcpToolExecutor
 ```
@@ -250,11 +347,12 @@ Default behavior:
 ```text
 Postgres database config -> Postgres stores for routing, session bindings, device connections, and workspace catalog
 Non-Postgres config -> in-memory stores for tests and local harnesses
+Audit store remains in-memory until the production audit schema lands
 No Desktop UI is created by the cloud runtime
 Self-hosted devspace serve is unchanged
 ```
 
-The production gateway server should inject `runtime.toolExecutor` into the cloud MCP server registration path, register `connect_desktop/list_devices/list_workspaces`, attach `attachCloudDeviceWebSocketRoute()` to its HTTP server, and provide `createSignedCloudDeviceWebSocketAuthenticator()` or a stronger external auth adapter.
+The production gateway server should inject `runtime.toolExecutor` into the cloud MCP server registration path, register `connect_desktop/list_devices/list_workspaces/connect_workspace`, attach `attachCloudDeviceWebSocketRoute()` to its HTTP server, and provide `CloudDeviceAuthorizationService` plus `createSignedCloudDeviceWebSocketAuthenticator()` or a stronger external auth adapter.
 
 ## Postgres Session Binding
 
@@ -279,7 +377,7 @@ expired binding or device route -> SESSION_EXPIRED
 
 ## Tests
 
-The Phase 3, Phase 4, and Phase 5 tests cover:
+The Phase 3 through Phase 6 tests cover:
 
 ```text
 heartbeat updates and capability normalization
@@ -296,28 +394,33 @@ workspace catalog normalization, owner isolation, snapshot replacement, and Post
 real HTTP WebSocket upgrade route registration, authenticated hello, catalog, heartbeat, close/offline state
 local outbound client hello, heartbeat, workspace.catalog, tool.call, tool.result, and stop lifecycle
 Desktop outbound lifecycle start/restart/stop and bearer header injection
+device-code pending, slow_down, approval, token minting, denial, and expiry
+audit idempotency replay and conflict behavior
+workspace catalog selection -> workspace route binding and idempotent replay
+Desktop cloud settings URL normalization, catalog parsing, and lifecycle payload construction
 ```
 
 ## Non-Goals Still Open
 
 ```text
-No Desktop UI pairing screen yet
-No browser-visible account/device linking flow yet
-No external IdP/OAuth device-code flow yet
-No workspace open/bind flow from catalog entry to cloud workspace route yet
-No cloud billing/quota/audit event stream yet
+No hosted browser verification page for userCode approval yet
+No persistent Postgres audit/idempotency store yet
+No persistent Postgres device-code authorization store yet
+No external IdP/OAuth provider adapter yet
+No Tauri command bridge that starts DesktopOutboundAgentLifecycle from the settings panel yet
 No local approval prompt UI yet
+No cloud billing/quota event stream yet
 ```
 
 ## Next Production Phase
 
-The next phase should connect this wiring to user-facing product flows:
+The next phase should turn the Phase 6 loop from settings/payload into a live Desktop-managed connection:
 
 ```text
-bind the cloud MCP server process to GatewayMcpToolExecutor and cloud desktop tools
-add the real gateway auth issuer endpoint or external IdP adapter for Desktop tokens
-add Desktop UI/settings wrapper around DesktopOutboundAgentLifecycle
-add workspace catalog selection -> workspace route binding
-add audit/idempotency events around connect_desktop, workspace selection, and routed tool calls
+add Postgres-backed device-code authorization and audit/idempotency stores
+add a small gateway HTTP API for device-code create/poll and userCode approval
+add the Tauri command bridge that starts/stops DesktopOutboundAgentLifecycle from the settings panel
+bind the cloud MCP server process to GatewayMcpToolExecutor and all cloud desktop tools
+add local approval prompts for write/edit/shell risk gates
 keep self-hosted devspace serve as the local-only mode
 ```
