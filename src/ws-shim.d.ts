@@ -1,10 +1,11 @@
 declare module "ws" {
+  import { EventEmitter } from "node:events";
   import type { IncomingMessage } from "node:http";
   import type { Duplex } from "node:stream";
 
   export type RawData = Buffer | ArrayBuffer | Buffer[];
 
-  export class WebSocket {
+  export class WebSocket extends EventEmitter {
     static readonly OPEN: number;
     readonly readyState: number;
     constructor(address: string | URL, options?: { headers?: Record<string, string> });
@@ -16,7 +17,7 @@ declare module "ws" {
     on(event: "error", listener: (error: Error) => void): this;
   }
 
-  export class WebSocketServer {
+  export class WebSocketServer extends EventEmitter {
     constructor(options: { noServer?: boolean });
     handleUpgrade(
       request: IncomingMessage,
