@@ -78,7 +78,7 @@ export class LocalAgentOutboundClient {
       this.sendHello();
       this.startHeartbeat();
       this.startWorkspaceCatalogRefresh();
-      void this.publishWorkspaceCatalog();
+      void this.publishWorkspaceCatalog().catch(() => undefined);
     });
     socket.on("message", (data) => {
       void this.handleGatewayMessage(data);
@@ -148,7 +148,7 @@ export class LocalAgentOutboundClient {
     this.stopWorkspaceCatalogRefresh();
     if (!this.options.workspaceCatalogProvider) return;
     this.workspaceCatalogRefresh = setInterval(() => {
-      void this.publishWorkspaceCatalog();
+      void this.publishWorkspaceCatalog().catch(() => undefined);
     }, this.workspaceCatalogIntervalMs);
     this.workspaceCatalogRefresh.unref();
   }
