@@ -38,7 +38,7 @@
     "dev": "node scripts/dev-server.mjs",
     "start": "node dist/cli.js serve",
     "desktop:typecheck": "tsc -p apps/desktop/tsconfig.json --noEmit",
-    "desktop:test": "tsx apps/desktop/src/operator-client.test.ts && tsx apps/desktop/src/cloud-connection-client.test.ts && tsx apps/desktop/src/tauri-cloud-lifecycle-client.test.ts",
+    "desktop:test": "tsx apps/desktop/src/operator-client.test.ts && tsx apps/desktop/src/cloud-connection-client.test.ts && tsx apps/desktop/src/tauri-cloud-lifecycle-client.test.ts && tsx apps/desktop/src/tauri-cloud-token-client.test.ts",
     "desktop:build": "npm run desktop:typecheck && vite build --config apps/desktop/vite.config.ts",
     "desktop:bundle": "npm --prefix apps/desktop run tauri:build",
     "desktop:bundle:debug": "npm --prefix apps/desktop run tauri:build:debug",
