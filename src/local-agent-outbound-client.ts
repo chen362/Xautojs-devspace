@@ -2,13 +2,17 @@ import { WebSocket, type RawData } from "ws";
 import { LocalAgentToolReceiver } from "./local-agent-receiver.js";
 import {
   CLOUD_DEVICE_CHANNEL_PROTOCOL_VERSION,
+  createCloudDeviceWorkspaceCatalogMessage,
   type CloudDeviceGatewayMessage,
   type CloudDeviceHeartbeatMessage,
   type CloudDeviceAgentHelloMessage,
   type CloudDeviceToolResultMessage,
+  type CloudDeviceWorkspaceCatalogMessage,
+  type CloudWorkspaceCatalogEntry,
 } from "./cloud-device-channel-protocol.js";
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
+const DEFAULT_WORKSPACE_CATALOG_INTERVAL_MS = 60_000;
 
 export interface LocalAgentSocket {
   readonly readyState: number;
@@ -25,6 +29,15 @@ export type LocalAgentSocketFactory = (
   options: { headers?: Record<string, string> },
 ) => LocalAgentSocket;
 
+export interface LocalAgentWorkspaceCatalogSnapshot {
+  catalogVersion?: string;
+  workspaces: CloudWorkspaceCatalogEntry[];
+}
+
+export type LocalAgentWorkspaceCatalogProvider = () =>
+  | LocalAgentWorkspaceCatalogSnapshot
+  | Promise<LocalAgentWorkspaceCatalogSnapshot>;
+
 export interface LocalAgentOutboundClientOptions {
   url: string;
   deviceId: string;
@@ -34,6 +47,8 @@ export interface LocalAgentOutboundClientOptions {
   agentVersion?: string;
   headers?: Record<string, string>;
   heartbeatIntervalMs?: number;
+  workspaceCatalogProvider?: LocalAgentWorkspaceCatalogProvider;
+  workspaceCatalogIntervalMs?: number;
   socketFactory?: LocalAgentSocketFactory;
   now?: () => string;
 }
@@ -41,13 +56,16 @@ export interface LocalAgentOutboundClientOptions {
 export class LocalAgentOutboundClient {
   private socket: LocalAgentSocket | undefined;
   private heartbeat: NodeJS.Timeout | undefined;
+  private workspaceCatalogRefresh: NodeJS.Timeout | undefined;
   private readonly now: () => string;
   private readonly heartbeatIntervalMs: number;
+  private readonly workspaceCatalogIntervalMs: number;
   private readonly socketFactory: LocalAgentSocketFactory;
 
   constructor(private readonly options: LocalAgentOutboundClientOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.workspaceCatalogIntervalMs = options.workspaceCatalogIntervalMs ?? DEFAULT_WORKSPACE_CATALOG_INTERVAL_MS;
     this.socketFactory = options.socketFactory ?? createWsSocket;
   }
 
@@ -59,12 +77,15 @@ export class LocalAgentOutboundClient {
     socket.on("open", () => {
       this.sendHello();
       this.startHeartbeat();
+      this.startWorkspaceCatalogRefresh();
+      void this.publishWorkspaceCatalog();
     });
     socket.on("message", (data) => {
       void this.handleGatewayMessage(data);
     });
     socket.on("close", () => {
       this.stopHeartbeat();
+      this.stopWorkspaceCatalogRefresh();
       this.socket = undefined;
     });
     socket.on("error", () => undefined);
@@ -74,7 +95,19 @@ export class LocalAgentOutboundClient {
     const socket = this.socket;
     this.socket = undefined;
     this.stopHeartbeat();
+    this.stopWorkspaceCatalogRefresh();
     socket?.close(1000, reason);
+  }
+
+  async publishWorkspaceCatalog(): Promise<void> {
+    if (!this.options.workspaceCatalogProvider) return;
+    const snapshot = await this.options.workspaceCatalogProvider();
+    this.sendJson(createCloudDeviceWorkspaceCatalogMessage({
+      deviceId: this.options.deviceId,
+      catalogVersion: snapshot.catalogVersion,
+      workspaces: snapshot.workspaces,
+      time: this.now(),
+    }));
   }
 
   private sendHello(): void {
@@ -111,6 +144,21 @@ export class LocalAgentOutboundClient {
     this.heartbeat = undefined;
   }
 
+  private startWorkspaceCatalogRefresh(): void {
+    this.stopWorkspaceCatalogRefresh();
+    if (!this.options.workspaceCatalogProvider) return;
+    this.workspaceCatalogRefresh = setInterval(() => {
+      void this.publishWorkspaceCatalog();
+    }, this.workspaceCatalogIntervalMs);
+    this.workspaceCatalogRefresh.unref();
+  }
+
+  private stopWorkspaceCatalogRefresh(): void {
+    if (!this.workspaceCatalogRefresh) return;
+    clearInterval(this.workspaceCatalogRefresh);
+    this.workspaceCatalogRefresh = undefined;
+  }
+
   private async handleGatewayMessage(data: RawData): Promise<void> {
     const message = parseGatewayMessage(data);
     if (!message) return;
@@ -118,7 +166,13 @@ export class LocalAgentOutboundClient {
     if (response) this.sendJson(response);
   }
 
-  private sendJson(message: CloudDeviceAgentHelloMessage | CloudDeviceHeartbeatMessage | CloudDeviceToolResultMessage): void {
+  private sendJson(
+    message:
+      | CloudDeviceAgentHelloMessage
+      | CloudDeviceHeartbeatMessage
+      | CloudDeviceWorkspaceCatalogMessage
+      | CloudDeviceToolResultMessage,
+  ): void {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(message));
