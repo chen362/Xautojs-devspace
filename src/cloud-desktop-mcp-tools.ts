@@ -80,7 +80,7 @@ export function registerCloudDesktopMcpTools(
     {
       title: "List Desktop workspaces",
       description:
-        "List workspaces approved for the current Desktop device. The registered workspace catalog is not populated until the Desktop/local agent reports it.",
+        "List workspaces approved for the current Desktop device. The registered workspace catalog is populated by the Desktop/local agent outbound channel.",
       inputSchema: {
         deviceId: z.string().optional().describe("Optional deviceId from list_devices."),
       },
@@ -91,6 +91,8 @@ export function registerCloudDesktopMcpTools(
           displayName: z.string(),
           rootLabel: z.string(),
           capabilities: z.array(z.string()),
+          catalogVersion: z.string().optional(),
+          lastSeenAt: z.string(),
         })),
         catalogPending: z.boolean(),
       },
