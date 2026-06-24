@@ -128,11 +128,10 @@ registerCloudGatewayHttpRoutes()
   -> registerCloudDeviceCodeApiRoutes()
   -> reuses runtime.auditStore
   -> default owner resolver accepts owner-token Bearer auth in local mode
-  -> default owner resolver also accepts gateway-injected x-devspace-tenant-id/x-devspace-user-id headers
-  -> production deployments can inject a stricter resolveOwner adapter
+  -> production deployments must inject a trusted resolveOwner adapter
 ```
 
-The device-code API therefore shares the same control-plane audit store as `connect_desktop`, `connect_workspace`, and gateway-routed tool calls. It also keeps the authenticated owner source outside the request body.
+The device-code API therefore shares the same control-plane audit store as `connect_desktop`, `connect_workspace`, and gateway-routed tool calls. It also keeps the authenticated owner source outside the request body. Gateway-injected owner headers or hosted IdP claims are only trusted when the deployment passes an explicit `resolveOwner` adapter; they are not accepted by the default resolver.
 
 ## Device-Code HTTP API
 
@@ -305,7 +304,7 @@ local outbound client hello, heartbeat, workspace.catalog, tool.call, tool.resul
 Desktop outbound lifecycle start/restart/stop and bearer header injection
 device-code pending, slow_down, approval, token minting, denial, and expiry
 device-code HTTP create/poll/approve/deny flow
-gateway HTTP route registration for device-code owner-token auth, injected owner auth, token minting, and audit reuse
+gateway HTTP route registration for device-code owner-token auth, custom owner resolver auth, token minting, and audit reuse
 Postgres device authorization persistence
 Postgres audit/idempotency replay and conflict behavior
 workspace catalog selection -> workspace route binding and idempotent replay
