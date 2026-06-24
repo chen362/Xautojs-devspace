@@ -59,8 +59,14 @@ export class CloudDesktopToolService {
     context: DevspaceToolExecutionContext,
     input: ConnectDesktopInput = {},
   ): Promise<ConnectDesktopResult> {
-    const deviceId = input.deviceId?.trim() || await this.singleOnlineDeviceId(context);
-    const binding = await this.sessionBindings.resolveDevice({
+    const requestedDeviceId = input.deviceId?.trim();
+    if (!requestedDeviceId) {
+      const existing = await this.resolveExistingBinding(context);
+      if (existing) return this.connectedResult(context, existing);
+    }
+
+    const deviceId = requestedDeviceId || (await this.singleOnlineDeviceId(context));
+    const binding = await this.sessionBindings.bindDevice({
       owner: context.owner,
       mcpSessionId: context.mcpSessionId,
       conversationSessionId: context.conversationSessionId,
@@ -90,17 +96,34 @@ export class CloudDesktopToolService {
     context: DevspaceToolExecutionContext,
     input: ListWorkspacesInput = {},
   ): Promise<ListWorkspacesResult> {
-    const deviceId = input.deviceId?.trim() || (await this.sessionBindings.resolveDevice({
+    const requestedDeviceId = input.deviceId?.trim() || undefined;
+    const binding = await this.sessionBindings.resolveDevice({
       owner: context.owner,
       mcpSessionId: context.mcpSessionId,
       conversationSessionId: context.conversationSessionId,
-    })).deviceId;
+      deviceId: requestedDeviceId,
+    });
 
     return {
-      deviceId,
+      deviceId: binding.deviceId,
       workspaces: [],
       catalogPending: true,
     };
+  }
+
+  private async resolveExistingBinding(
+    context: DevspaceToolExecutionContext,
+  ): Promise<CloudSessionBindingRecord | undefined> {
+    try {
+      return await this.sessionBindings.resolveDevice({
+        owner: context.owner,
+        mcpSessionId: context.mcpSessionId,
+        conversationSessionId: context.conversationSessionId,
+      });
+    } catch (error) {
+      if (error instanceof CloudRoutingError && error.code === "PAIRING_REQUIRED") return undefined;
+      throw error;
+    }
   }
 
   private async singleOnlineDeviceId(context: DevspaceToolExecutionContext): Promise<string> {
