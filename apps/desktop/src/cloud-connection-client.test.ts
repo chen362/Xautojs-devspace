@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import {
   buildDesktopCloudLifecyclePayload,
   cloudConnectionReadiness,
+  CLOUD_CONNECTION_STORAGE_KEY,
   normalizeGatewayWsUrl,
   parseWorkspaceCatalogText,
+  readCloudConnectionSettings,
   serializeWorkspaceCatalog,
+  storeCloudConnectionSettings,
   type DesktopCloudConnectionSettings,
 } from "./cloud-connection-client.js";
 
@@ -33,5 +36,41 @@ assert.equal(payload.url, "wss://gateway.example.com/cloud/devices/ws");
 assert.equal(payload.authToken, "token-a");
 assert.equal(payload.workspaceCatalog.workspaces[0]?.workspaceRef, "repo-a");
 
+const storage = new MemoryStorage();
+storeCloudConnectionSettings(settings, storage);
+const storedSettings = JSON.parse(storage.getItem(CLOUD_CONNECTION_STORAGE_KEY) ?? "{}") as Record<string, unknown>;
+assert.equal(storedSettings.deviceToken, undefined);
+assert.equal(storedSettings.gatewayUrl, settings.gatewayUrl);
+assert.equal(readCloudConnectionSettings(storage).deviceToken, "");
+assert.equal(readCloudConnectionSettings(storage).deviceId, "dev_desktop_a");
+
 assert.equal(cloudConnectionReadiness({ ...settings, deviceToken: "" }), "missing_token");
 assert.equal(cloudConnectionReadiness({ ...settings, deviceId: "" }), "missing_device");
+
+class MemoryStorage implements Storage {
+  private readonly values = new Map<string, string>();
+
+  get length(): number {
+    return this.values.size;
+  }
+
+  clear(): void {
+    this.values.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return [...this.values.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+}
