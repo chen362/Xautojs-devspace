@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { RawData } from "ws";
 import { LocalAgentOutboundClient, type LocalAgentSocket } from "./local-agent-outbound-client.js";
 import { LocalAgentToolReceiver } from "./local-agent-receiver.js";
 import {
@@ -36,9 +37,13 @@ class FakeSocket implements LocalAgentSocket {
     this.emit("close", 1000, Buffer.from("closed"));
   }
 
-  on(event: "open" | "message" | "close" | "error", listener: (...args: never[]) => void): this {
+  on(event: "open", listener: () => void): this;
+  on(event: "message", listener: (data: RawData) => void): this;
+  on(event: "close", listener: (code: number, reason: Buffer) => void): this;
+  on(event: "error", listener: (error: Error) => void): this;
+  on(event: string, listener: (...args: unknown[]) => void): this {
     const listeners = this.listeners.get(event) ?? [];
-    listeners.push(listener as (...args: unknown[]) => void);
+    listeners.push(listener);
     this.listeners.set(event, listeners);
     return this;
   }
