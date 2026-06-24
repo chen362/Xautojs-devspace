@@ -55,9 +55,10 @@ export function attachCloudDeviceWebSocketRoute(
       return;
     }
 
+    const owner = auth.owner;
     wss.handleUpgrade(request, socket, head, (websocket) => {
       wss.emit("connection", websocket, request);
-      void handleDeviceSocket({ websocket, owner: auth.owner, runtime: input.runtime });
+      void handleDeviceSocket({ websocket, owner, runtime: input.runtime });
     });
   };
 
@@ -117,11 +118,12 @@ async function handleDeviceSocket(input: {
           capabilities: message.capabilities,
           now: message.time,
         });
-        connectionId = registered.connectionId;
+        const registeredConnectionId = registered.connectionId;
+        connectionId = registeredConnectionId;
         await input.runtime.deviceConnectionStore.recordConnected({
           owner: input.owner,
           deviceId: message.deviceId,
-          connectionId,
+          connectionId: registeredConnectionId,
           capabilities: message.capabilities,
           desktopInstanceId: message.desktopInstanceId,
           agentVersion: message.agentVersion,
