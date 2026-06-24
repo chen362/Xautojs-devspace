@@ -4,6 +4,7 @@ import { isPostgresDatabaseConfig } from "./db/types.js";
 import type { CloudDeviceChannel } from "./cloud-device-channel.js";
 import type { CloudDeviceConnectionStore } from "./cloud-device-connection-store.js";
 import { InMemoryCloudDeviceConnectionStore } from "./cloud-device-connection-store.js";
+import { CloudDesktopToolService } from "./cloud-desktop-tool-service.js";
 import type { CloudRoutingStore } from "./cloud-routing-store.js";
 import { InMemoryCloudRoutingStore } from "./cloud-routing-store.js";
 import type { CloudSessionBindingService } from "./cloud-session-binding.js";
@@ -19,6 +20,7 @@ export interface CloudGatewayRuntimeOptions {
   sessionBindings?: CloudSessionBindingService;
   deviceChannel?: CloudDeviceChannel;
   deviceConnectionStore?: CloudDeviceConnectionStore;
+  desktopToolService?: CloudDesktopToolService;
 }
 
 export interface CloudGatewayRuntime {
@@ -26,6 +28,7 @@ export interface CloudGatewayRuntime {
   sessionBindings: CloudSessionBindingService;
   deviceChannel: CloudDeviceChannel;
   deviceConnectionStore: CloudDeviceConnectionStore;
+  desktopToolService: CloudDesktopToolService;
   toolExecutor: GatewayMcpToolExecutor;
   close(): Promise<void>;
 }
@@ -38,6 +41,10 @@ export function createCloudGatewayRuntime(
   const sessionBindings = options.sessionBindings ?? createDefaultSessionBindings(config, routingStore);
   const deviceChannel = options.deviceChannel ?? new WebSocketDeviceChannel();
   const deviceConnectionStore = options.deviceConnectionStore ?? createDefaultDeviceConnectionStore(config);
+  const desktopToolService = options.desktopToolService ?? new CloudDesktopToolService(
+    sessionBindings,
+    deviceConnectionStore,
+  );
   const toolExecutor = new GatewayMcpToolExecutor(routingStore, deviceChannel, sessionBindings);
 
   return {
@@ -45,6 +52,7 @@ export function createCloudGatewayRuntime(
     sessionBindings,
     deviceChannel,
     deviceConnectionStore,
+    desktopToolService,
     toolExecutor,
     close: async () => {
       await closeIfPresent(deviceChannel);
