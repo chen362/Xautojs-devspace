@@ -173,7 +173,7 @@ poll success: accessToken, tokenType=Bearer, expiresAt, owner, deviceId optional
 approve identity: owner comes only from the injected authenticated request resolver
 approve body: deviceId optional, desktopInstanceId optional
 approve form body: urlencoded deviceId optional, desktopInstanceId optional; success renders a small HTML result page
- deny identity: owner comes only from the injected authenticated request resolver
+deny identity: owner comes only from the injected authenticated request resolver
 ```
 
 Stable error body:
