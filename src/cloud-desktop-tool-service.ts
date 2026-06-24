@@ -4,6 +4,7 @@ import {
 } from "./cloud-routing-contract.js";
 import type { CloudDeviceConnectionRecord, CloudDeviceConnectionStore } from "./cloud-device-connection-store.js";
 import type { CloudSessionBindingService } from "./cloud-session-binding.js";
+import type { CloudWorkspaceCatalogStore } from "./cloud-workspace-catalog-store.js";
 import type { DevspaceToolExecutionContext } from "./mcp-tool-executor.js";
 
 export interface ConnectDesktopInput {
@@ -45,6 +46,8 @@ export interface ListWorkspacesResult {
     displayName: string;
     rootLabel: string;
     capabilities: string[];
+    catalogVersion?: string;
+    lastSeenAt: string;
   }>;
   catalogPending: boolean;
 }
@@ -53,6 +56,7 @@ export class CloudDesktopToolService {
   constructor(
     private readonly sessionBindings: CloudSessionBindingService,
     private readonly deviceConnections: CloudDeviceConnectionStore,
+    private readonly workspaceCatalog: CloudWorkspaceCatalogStore,
   ) {}
 
   async connectDesktop(
@@ -103,11 +107,22 @@ export class CloudDesktopToolService {
       conversationSessionId: context.conversationSessionId,
       deviceId: requestedDeviceId,
     });
+    const workspaces = await this.workspaceCatalog.listWorkspaces({
+      owner: context.owner,
+      deviceId: binding.deviceId,
+    });
 
     return {
       deviceId: binding.deviceId,
-      workspaces: [],
-      catalogPending: true,
+      workspaces: workspaces.map((workspace) => ({
+        workspaceRef: workspace.workspaceRef,
+        displayName: workspace.displayName,
+        rootLabel: workspace.rootLabel,
+        capabilities: [...workspace.capabilities],
+        catalogVersion: workspace.catalogVersion,
+        lastSeenAt: workspace.lastSeenAt,
+      })),
+      catalogPending: workspaces.length === 0,
     };
   }
 
