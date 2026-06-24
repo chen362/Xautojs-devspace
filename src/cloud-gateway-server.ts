@@ -15,6 +15,7 @@ import type { CloudWorkspaceCatalogStore } from "./cloud-workspace-catalog-store
 import { InMemoryCloudWorkspaceCatalogStore } from "./cloud-workspace-catalog-store.js";
 import { CloudWorkspaceSelectionService } from "./cloud-workspace-selection-service.js";
 import { GatewayMcpToolExecutor } from "./gateway-mcp-tool-executor.js";
+import { PostgresCloudControlPlaneAuditStore } from "./postgres-cloud-control-plane-audit-store.js";
 import { PostgresCloudDeviceConnectionStore } from "./postgres-cloud-device-connection-store.js";
 import { PostgresCloudRoutingStore } from "./postgres-cloud-routing-store.js";
 import { PostgresCloudSessionBindingService } from "./postgres-cloud-session-binding.js";
@@ -54,7 +55,7 @@ export function createCloudGatewayRuntime(
   const deviceChannel = options.deviceChannel ?? new WebSocketDeviceChannel();
   const deviceConnectionStore = options.deviceConnectionStore ?? createDefaultDeviceConnectionStore(config);
   const workspaceCatalogStore = options.workspaceCatalogStore ?? createDefaultWorkspaceCatalogStore(config);
-  const auditStore = options.auditStore ?? new InMemoryCloudControlPlaneAuditStore();
+  const auditStore = options.auditStore ?? createDefaultAuditStore(config);
   const workspaceSelectionService = options.workspaceSelectionService ?? new CloudWorkspaceSelectionService(
     sessionBindings,
     routingStore,
@@ -113,6 +114,11 @@ function createDefaultDeviceConnectionStore(config: ServerConfig): CloudDeviceCo
 function createDefaultWorkspaceCatalogStore(config: ServerConfig): CloudWorkspaceCatalogStore {
   if (isPostgresDatabaseConfig(config.database)) return new PostgresCloudWorkspaceCatalogStore(config.database);
   return new InMemoryCloudWorkspaceCatalogStore();
+}
+
+function createDefaultAuditStore(config: ServerConfig): CloudControlPlaneAuditStore {
+  if (isPostgresDatabaseConfig(config.database)) return new PostgresCloudControlPlaneAuditStore(config.database);
+  return new InMemoryCloudControlPlaneAuditStore();
 }
 
 async function closeIfPresent(value: unknown): Promise<void> {
