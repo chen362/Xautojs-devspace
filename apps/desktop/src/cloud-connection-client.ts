@@ -88,7 +88,7 @@ export function readCloudConnectionSettings(storage: Storage = window.localStora
       gatewayUrl: typeof parsed.gatewayUrl === "string" ? parsed.gatewayUrl : DEFAULT_CLOUD_GATEWAY_WS_URL,
       deviceId: typeof parsed.deviceId === "string" ? parsed.deviceId : "",
       desktopInstanceId: typeof parsed.desktopInstanceId === "string" ? parsed.desktopInstanceId : "",
-      deviceToken: typeof parsed.deviceToken === "string" ? parsed.deviceToken : "",
+      deviceToken: "",
       workspaceCatalogText: typeof parsed.workspaceCatalogText === "string" ? parsed.workspaceCatalogText : "",
     };
   } catch {
@@ -100,7 +100,13 @@ export function storeCloudConnectionSettings(
   settings: DesktopCloudConnectionSettings,
   storage: Storage = window.localStorage,
 ): void {
-  storage.setItem(CLOUD_CONNECTION_STORAGE_KEY, JSON.stringify(settings));
+  const persisted = {
+    gatewayUrl: settings.gatewayUrl,
+    deviceId: settings.deviceId,
+    desktopInstanceId: settings.desktopInstanceId,
+    workspaceCatalogText: settings.workspaceCatalogText,
+  };
+  storage.setItem(CLOUD_CONNECTION_STORAGE_KEY, JSON.stringify(persisted));
 }
 
 export function defaultCloudConnectionSettings(): DesktopCloudConnectionSettings {
