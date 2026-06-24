@@ -31,6 +31,7 @@ export async function startDesktopCloudLifecycle(
   if (!invoke) return unsupportedSnapshot(payload.workspaceCatalog.workspaces.length);
 
   try {
+    await invoke<void>("store_cloud_device_token", { token: payload.authToken });
     return normalizeSnapshot(await invoke<DesktopCloudLifecycleBridgeSnapshot>("start_cloud_lifecycle", { payload }));
   } catch (error) {
     return errorSnapshot(payload.workspaceCatalog.workspaces.length, error);
