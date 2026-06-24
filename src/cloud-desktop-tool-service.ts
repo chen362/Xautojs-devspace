@@ -5,6 +5,11 @@ import {
 import type { CloudDeviceConnectionRecord, CloudDeviceConnectionStore } from "./cloud-device-connection-store.js";
 import type { CloudSessionBindingService } from "./cloud-session-binding.js";
 import type { CloudWorkspaceCatalogStore } from "./cloud-workspace-catalog-store.js";
+import type {
+  CloudWorkspaceSelectionService,
+  ConnectCloudWorkspaceInput,
+  ConnectCloudWorkspaceResult,
+} from "./cloud-workspace-selection-service.js";
 import type { DevspaceToolExecutionContext } from "./mcp-tool-executor.js";
 
 export interface ConnectDesktopInput {
@@ -57,6 +62,7 @@ export class CloudDesktopToolService {
     private readonly sessionBindings: CloudSessionBindingService,
     private readonly deviceConnections: CloudDeviceConnectionStore,
     private readonly workspaceCatalog: CloudWorkspaceCatalogStore,
+    private readonly workspaceSelection?: CloudWorkspaceSelectionService,
   ) {}
 
   async connectDesktop(
@@ -77,6 +83,16 @@ export class CloudDesktopToolService {
       deviceId,
     });
     return this.connectedResult(context, binding);
+  }
+
+  async connectWorkspace(
+    context: DevspaceToolExecutionContext,
+    input: ConnectCloudWorkspaceInput,
+  ): Promise<ConnectCloudWorkspaceResult> {
+    if (!this.workspaceSelection) {
+      throw new CloudRoutingError("INVALID_ROUTE_INPUT", "Cloud workspace selection service is not configured.");
+    }
+    return this.workspaceSelection.connectWorkspace(context, input);
   }
 
   async listDevices(context: DevspaceToolExecutionContext): Promise<ListDevicesResult> {
