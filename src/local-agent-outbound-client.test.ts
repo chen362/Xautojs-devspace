@@ -116,6 +116,15 @@ const client = new LocalAgentOutboundClient({
   capabilities: ["shell", "mcp-tools"],
   receiver,
   heartbeatIntervalMs: 20,
+  workspaceCatalogProvider: () => ({
+    catalogVersion: "catalog_client_v1",
+    workspaces: [{
+      workspaceRef: "workspace_client_a",
+      displayName: "Client Workspace",
+      rootLabel: "~/client",
+      capabilities: ["read", "write"],
+    }],
+  }),
   now: () => "2026-06-24T00:00:00.000Z",
   socketFactory: () => {
     socket = new FakeSocket();
@@ -128,6 +137,11 @@ assert.ok(socket);
 socket.emitOpen();
 assert.equal(JSON.parse(socket.sent[0] ?? "{}").type, "agent.hello");
 assert.equal(JSON.parse(socket.sent[0] ?? "{}").deviceId, "dev_client_a");
+
+await waitFor(() => socket?.sent.some((message) => JSON.parse(message).type === "workspace.catalog") ?? false);
+const catalog = socket.sent.map((message) => JSON.parse(message)).find((message) => message.type === "workspace.catalog");
+assert.equal(catalog.catalogVersion, "catalog_client_v1");
+assert.equal(catalog.workspaces[0].workspaceRef, "workspace_client_a");
 
 socket.receive({
   type: "tool.call",
