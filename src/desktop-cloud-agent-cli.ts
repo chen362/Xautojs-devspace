@@ -86,12 +86,12 @@ function waitForShutdown(stop: () => void): Promise<void> {
 }
 
 function approvalModeFromEnv(): DesktopCloudAgentApprovalMode {
-  return parseApprovalMode(process.env.DEVSPACE_DESKTOP_APPROVAL_MODE || "deny");
+  return parseApprovalMode(process.env.DEVSPACE_DESKTOP_APPROVAL_MODE || "desktop_prompt");
 }
 
 function parseApprovalMode(value: string): DesktopCloudAgentApprovalMode {
-  if (value === "deny" || value === "auto_approve") return value;
-  throw new Error("approval mode must be one of: deny, auto_approve");
+  if (value === "deny" || value === "auto_approve" || value === "desktop_prompt") return value;
+  throw new Error("approval mode must be one of: deny, auto_approve, desktop_prompt");
 }
 
 function readOptionValue(args: string[], index: number, option: string): string {
@@ -105,10 +105,10 @@ function printHelp(): void {
     "DevSpace Desktop cloud agent",
     "",
     "Usage:",
-    "  devspace-desktop-agent --stdin [--approval-mode deny|auto_approve]",
+    "  devspace-desktop-agent --stdin [--approval-mode deny|auto_approve|desktop_prompt]",
     "",
     "The payload is read from stdin so the device token is not exposed in process arguments.",
-    "By default destructive tool calls are denied until an interactive Desktop approval bridge is attached.",
+    "By default destructive tool calls use the Desktop native approval prompt.",
   ].join("\n"));
 }
 
