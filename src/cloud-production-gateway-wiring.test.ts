@@ -5,11 +5,13 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import { createSignedCloudDeviceWebSocketAuthenticator, issueCloudGatewayDeviceToken } from "./cloud-gateway-auth.js";
 import { attachCloudDeviceWebSocketRoute } from "./cloud-device-websocket-route.js";
+import { InMemoryCloudControlPlaneAuditStore } from "./cloud-control-plane-audit.js";
 import { InMemoryCloudDeviceConnectionStore } from "./cloud-device-connection-store.js";
 import { CloudDesktopToolService } from "./cloud-desktop-tool-service.js";
 import { InMemoryCloudRoutingStore } from "./cloud-routing-store.js";
 import { InMemoryCloudSessionBindingService } from "./cloud-session-binding.js";
 import { InMemoryCloudWorkspaceCatalogStore } from "./cloud-workspace-catalog-store.js";
+import { CloudWorkspaceSelectionService } from "./cloud-workspace-selection-service.js";
 import type { CloudGatewayRuntime } from "./cloud-gateway-server.js";
 import { GatewayMcpToolExecutor } from "./gateway-mcp-tool-executor.js";
 import type { WorkspaceIdentity } from "./identity.js";
@@ -32,13 +34,27 @@ const sessionBindings = new InMemoryCloudSessionBindingService(routingStore);
 const deviceChannel = new WebSocketDeviceChannel({ toolCallTimeoutMs: 500 });
 const deviceConnectionStore = new InMemoryCloudDeviceConnectionStore();
 const workspaceCatalogStore = new InMemoryCloudWorkspaceCatalogStore();
-const desktopToolService = new CloudDesktopToolService(sessionBindings, deviceConnectionStore, workspaceCatalogStore);
+const auditStore = new InMemoryCloudControlPlaneAuditStore();
+const workspaceSelectionService = new CloudWorkspaceSelectionService(
+  sessionBindings,
+  routingStore,
+  workspaceCatalogStore,
+  auditStore,
+);
+const desktopToolService = new CloudDesktopToolService(
+  sessionBindings,
+  deviceConnectionStore,
+  workspaceCatalogStore,
+  workspaceSelectionService,
+);
 const runtime: CloudGatewayRuntime & { deviceChannel: WebSocketDeviceChannel } = {
   routingStore,
   sessionBindings,
   deviceChannel,
   deviceConnectionStore,
   workspaceCatalogStore,
+  auditStore,
+  workspaceSelectionService,
   desktopToolService,
   toolExecutor: new GatewayMcpToolExecutor(routingStore, deviceChannel, sessionBindings),
   close: async () => undefined,
@@ -104,6 +120,25 @@ try {
   assert.equal(workspaces.catalogPending, false);
   assert.equal(workspaces.workspaces[0]?.workspaceRef, "workspace_prod_a");
   assert.deepEqual(workspaces.workspaces[0]?.capabilities, ["read", "write"]);
+
+  const workspaceConnection = await desktopToolService.connectWorkspace(context(), {
+    workspaceRef: "workspace_prod_a",
+    idempotencyKey: "idem_workspace_prod_a",
+  });
+  assert.equal(workspaceConnection.status, "connected");
+  assert.equal(workspaceConnection.deviceId, "dev_prod_a");
+  assert.equal(workspaceConnection.workspaceRef, "workspace_prod_a");
+  assert.match(workspaceConnection.workspaceId, /^cw_/);
+
+  const routeResolution = await routingStore.resolveWorkspaceRoute({
+    owner,
+    mcpSessionId: "mcp_prod_a",
+    conversationSessionId: "conv_prod_a",
+    workspaceId: workspaceConnection.workspaceId,
+    toolCallId: "tool_prod_a",
+  });
+  assert.equal(routeResolution.workspace.workspaceRef, "workspace_prod_a");
+  assert.equal(routeResolution.toolCall?.toolCallId, "tool_prod_a");
 
   websocket.send(JSON.stringify({
     type: "agent.heartbeat",
