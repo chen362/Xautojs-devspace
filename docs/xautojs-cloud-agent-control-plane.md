@@ -8,7 +8,7 @@ This document tracks the executable cloud-agent control plane code path. It comp
 
 Phase 3 introduced the outbound channel control-plane skeleton. Phase 4 wired the first production-facing gateway pieces without changing the existing self-hosted `devspace serve` mode. Phase 5 added the first real auth adapter, Desktop-managed outbound lifecycle, and workspace catalog sync. Phase 6 added the first user-usable loop: device-code token issuing, Desktop cloud setup payload, catalog selection to workspace route binding, and audit/idempotency records for control-plane mutations.
 
-Phase 7 turns the Phase 6 payload layer into a live-connection skeleton: persistent Postgres stores for device-code and audit/idempotency records, a small device-code HTTP API, a Tauri lifecycle command bridge, a Desktop-side bridge client, and local approval gates for write/edit/shell tool calls.
+Phase 7 turns the Phase 6 payload layer into a live-connection skeleton: persistent Postgres stores for device-code and audit/idempotency records, a small device-code HTTP API, a gateway HTTP route registration entrypoint, a Tauri lifecycle command bridge, a Desktop-side bridge client wired into the cloud settings panel, and local approval gates for write/edit/shell tool calls.
 
 Implemented Phase 7 files:
 
@@ -17,13 +17,16 @@ migrations/postgres/0009_cloud_device_code_and_audit.sql
 src/postgres-cloud-device-authorization-store.ts
 src/postgres-cloud-control-plane-audit-store.ts
 src/cloud-device-code-api.ts
+src/cloud-gateway-server.ts
 src/local-agent-receiver.ts
 apps/desktop/src-tauri/src/main.rs
 apps/desktop/src-tauri/tauri.conf.json
 apps/desktop/src/tauri-cloud-lifecycle-client.ts
+apps/desktop/src/App.tsx
 src/postgres-cloud-device-authorization-store.test.ts
 src/postgres-cloud-control-plane-audit-store.test.ts
 src/cloud-device-code-api.test.ts
+src/cloud-gateway-http-routes.test.ts
 src/local-agent-receiver-approval.test.ts
 apps/desktop/src/tauri-cloud-lifecycle-client.test.ts
 ```
@@ -95,7 +98,10 @@ Desktop device-code request
   -> authenticated owner approves userCode
   -> POST /api/cloud/device-code/token returns signed device token
   -> Desktop cloud settings build DesktopCloudLifecyclePayload
+  -> App.tsx Save setup calls startDesktopCloudLifecycle(payload)
   -> Tauri start_cloud_lifecycle command stores lifecycle state
+  -> App.tsx Stop calls stopDesktopCloudLifecycle()
+  -> Tauri stop_cloud_lifecycle marks the Desktop outbound lifecycle stopped
   -> DesktopOutboundAgentLifecycle can start authenticated WebSocket client
   -> workspace.catalog reports approved local workspaces
   -> ChatGPT MCP request calls connect_desktop/list_workspaces/connect_workspace
@@ -110,6 +116,23 @@ Desktop device-code request
 `GatewayMcpToolExecutor` remains the cloud-side execution boundary. It never imports `pi-tools`, never resolves local absolute paths, and never executes shell commands directly.
 
 `LocalAgentToolReceiver` is the customer-machine boundary. It receives protocol `tool.call` messages and invokes the injected `DevspaceToolExecutor`. Phase 7 adds an optional approval prompt before `write_file`, `edit_file`, and `run_shell`; read/search/list/show-changes stay uninterrupted.
+
+## Gateway HTTP Route Registration
+
+`cloud-gateway-server.ts` now exposes `registerCloudGatewayHttpRoutes(app, runtime, config, options)`. This is the selected gateway-server registration point for HTTP routes that sit next to the WebSocket upgrade route.
+
+Current registration:
+
+```text
+registerCloudGatewayHttpRoutes()
+  -> registerCloudDeviceCodeApiRoutes()
+  -> reuses runtime.auditStore
+  -> default owner resolver accepts owner-token Bearer auth in local mode
+  -> default owner resolver also accepts gateway-injected x-devspace-tenant-id/x-devspace-user-id headers
+  -> production deployments can inject a stricter resolveOwner adapter
+```
+
+The device-code API therefore shares the same control-plane audit store as `connect_desktop`, `connect_workspace`, and gateway-routed tool calls. It also keeps the authenticated owner source outside the request body.
 
 ## Device-Code HTTP API
 
@@ -218,9 +241,7 @@ stopDesktopCloudLifecycle()
 getDesktopCloudLifecycle()
 ```
 
-When the app is running in a plain browser dev session, the client returns `status: unsupported` instead of throwing. In a real Tauri WebView it calls the Rust commands through the global Tauri bridge. The CSP now allows localhost and cloud WebSocket connections.
-
-The remaining UI integration is small and explicit: `App.tsx` should call `startDesktopCloudLifecycle(payload)` after `buildDesktopCloudLifecyclePayload()` and call `stopDesktopCloudLifecycle()` from the Stop button. The bridge and tests are in place; the current settings panel still treats the payload as ready state until that final UI call is wired.
+`App.tsx` now wires the cloud settings panel to that bridge: Save setup validates and stores the cloud payload, calls `startDesktopCloudLifecycle(payload)`, and reflects `running`, `unsupported`, and `error` bridge states in the panel. Stop calls `stopDesktopCloudLifecycle()` and marks the Desktop window stopped. When the app is running in a plain browser dev session, the client returns `status: unsupported` instead of throwing. In a real Tauri WebView it calls the Rust commands through the global Tauri bridge. The CSP allows localhost and cloud WebSocket connections.
 
 ## Local Approval Prompt
 
@@ -284,6 +305,7 @@ local outbound client hello, heartbeat, workspace.catalog, tool.call, tool.resul
 Desktop outbound lifecycle start/restart/stop and bearer header injection
 device-code pending, slow_down, approval, token minting, denial, and expiry
 device-code HTTP create/poll/approve/deny flow
+gateway HTTP route registration for device-code owner-token auth, injected owner auth, token minting, and audit reuse
 Postgres device authorization persistence
 Postgres audit/idempotency replay and conflict behavior
 workspace catalog selection -> workspace route binding and idempotent replay
@@ -297,21 +319,19 @@ LocalAgentToolReceiver approval prompt allow/deny behavior
 ```text
 No hosted browser verification page for userCode approval yet
 No full external IdP/OIDC approval-page adapter yet
-No App.tsx direct call into the new Tauri lifecycle client yet
 No Rust-owned WebSocket implementation; DesktopOutboundAgentLifecycle remains the TypeScript outbound client boundary
+No OS keychain/secure storage for Desktop device token yet
 No cloud billing/quota event stream yet
 ```
 
 ## Next Production Phase
 
-The next phase should finish the user-facing live loop:
+The next phase should finish the user-facing live loop behind the already-wired UI and HTTP route registration:
 
 ```text
-wire App.tsx Save setup -> startDesktopCloudLifecycle(payload)
-wire App.tsx Stop -> stopDesktopCloudLifecycle()
-register device-code API in the selected cloud gateway server entrypoint with a real authenticated owner resolver
+connect Tauri lifecycle commands to the real DesktopOutboundAgentLifecycle process/socket boundary
 add a minimal verification page for userCode approval
 replace localStorage device-token handling with OS keychain/secure storage
-connect Tauri lifecycle command to DesktopOutboundAgentLifecycle start/stop when the Desktop runtime boundary is finalized
+plug a production OIDC/hosted-auth resolveOwner adapter into registerCloudGatewayHttpRoutes()
 keep self-hosted devspace serve as the local-only mode
 ```
