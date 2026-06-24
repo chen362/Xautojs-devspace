@@ -1,4 +1,4 @@
-import { LocalAgentOutboundClient, type LocalAgentOutboundClientOptions } from "./local-agent-outbound-client.js";
+import { LocalAgentOutboundClient } from "./local-agent-outbound-client.js";
 import type { LocalAgentToolReceiver } from "./local-agent-receiver.js";
 import type {
   LocalAgentSocketFactory,
