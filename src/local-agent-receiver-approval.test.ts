@@ -138,7 +138,7 @@ const shellExecutor = new FakeExecutor();
 const shellPrompt = new RecordingApprovalPrompt("denied");
 const shellReceiver = new LocalAgentToolReceiver(shellExecutor, { approvalPrompt: shellPrompt });
 const shellResult = await shellReceiver.handleToolCall(toolCall("run_shell", "tc_shell", { command: "npm test" }));
-assert.equal(shellResult.ok, false);
+if (shellResult.ok) throw new Error("Expected denied shell result.");
 assert.equal(shellResult.error.code, "LOCAL_APPROVAL_DENIED");
 assert.equal(shellResult.error.retryable, false);
 assert.equal(shellPrompt.requests[0]?.risk, "high");
