@@ -7,6 +7,13 @@ import type {
 export const CLOUD_DEVICE_CHANNEL_PROTOCOL_VERSION = 1;
 export type CloudDeviceChannelProtocolVersion = typeof CLOUD_DEVICE_CHANNEL_PROTOCOL_VERSION;
 
+export interface CloudWorkspaceCatalogEntry {
+  workspaceRef: string;
+  displayName: string;
+  rootLabel: string;
+  capabilities: string[];
+}
+
 export interface CloudDeviceAgentHelloMessage {
   type: "agent.hello";
   protocolVersion: CloudDeviceChannelProtocolVersion;
@@ -22,6 +29,15 @@ export interface CloudDeviceHeartbeatMessage {
   protocolVersion: CloudDeviceChannelProtocolVersion;
   deviceId: string;
   connectionId?: string;
+  time: string;
+}
+
+export interface CloudDeviceWorkspaceCatalogMessage {
+  type: "workspace.catalog";
+  protocolVersion: CloudDeviceChannelProtocolVersion;
+  deviceId: string;
+  catalogVersion?: string;
+  workspaces: CloudWorkspaceCatalogEntry[];
   time: string;
 }
 
@@ -66,6 +82,7 @@ export interface CloudDeviceToolCancelMessage {
 export type CloudDeviceAgentMessage =
   | CloudDeviceAgentHelloMessage
   | CloudDeviceHeartbeatMessage
+  | CloudDeviceWorkspaceCatalogMessage
   | CloudDeviceToolResultMessage;
 
 export type CloudDeviceGatewayMessage =
@@ -139,5 +156,21 @@ export function createCloudDeviceToolErrorMessage(input: {
     toolCallId: input.toolCallId,
     ok: false,
     error: input.error,
+  };
+}
+
+export function createCloudDeviceWorkspaceCatalogMessage(input: {
+  deviceId: string;
+  catalogVersion?: string;
+  workspaces: CloudWorkspaceCatalogEntry[];
+  time: string;
+}): CloudDeviceWorkspaceCatalogMessage {
+  return {
+    type: "workspace.catalog",
+    protocolVersion: CLOUD_DEVICE_CHANNEL_PROTOCOL_VERSION,
+    deviceId: input.deviceId,
+    catalogVersion: input.catalogVersion,
+    workspaces: input.workspaces,
+    time: input.time,
   };
 }
