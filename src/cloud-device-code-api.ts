@@ -176,7 +176,7 @@ function optionalString(value: unknown): string | undefined {
 
 function requiredString(value: unknown, field: string): string {
   const trimmed = optionalString(value);
-  if (!trimmed) throw new CloudDeviceAuthorizationError("INVALID_DEVICE_CODE", `${field} is required.`);
+  if (!trimmed) throw new Error(`${field} is required.`);
   return trimmed;
 }
 
