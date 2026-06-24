@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Xautojs Desktop",
@@ -22,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src http://127.0.0.1:* http://localhost:*; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* https: wss:; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
