@@ -1,4 +1,6 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { platform } from "node:os";
 import { resolve } from "node:path";
 import type { ServerConfig } from "./config.js";
 import { DesktopOutboundAgentLifecycle, type DesktopOutboundAgentSnapshot } from "./desktop-outbound-agent-lifecycle.js";
@@ -34,7 +36,7 @@ import { expandHomePath } from "./roots.js";
 import type { WorkspaceContext } from "./workspaces.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
-export type DesktopCloudAgentApprovalMode = "deny" | "auto_approve";
+export type DesktopCloudAgentApprovalMode = "deny" | "auto_approve" | "desktop_prompt";
 
 export interface DesktopCloudAgentWorkspacePayload {
   workspaceRef: string;
@@ -293,7 +295,8 @@ function capabilitiesFor(workspaces: NormalizedDesktopCloudAgentWorkspace[]): st
 }
 
 function approvalPromptFor(mode: DesktopCloudAgentApprovalMode | undefined): LocalAgentApprovalPrompt {
-  if (mode === "auto_approve") {
+  const effectiveMode = mode ?? "desktop_prompt";
+  if (effectiveMode === "auto_approve") {
     return {
       requestApproval: (request) => ({
         decision: "approved",
@@ -303,9 +306,100 @@ function approvalPromptFor(mode: DesktopCloudAgentApprovalMode | undefined): Loc
     };
   }
 
+  if (effectiveMode === "desktop_prompt") {
+    return {
+      requestApproval: (request) => requestNativeDesktopApproval(request),
+    };
+  }
+
   return {
     requestApproval: (request) => denyApproval(request),
   };
+}
+
+function requestNativeDesktopApproval(request: LocalAgentApprovalRequest): LocalAgentApprovalDecision {
+  const message = approvalMessage(request);
+  const result = runNativeApprovalDialog(message);
+  if (result.approved) {
+    return {
+      decision: "approved",
+      approvedBy: "desktop-native-prompt",
+      reason: `${request.tool} approved from the Desktop native approval prompt.`,
+    };
+  }
+  return {
+    decision: "denied",
+    reason: result.reason ?? `${request.tool} was denied from the Desktop native approval prompt.`,
+  };
+}
+
+function runNativeApprovalDialog(message: string): { approved: boolean; reason?: string } {
+  const currentPlatform = platform();
+  if (currentPlatform === "darwin") return runMacApprovalDialog(message);
+  if (currentPlatform === "win32") return runWindowsApprovalDialog(message);
+  if (currentPlatform === "linux") return runLinuxApprovalDialog(message);
+  return { approved: false, reason: `Native approval prompt is not supported on ${currentPlatform}.` };
+}
+
+function runMacApprovalDialog(message: string): { approved: boolean; reason?: string } {
+  const script = [
+    `display dialog ${appleScriptString(message)} buttons {"Deny", "Approve"} default button "Deny" cancel button "Deny" with title "Xautojs Approval" with icon caution`,
+  ];
+  const result = spawnSync("osascript", ["-e", script.join("\n")], { encoding: "utf8", timeout: 120_000 });
+  if (result.error) return { approved: false, reason: `macOS approval prompt failed: ${result.error.message}` };
+  if (result.status === 0 && result.stdout.includes("button returned:Approve")) return { approved: true };
+  return { approved: false, reason: "macOS approval prompt was denied or dismissed." };
+}
+
+function runWindowsApprovalDialog(message: string): { approved: boolean; reason?: string } {
+  const script = [
+    "Add-Type -AssemblyName PresentationFramework",
+    `$result = [System.Windows.MessageBox]::Show(${powershellString(message)}, "Xautojs Approval", "YesNo", "Warning")`,
+    "if ($result -eq 'Yes') { exit 0 } else { exit 2 }",
+  ].join("; ");
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 120_000 });
+  if (result.error) return { approved: false, reason: `Windows approval prompt failed: ${result.error.message}` };
+  if (result.status === 0) return { approved: true };
+  return { approved: false, reason: "Windows approval prompt was denied or dismissed." };
+}
+
+function runLinuxApprovalDialog(message: string): { approved: boolean; reason?: string } {
+  const result = spawnSync("zenity", [
+    "--question",
+    "--title=Xautojs Approval",
+    `--text=${message}`,
+    "--ok-label=Approve",
+    "--cancel-label=Deny",
+  ], { encoding: "utf8", timeout: 120_000 });
+  if (result.error) return { approved: false, reason: `Linux approval prompt failed: ${result.error.message}` };
+  if (result.status === 0) return { approved: true };
+  return { approved: false, reason: "Linux approval prompt was denied or dismissed." };
+}
+
+function approvalMessage(request: LocalAgentApprovalRequest): string {
+  return truncateLines([
+    request.title,
+    request.message,
+    `Tool: ${request.tool}`,
+    `Workspace: ${request.workspaceId}`,
+    `Risk: ${request.risk}`,
+    `Tool call: ${request.toolCallId}`,
+    "",
+    "Approve only if you trust this ChatGPT session to make this local change.",
+  ].filter(Boolean).join("\n"), 1_800);
+}
+
+function appleScriptString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\n/g, "\\n")}"`;
+}
+
+function powershellString(value: string): string {
+  return `@'\n${value.replace(/'@/g, "' + '@") }\n'@`;
+}
+
+function truncateLines(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 32)}\n... truncated for approval prompt`;
 }
 
 function denyApproval(request: LocalAgentApprovalRequest): LocalAgentApprovalDecision {
