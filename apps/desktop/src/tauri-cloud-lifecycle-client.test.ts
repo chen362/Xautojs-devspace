@@ -43,6 +43,9 @@ try {
     core: {
       invoke: async <T>(command: string, args?: Record<string, unknown>) => {
         calls.push({ command, args });
+        if (command === "store_cloud_device_token") {
+          return undefined as T;
+        }
         if (command === "start_cloud_lifecycle") {
           return {
             status: "running",
@@ -50,6 +53,7 @@ try {
             desktopInstanceId: "desk_tauri_a",
             url: "wss://gateway.example.com/cloud/devices/ws",
             workspaceCount: 1,
+            processId: 42,
             startedAt: "unix:1",
           } as T;
         }
@@ -64,16 +68,19 @@ try {
   const running = await startDesktopCloudLifecycle(payload);
   assert.equal(running.status, "running");
   assert.equal(running.deviceId, "dev_tauri_a");
-  assert.equal(calls[0]?.command, "start_cloud_lifecycle");
-  assert.deepEqual((calls[0]?.args?.payload as DesktopCloudLifecyclePayload).workspaceCatalog.workspaces[0]?.capabilities, ["read", "write"]);
+  assert.equal(running.processId, 42);
+  assert.equal(calls[0]?.command, "store_cloud_device_token");
+  assert.deepEqual(calls[0]?.args, { token: "token-a" });
+  assert.equal(calls[1]?.command, "start_cloud_lifecycle");
+  assert.deepEqual((calls[1]?.args?.payload as DesktopCloudLifecyclePayload).workspaceCatalog.workspaces[0]?.capabilities, ["read", "write"]);
 
   const current = await getDesktopCloudLifecycle();
   assert.equal(current.status, "running");
-  assert.equal(calls[1]?.command, "get_cloud_lifecycle");
+  assert.equal(calls[2]?.command, "get_cloud_lifecycle");
 
   const stopped = await stopDesktopCloudLifecycle();
   assert.equal(stopped.status, "stopped");
-  assert.equal(calls[2]?.command, "stop_cloud_lifecycle");
+  assert.equal(calls[3]?.command, "stop_cloud_lifecycle");
 } finally {
   globalScope.__TAURI__ = previousTauri;
 }
