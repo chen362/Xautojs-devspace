@@ -17,7 +17,7 @@ struct CloudLifecycleState {
 impl Drop for CloudLifecycleState {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.lock() {
-            stop_child(&mut child);
+            stop_child(&mut *child);
         }
     }
 }
@@ -89,7 +89,7 @@ fn start_cloud_lifecycle(
         .child
         .lock()
         .map_err(|_| "cloud lifecycle process state is unavailable".to_string())?;
-    stop_child(&mut child_guard);
+    stop_child(&mut *child_guard);
 
     let child = match spawn_lifecycle_runner(&payload) {
         Ok(child) => child,
@@ -126,7 +126,7 @@ fn stop_cloud_lifecycle(state: State<CloudLifecycleState>) -> Result<CloudLifecy
         .child
         .lock()
         .map_err(|_| "cloud lifecycle process state is unavailable".to_string())?;
-    stop_child(&mut child_guard);
+    stop_child(&mut *child_guard);
     drop(child_guard);
 
     let mut snapshot = state
@@ -149,7 +149,7 @@ fn get_cloud_lifecycle(state: State<CloudLifecycleState>) -> Result<CloudLifecyc
         .snapshot
         .lock()
         .map_err(|_| "cloud lifecycle state is unavailable".to_string())?;
-    refresh_child_exit(&mut child_guard, &mut snapshot);
+    refresh_child_exit(&mut *child_guard, &mut snapshot);
     Ok(snapshot.clone())
 }
 
