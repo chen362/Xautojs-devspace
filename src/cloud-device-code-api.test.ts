@@ -40,6 +40,12 @@ try {
   assert.match(stringField(created.body, "userCode"), /^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
   assert.equal(stringField(created.body, "verificationUriComplete").includes("user_code="), true);
 
+  const approvalPage = await getText(baseUrl, `/cloud/device?user_code=${encodeURIComponent(stringField(created.body, "userCode"))}`);
+  assert.equal(approvalPage.status, 200);
+  assert.match(approvalPage.body, /Connect Desktop/);
+  assert.match(approvalPage.body, new RegExp(stringField(created.body, "userCode")));
+  assert.match(approvalPage.body, /Approve device/);
+
   const pending = await postJson(baseUrl, "/api/cloud/device-code/token", {
     deviceCode: stringField(created.body, "deviceCode"),
   });
@@ -72,6 +78,28 @@ try {
   assert.equal(verified.deviceId, "dev_http_auth_a");
   assert.equal(verified.desktopInstanceId, "desk_http_auth_a");
 
+  const createdForForm = await postJson(baseUrl, "/api/cloud/device-code", {
+    deviceId: "dev_http_auth_form",
+  });
+  const formApproved = await postForm(
+    baseUrl,
+    `/api/cloud/device-code/${stringField(createdForForm.body, "userCode")}/approve`,
+    new URLSearchParams({ desktopInstanceId: "desk_http_auth_form" }),
+    { "x-test-owner": "owner" },
+  );
+  assert.equal(formApproved.status, 200);
+  assert.match(formApproved.body, /Desktop Approved/);
+  const formToken = await postJson(baseUrl, "/api/cloud/device-code/token", {
+    deviceCode: stringField(createdForForm.body, "deviceCode"),
+  });
+  assert.equal(formToken.status, 200);
+  const verifiedFormToken = verifyCloudGatewayDeviceToken(
+    stringField(formToken.body, "accessToken"),
+    tokenSecret,
+  );
+  assert.equal(verifiedFormToken.deviceId, "dev_http_auth_form");
+  assert.equal(verifiedFormToken.desktopInstanceId, "desk_http_auth_form");
+
   const createdForDeny = await postJson(baseUrl, "/api/cloud/device-code", {});
   const denied = await postJson(
     baseUrl,
@@ -91,6 +119,14 @@ try {
   server.close();
 }
 
+async function getText(
+  baseUrl: string,
+  path: string,
+): Promise<{ status: number; body: string }> {
+  const response = await fetch(`${baseUrl}${path}`);
+  return { status: response.status, body: await response.text() };
+}
+
 async function postJson(
   baseUrl: string,
   path: string,
@@ -104,6 +140,20 @@ async function postJson(
   });
   const responseBody = await response.json() as Record<string, unknown>;
   return { status: response.status, body: responseBody };
+}
+
+async function postForm(
+  baseUrl: string,
+  path: string,
+  body: URLSearchParams,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: string }> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+    body,
+  });
+  return { status: response.status, body: await response.text() };
 }
 
 function stringField(value: Record<string, unknown>, field: string): string {
