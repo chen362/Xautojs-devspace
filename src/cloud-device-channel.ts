@@ -1,14 +1,14 @@
 import type { DevspaceToolExecutionContext } from "./mcp-tool-executor.js";
 import type {
-  RemoteMcpToolCall,
   RemoteMcpToolName,
   RemoteMcpToolResult,
 } from "./remote-mcp-tool-executor.js";
+import {
+  createCloudDeviceToolCallMessage,
+  type CloudDeviceToolCallMessage,
+} from "./cloud-device-channel-protocol.js";
 
-export interface CloudDeviceToolCall<TInput = unknown> extends RemoteMcpToolCall<TInput> {
-  deviceId: string;
-  deadlineAt?: string;
-}
+export interface CloudDeviceToolCall<TInput = unknown> extends CloudDeviceToolCallMessage<TInput> {}
 
 export interface CloudDeviceToolCancellation {
   deviceId: string;
@@ -38,17 +38,5 @@ export function createCloudDeviceToolCall<TInput>(input: {
   input: TInput;
   deadlineAt?: string;
 }): CloudDeviceToolCall<TInput> {
-  return {
-    deviceId: input.deviceId,
-    toolCallId: input.toolCallId,
-    tool: input.tool,
-    context: {
-      ...input.context,
-      deviceId: input.deviceId,
-      toolCallId: input.toolCallId,
-    },
-    workspaceId: input.workspaceId,
-    input: input.input,
-    deadlineAt: input.deadlineAt,
-  };
+  return createCloudDeviceToolCallMessage(input);
 }
