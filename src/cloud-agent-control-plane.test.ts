@@ -158,8 +158,10 @@ channel.registerConnection({
 
 const opened = await gateway.openWorkspace(context, { path: "wsroot_cp_a" });
 assert.equal(opened.workspace.id, "mcp_ws_cp_a");
-assert.equal(connection.sent[0]?.type, "tool.call");
-assert.equal(connection.sent[0]?.tool, "open_workspace");
+const openMessage = connection.sent[0];
+assert.equal(openMessage?.type, "tool.call");
+if (!openMessage || openMessage.type !== "tool.call") throw new Error("Expected tool.call message");
+assert.equal(openMessage.tool, "open_workspace");
 assert.equal(localExecutor.calls[0], "open:dev_cp_a:wsroot_cp_a");
 
 const read = await gateway.readFile(
