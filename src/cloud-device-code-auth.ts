@@ -272,7 +272,8 @@ function sameApprovedTarget(
   existing: CloudDeviceAuthorizationRecord,
   next: { owner: WorkspaceIdentity; deviceId?: string; desktopInstanceId?: string },
 ): boolean {
-  return existing.owner?.tenantId === next.owner.tenantId
+  if (!existing.owner) return false;
+  return existing.owner.tenantId === next.owner.tenantId
     && existing.owner.userId === next.owner.userId
     && existing.deviceId === next.deviceId
     && existing.desktopInstanceId === next.desktopInstanceId;
