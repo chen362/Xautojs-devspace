@@ -9,7 +9,7 @@
     "build:web": "vite build",
     "build": "tsc -p tsconfig.json --noEmit && npm run build:web",
     "preview": "vite preview --host 127.0.0.1 --port 4177",
-    "test": "tsx src/operator-client.test.ts",
+    "test": "tsx src/operator-client.test.ts && tsx src/cloud-connection-client.test.ts",
     "icons:generate": "node scripts/generate-icons.mjs",
     "artifacts:checksums": "node scripts/write-artifact-checksums.mjs",
     "tauri:dev": "npm run icons:generate && tauri dev",
