@@ -33,7 +33,7 @@ class FakeSocket implements LocalAgentSocket {
     this.sent.push(data);
   }
 
-  close(): void {
+  close(_code?: number, _reason?: string): void {
     this.readyState = 3;
     this.emit("close", 1000, Buffer.from("closed"));
   }
@@ -169,7 +169,8 @@ const started = startDesktopCloudAgentFromPayload({
 }, {
   approvalMode: "auto_approve",
   now: () => "2026-06-24T00:00:00.000Z",
-  socketFactory: (_url, _options) => {
+  socketFactory: (_url, options) => {
+    assert.equal(options.headers?.authorization, "Bearer desktop-token");
     const socket = new FakeSocket();
     sockets.push(socket);
     return socket;
