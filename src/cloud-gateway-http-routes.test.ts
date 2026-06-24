@@ -2,32 +2,16 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import express from "express";
+import express, { type Request } from "express";
 import type { ServerConfig } from "./config.js";
+import type { CloudGatewayRuntime } from "./cloud-gateway-server.js";
 import { createCloudGatewayRuntime, registerCloudGatewayHttpRoutes } from "./cloud-gateway-server.js";
 import { verifyCloudGatewayDeviceToken } from "./cloud-gateway-auth.js";
-import { LOCAL_WORKSPACE_IDENTITY } from "./identity.js";
+import { LOCAL_WORKSPACE_IDENTITY, type WorkspaceIdentity } from "./identity.js";
 
 const tokenSecret = "gateway_http_routes_test_secret";
-const config = testConfig();
-const app = express();
-const runtime = createCloudGatewayRuntime(config);
-const registered = registerCloudGatewayHttpRoutes(app, runtime, config, {
-  deviceCode: {
-    tokenSecret,
-    verificationUri: "https://gateway.example.com/cloud/device",
-    pollIntervalSeconds: 0,
-    tokenTtlSeconds: 3_600,
-  },
-});
-const server = createServer(app);
 
-try {
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const { port } = server.address() as AddressInfo;
-  const baseUrl = `http://127.0.0.1:${port}`;
-
+await withGateway(testConfig("default"), {}, async (baseUrl, runtime, config) => {
   const created = await postJson(baseUrl, "/api/cloud/device-code", {
     clientName: "Xautojs Desktop",
     deviceId: "dev_gateway_http_a",
@@ -64,43 +48,77 @@ try {
   assert.equal(verified.deviceId, "dev_gateway_http_a");
   assert.equal(verified.desktopInstanceId, "desk_gateway_http_a");
 
-  const createdForInjectedOwner = await postJson(baseUrl, "/api/cloud/device-code", {
+  const events = await runtime.auditStore.listEvents?.();
+  if (!events) throw new Error("Expected gateway runtime audit store to support listEvents().");
+  assert.equal(events.filter((event) => event.action === "device_code.create").length, 1);
+  assert.equal(events.filter((event) => event.action === "device_code.approve" && event.status === "completed").length, 1);
+  assert.equal(events.filter((event) => event.action === "device_code.poll" && event.status === "completed").length, 1);
+});
+
+await withGateway(testConfig("custom"), {
+  resolveOwner: (request) => {
+    const tenantId = request.header("x-devspace-tenant-id")?.trim();
+    const userId = request.header("x-devspace-user-id")?.trim();
+    return tenantId && userId ? { tenantId, userId } : undefined;
+  },
+}, async (baseUrl) => {
+  const created = await postJson(baseUrl, "/api/cloud/device-code", {
     deviceId: "dev_gateway_http_b",
   });
-  const approvedForInjectedOwner = await postJson(
+  assert.equal(created.status, 201);
+
+  const approved = await postJson(
     baseUrl,
-    `/api/cloud/device-code/${stringField(createdForInjectedOwner.body, "userCode")}/approve`,
+    `/api/cloud/device-code/${stringField(created.body, "userCode")}/approve`,
     { desktopInstanceId: "desk_gateway_http_b" },
     {
       "x-devspace-tenant-id": "tenant_gateway_http",
       "x-devspace-user-id": "user_gateway_http",
     },
   );
-  assert.equal(approvedForInjectedOwner.status, 200);
-  const injectedOwnerToken = await postJson(baseUrl, "/api/cloud/device-code/token", {
-    deviceCode: stringField(createdForInjectedOwner.body, "deviceCode"),
+  assert.equal(approved.status, 200);
+
+  const token = await postJson(baseUrl, "/api/cloud/device-code/token", {
+    deviceCode: stringField(created.body, "deviceCode"),
   });
-  assert.equal(injectedOwnerToken.status, 200);
-  const injectedVerified = verifyCloudGatewayDeviceToken(
-    stringField(injectedOwnerToken.body, "accessToken"),
-    tokenSecret,
-  );
-  assert.deepEqual(injectedVerified.owner, {
+  assert.equal(token.status, 200);
+  const verified = verifyCloudGatewayDeviceToken(stringField(token.body, "accessToken"), tokenSecret);
+  assert.deepEqual(verified.owner, {
     tenantId: "tenant_gateway_http",
     userId: "user_gateway_http",
   });
-  assert.equal(injectedVerified.deviceId, "dev_gateway_http_b");
-  assert.equal(injectedVerified.desktopInstanceId, "desk_gateway_http_b");
+  assert.equal(verified.deviceId, "dev_gateway_http_b");
+  assert.equal(verified.desktopInstanceId, "desk_gateway_http_b");
+});
 
-  const events = await runtime.auditStore.listEvents?.();
-  if (!events) throw new Error("Expected gateway runtime audit store to support listEvents().");
-  assert.equal(events.filter((event) => event.action === "device_code.create").length, 2);
-  assert.equal(events.filter((event) => event.action === "device_code.approve" && event.status === "completed").length, 2);
-  assert.equal(events.filter((event) => event.action === "device_code.poll" && event.status === "completed").length, 2);
-} finally {
-  await registered.close();
-  await runtime.close();
-  server.close();
+async function withGateway(
+  config: ServerConfig,
+  ownerResolverOptions: { resolveOwner?: (request: Request) => WorkspaceIdentity | undefined },
+  test: (baseUrl: string, runtime: CloudGatewayRuntime, config: ServerConfig) => Promise<void>,
+): Promise<void> {
+  const app = express();
+  const runtime = createCloudGatewayRuntime(config);
+  const registered = registerCloudGatewayHttpRoutes(app, runtime, config, {
+    deviceCode: {
+      tokenSecret,
+      verificationUri: "https://gateway.example.com/cloud/device",
+      pollIntervalSeconds: 0,
+      tokenTtlSeconds: 3_600,
+      ...ownerResolverOptions,
+    },
+  });
+  const server = createServer(app);
+
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const { port } = server.address() as AddressInfo;
+    await test(`http://127.0.0.1:${port}`, runtime, config);
+  } finally {
+    await registered.close();
+    await runtime.close();
+    server.close();
+  }
 }
 
 async function postJson(
@@ -131,14 +149,15 @@ function errorCode(value: Record<string, unknown>): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-function testConfig(): ServerConfig {
+function testConfig(name: string): ServerConfig {
+  const stateDir = `/tmp/devspace-gateway-http-routes-test-${name}`;
   return {
     host: "127.0.0.1",
     port: 7676,
     deploymentMode: "local",
     oauth: {
       mode: "owner-token",
-      ownerToken: "owner_token_for_gateway_http_test",
+      ownerToken: `owner_token_for_gateway_http_test_${name}`,
       accessTokenTtlSeconds: 3_600,
       refreshTokenTtlSeconds: 86_400,
       scopes: ["devspace"],
@@ -146,8 +165,8 @@ function testConfig(): ServerConfig {
     },
     database: {
       provider: "sqlite",
-      stateDir: "/tmp/devspace-gateway-http-routes-test",
-      filePath: "/tmp/devspace-gateway-http-routes-test/devspace.sqlite",
+      stateDir,
+      filePath: `${stateDir}/devspace.sqlite`,
     },
     allowedRoots: ["/tmp"],
     allowedHosts: ["127.0.0.1"],
@@ -155,13 +174,13 @@ function testConfig(): ServerConfig {
     minimalTools: true,
     toolNaming: "short",
     widgets: "off",
-    stateDir: "/tmp/devspace-gateway-http-routes-test",
-    worktreeRoot: "/tmp/devspace-gateway-http-routes-test/worktrees",
+    stateDir,
+    worktreeRoot: `${stateDir}/worktrees`,
     workspaceSessionTtlSeconds: null,
     workspaceSessionCleanupIntervalSeconds: 3_600,
     skillsEnabled: false,
     skillPaths: [],
-    agentDir: "/tmp/devspace-gateway-http-routes-test/agent",
+    agentDir: `${stateDir}/agent`,
     logging: {
       level: "silent",
       format: "json",
