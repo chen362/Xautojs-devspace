@@ -182,12 +182,25 @@ export class CloudDeviceAuthorizationService {
     if (existing.status === "denied") throw new CloudDeviceAuthorizationError("ACCESS_DENIED", "Device authorization was denied.");
 
     const owner = normalizeCloudRouteOwner(input.owner);
+    const deviceId = normalizeOptionalCloudRoutingId(input.deviceId, "deviceId") ?? existing.deviceId;
+    const desktopInstanceId = normalizeOptionalCloudRoutingId(input.desktopInstanceId, "desktopInstanceId") ?? existing.desktopInstanceId;
+
+    if (existing.status === "approved" && existing.owner) {
+      if (!sameApprovedTarget(existing, { owner, deviceId, desktopInstanceId })) {
+        throw new CloudDeviceAuthorizationError(
+          "ACCESS_DENIED",
+          "Device authorization is already approved for another owner or device.",
+        );
+      }
+      return existing;
+    }
+
     const record = await this.store.update({
       ...existing,
       status: "approved",
       owner,
-      deviceId: normalizeOptionalCloudRoutingId(input.deviceId, "deviceId") ?? existing.deviceId,
-      desktopInstanceId: normalizeOptionalCloudRoutingId(input.desktopInstanceId, "desktopInstanceId") ?? existing.desktopInstanceId,
+      deviceId,
+      desktopInstanceId,
       approvedAt: now,
     });
     await this.options.auditStore?.recordEvent({ owner, action: "device_code.approve", status: "completed", now });
@@ -253,6 +266,16 @@ export class CloudDeviceAuthorizationService {
     }
     throw new CloudRoutingError("TOOL_CALL_CONFLICT", "Unable to allocate a unique device user code.");
   }
+}
+
+function sameApprovedTarget(
+  existing: CloudDeviceAuthorizationRecord,
+  next: { owner: WorkspaceIdentity; deviceId?: string; desktopInstanceId?: string },
+): boolean {
+  return existing.owner?.tenantId === next.owner.tenantId
+    && existing.owner.userId === next.owner.userId
+    && existing.deviceId === next.deviceId
+    && existing.desktopInstanceId === next.desktopInstanceId;
 }
 
 function addSeconds(iso: string, seconds: number): string {
