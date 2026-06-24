@@ -1,4 +1,5 @@
 import type {
+  DevspaceToolExecutionContext,
   DevspaceToolExecutor,
   EditFileToolInput,
   FindFilesToolInput,
@@ -23,8 +24,58 @@ type OpenWorkspaceToolInput = {
   baseRef?: string;
 };
 
+export type LocalAgentApprovalToolName = "write_file" | "edit_file" | "run_shell";
+export type LocalAgentApprovalRisk = "medium" | "high";
+
+export interface LocalAgentApprovalRequest<TInput = unknown> {
+  toolCallId: string;
+  tool: LocalAgentApprovalToolName;
+  workspaceId: string;
+  context: DevspaceToolExecutionContext;
+  input: TInput;
+  risk: LocalAgentApprovalRisk;
+  title: string;
+  message: string;
+}
+
+export interface LocalAgentApprovalDecision {
+  decision: "approved" | "denied";
+  reason?: string;
+  approvedBy?: string;
+}
+
+export interface LocalAgentApprovalPrompt {
+  requestApproval<TInput = unknown>(
+    request: LocalAgentApprovalRequest<TInput>,
+  ): Promise<LocalAgentApprovalDecision> | LocalAgentApprovalDecision;
+}
+
+export interface LocalAgentToolReceiverOptions {
+  approvalPrompt?: LocalAgentApprovalPrompt;
+}
+
+export class LocalAgentApprovalDeniedError extends Error {
+  readonly code = "LOCAL_APPROVAL_DENIED";
+  readonly retryable = false;
+  readonly details: { tool: LocalAgentApprovalToolName; toolCallId: string; workspaceId: string; reason?: string };
+
+  constructor(input: {
+    tool: LocalAgentApprovalToolName;
+    toolCallId: string;
+    workspaceId: string;
+    reason?: string;
+  }) {
+    super(input.reason ? `Local approval denied: ${input.reason}` : "Local approval denied.");
+    this.name = "LocalAgentApprovalDeniedError";
+    this.details = input;
+  }
+}
+
 export class LocalAgentToolReceiver {
-  constructor(private readonly executor: DevspaceToolExecutor) {}
+  constructor(
+    private readonly executor: DevspaceToolExecutor,
+    private readonly options: LocalAgentToolReceiverOptions = {},
+  ) {}
 
   async handleGatewayMessage(
     message: CloudDeviceGatewayMessage,
@@ -52,7 +103,7 @@ export class LocalAgentToolReceiver {
     }
   }
 
-  private executeToolCall(
+  private async executeToolCall(
     message: Extract<CloudDeviceGatewayMessage, { type: "tool.call" }>,
   ): Promise<unknown> {
     switch (message.tool) {
@@ -64,18 +115,18 @@ export class LocalAgentToolReceiver {
           requiredWorkspaceId(message.workspaceId),
           message.input as ReadFileToolInput,
         );
-      case "write_file":
-        return this.executor.writeFile(
-          message.context,
-          requiredWorkspaceId(message.workspaceId),
-          message.input as WriteFileToolInput,
-        );
-      case "edit_file":
-        return this.executor.editFile(
-          message.context,
-          requiredWorkspaceId(message.workspaceId),
-          message.input as EditFileToolInput,
-        );
+      case "write_file": {
+        const workspaceId = requiredWorkspaceId(message.workspaceId);
+        const input = message.input as WriteFileToolInput;
+        await this.requireApproval(message, "write_file", workspaceId, input, "medium", writeApprovalTitle(input));
+        return this.executor.writeFile(message.context, workspaceId, input);
+      }
+      case "edit_file": {
+        const workspaceId = requiredWorkspaceId(message.workspaceId);
+        const input = message.input as EditFileToolInput;
+        await this.requireApproval(message, "edit_file", workspaceId, input, "medium", editApprovalTitle(input));
+        return this.executor.editFile(message.context, workspaceId, input);
+      }
       case "grep_files":
         return this.executor.grepFiles(
           message.context,
@@ -94,21 +145,65 @@ export class LocalAgentToolReceiver {
           requiredWorkspaceId(message.workspaceId),
           message.input as ListDirectoryToolInput,
         );
-      case "run_shell":
-        return this.executor.runShell(
-          message.context,
-          requiredWorkspaceId(message.workspaceId),
-          message.input as RunShellToolInput,
-        );
+      case "run_shell": {
+        const workspaceId = requiredWorkspaceId(message.workspaceId);
+        const input = message.input as RunShellToolInput;
+        await this.requireApproval(message, "run_shell", workspaceId, input, "high", shellApprovalTitle(input));
+        return this.executor.runShell(message.context, workspaceId, input);
+      }
       case "show_changes":
         return this.executor.showChanges(message.context, message.input as ShowChangesToolInput);
     }
+  }
+
+  private async requireApproval<TInput>(
+    message: Extract<CloudDeviceGatewayMessage, { type: "tool.call" }>,
+    tool: LocalAgentApprovalToolName,
+    workspaceId: string,
+    input: TInput,
+    risk: LocalAgentApprovalRisk,
+    title: string,
+  ): Promise<void> {
+    const prompt = this.options.approvalPrompt;
+    if (!prompt) return;
+
+    const decision = await prompt.requestApproval({
+      toolCallId: message.toolCallId,
+      tool,
+      workspaceId,
+      context: message.context,
+      input,
+      risk,
+      title,
+      message: `${title} in workspace ${workspaceId}.`,
+    });
+    if (decision.decision === "approved") return;
+
+    throw new LocalAgentApprovalDeniedError({
+      tool,
+      toolCallId: message.toolCallId,
+      workspaceId,
+      reason: decision.reason,
+    });
   }
 }
 
 function requiredWorkspaceId(workspaceId: string | undefined): string {
   if (!workspaceId?.trim()) throw new Error("workspaceId is required for this tool call.");
   return workspaceId;
+}
+
+function writeApprovalTitle(input: WriteFileToolInput): string {
+  return `Write ${input.path}`;
+}
+
+function editApprovalTitle(input: EditFileToolInput): string {
+  return `Edit ${input.path}`;
+}
+
+function shellApprovalTitle(input: RunShellToolInput): string {
+  const command = input.command.length > 80 ? `${input.command.slice(0, 77)}...` : input.command;
+  return `Run shell command: ${command}`;
 }
 
 function localAgentError(error: unknown): RemoteMcpToolError {
