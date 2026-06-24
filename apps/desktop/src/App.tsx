@@ -1,5 +1,14 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
+  buildDesktopCloudLifecyclePayload,
+  cloudConnectionReadiness,
+  parseWorkspaceCatalogText,
+  readCloudConnectionSettings,
+  storeCloudConnectionSettings,
+  type DesktopCloudConnectionReadiness,
+  type DesktopCloudConnectionSettings,
+} from "./cloud-connection-client.js";
+import {
   DEFAULT_DAEMON_URL,
   cancelOperatorRun,
   dispatchOperatorOnce,
@@ -24,6 +33,7 @@ import {
 const DAEMON_URL_STORAGE_KEY = "xautojs.desktop.daemonUrl";
 
 type StreamState = "idle" | "connecting" | "live" | "polling" | "ended" | "error";
+type CloudLifecycleState = "stopped" | "ready";
 
 const initialSnapshot: OperatorConnectionSnapshot = {
   status: "checking",
@@ -35,6 +45,10 @@ const initialSnapshot: OperatorConnectionSnapshot = {
 export default function App() {
   const [daemonUrl, setDaemonUrl] = useState(readStoredDaemonUrl);
   const [token, setToken] = useState("");
+  const [cloudSettings, setCloudSettings] = useState<DesktopCloudConnectionSettings>(() => readCloudConnectionSettings());
+  const [cloudLifecycleState, setCloudLifecycleState] = useState<CloudLifecycleState>("stopped");
+  const [cloudNotice, setCloudNotice] = useState<string>();
+  const [cloudError, setCloudError] = useState<string>();
   const [snapshot, setSnapshot] = useState<OperatorConnectionSnapshot>(initialSnapshot);
   const [lastCheckedAt, setLastCheckedAt] = useState<string>();
   const [busyAction, setBusyAction] = useState<string>();
@@ -137,6 +151,11 @@ export default function App() {
   const counts = useMemo(() => summarizeRuns(snapshot.runs), [snapshot.runs]);
   const approval = pendingApproval(snapshot.replay);
   const canOperate = snapshot.status === "connected" && Boolean(token.trim());
+  const cloudReadiness = useMemo(() => cloudConnectionReadiness(cloudSettings), [cloudSettings]);
+  const cloudWorkspaceCount = useMemo(
+    () => safeCloudWorkspaceCount(cloudSettings.workspaceCatalogText),
+    [cloudSettings.workspaceCatalogText],
+  );
 
   function handleConnect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -175,6 +194,33 @@ export default function App() {
     const value = token.trim();
     if (!value) throw new Error("Enter the operator token first.");
     return value;
+  }
+
+  function updateCloudSettings(patch: Partial<DesktopCloudConnectionSettings>): void {
+    setCloudSettings((current) => ({ ...current, ...patch }));
+    setCloudNotice(undefined);
+    setCloudError(undefined);
+  }
+
+  function handleCloudSettingsSubmit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    setCloudNotice(undefined);
+    setCloudError(undefined);
+    try {
+      const payload = buildDesktopCloudLifecyclePayload(cloudSettings);
+      storeCloudConnectionSettings(cloudSettings);
+      setCloudLifecycleState("ready");
+      setCloudNotice(`Lifecycle payload ready for ${payload.deviceId} with ${payload.workspaceCatalog.workspaces.length} workspace(s).`);
+    } catch (error) {
+      setCloudLifecycleState("stopped");
+      setCloudError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function handleCloudStop(): void {
+    setCloudLifecycleState("stopped");
+    setCloudNotice("Cloud outbound lifecycle stopped for this Desktop window.");
+    setCloudError(undefined);
   }
 
   async function handleDispatch(event: FormEvent<HTMLFormElement>) {
@@ -306,6 +352,18 @@ export default function App() {
             <code>node dist/cli.js operator serve</code>
           </section>
 
+          <CloudConnectionPanel
+            settings={cloudSettings}
+            readiness={cloudReadiness}
+            lifecycleState={cloudLifecycleState}
+            workspaceCount={cloudWorkspaceCount}
+            notice={cloudNotice}
+            error={cloudError}
+            onChange={updateCloudSettings}
+            onSubmit={handleCloudSettingsSubmit}
+            onStop={handleCloudStop}
+          />
+
           <section className="run-nav" aria-label="Recent runs">
             <div className="section-row">
               <h2>Runs</h2>
@@ -420,6 +478,92 @@ function DispatchComposer(props: {
         <input value={props.automationRunId} onChange={(event) => props.onAutomationRunIdChange(event.target.value)} placeholder="optional" />
       </label>
       <button className="primary-button" type="submit" disabled={props.busy}>{props.busy ? "Dispatching" : "Dispatch"}</button>
+    </form>
+  );
+}
+
+function CloudConnectionPanel(props: {
+  settings: DesktopCloudConnectionSettings;
+  readiness: DesktopCloudConnectionReadiness;
+  lifecycleState: CloudLifecycleState;
+  workspaceCount: number;
+  notice?: string;
+  error?: string;
+  onChange: (patch: Partial<DesktopCloudConnectionSettings>) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onStop: () => void;
+}) {
+  return (
+    <form className="cloud-panel" onSubmit={props.onSubmit}>
+      <div className="section-row">
+        <div>
+          <h2>Cloud setup</h2>
+          <p>{props.workspaceCount} catalog workspace{props.workspaceCount === 1 ? "" : "s"}</p>
+        </div>
+        <span className={`connection-pill ${cloudLifecycleTone(props.lifecycleState, props.readiness)}`}>
+          {cloudLifecycleLabel(props.lifecycleState, props.readiness)}
+        </span>
+      </div>
+      <label>
+        <span>Gateway WebSocket</span>
+        <input
+          value={props.settings.gatewayUrl}
+          onChange={(event) => props.onChange({ gatewayUrl: event.target.value })}
+          spellCheck={false}
+          placeholder="wss://gateway.example.com/cloud/devices/ws"
+        />
+      </label>
+      <div className="field-grid">
+        <label>
+          <span>Device id</span>
+          <input
+            value={props.settings.deviceId}
+            onChange={(event) => props.onChange({ deviceId: event.target.value })}
+            spellCheck={false}
+            placeholder="desktop-macbook-a"
+          />
+        </label>
+        <label>
+          <span>Instance id</span>
+          <input
+            value={props.settings.desktopInstanceId ?? ""}
+            onChange={(event) => props.onChange({ desktopInstanceId: event.target.value })}
+            spellCheck={false}
+            placeholder="optional"
+          />
+        </label>
+      </div>
+      <label>
+        <span>Device token</span>
+        <input
+          value={props.settings.deviceToken}
+          onChange={(event) => props.onChange({ deviceToken: event.target.value })}
+          type="password"
+          autoComplete="off"
+          placeholder="Bearer token from device-code login"
+        />
+      </label>
+      <label>
+        <span>Workspace catalog</span>
+        <textarea
+          className="cloud-catalog-input"
+          value={props.settings.workspaceCatalogText}
+          onChange={(event) => props.onChange({ workspaceCatalogText: event.target.value })}
+          spellCheck={false}
+          rows={4}
+          placeholder="workspace-ref | Display name | ~/workspace | read,write"
+        />
+      </label>
+      <div className="cloud-status-row">
+        <span className={`connection-pill ${cloudReadinessTone(props.readiness)}`}>{cloudReadinessLabel(props.readiness)}</span>
+        <span className="muted">Settings are stored locally in this Desktop profile.</span>
+      </div>
+      {props.notice ? <div className="notice success">{props.notice}</div> : null}
+      {props.error ? <div className="notice error">{props.error}</div> : null}
+      <div className="cloud-actions">
+        <button className="primary-button" type="submit">Save setup</button>
+        <button className="ghost-button" type="button" onClick={props.onStop} disabled={props.lifecycleState === "stopped"}>Stop</button>
+      </div>
     </form>
   );
 }
@@ -697,6 +841,14 @@ function summarizeRuns(runs: OperatorRun[]) {
   };
 }
 
+function safeCloudWorkspaceCount(value: string): number {
+  try {
+    return parseWorkspaceCatalogText(value).length;
+  } catch {
+    return 0;
+  }
+}
+
 function connectionTone(status: OperatorConnectionStatus): string {
   if (status === "connected") return "success";
   if (status === "checking") return "active";
@@ -727,6 +879,35 @@ function streamLabel(status: StreamState): string {
     case "error":
       return "Stream error";
   }
+}
+
+function cloudReadinessLabel(status: DesktopCloudConnectionReadiness): string {
+  switch (status) {
+    case "missing_gateway":
+      return "Gateway missing";
+    case "missing_token":
+      return "Token missing";
+    case "missing_device":
+      return "Device missing";
+    case "ready":
+      return "Ready";
+  }
+}
+
+function cloudReadinessTone(status: DesktopCloudConnectionReadiness): string {
+  if (status === "ready") return "success";
+  if (status === "missing_token" || status === "missing_device") return "warning";
+  return "danger";
+}
+
+function cloudLifecycleLabel(state: CloudLifecycleState, readiness: DesktopCloudConnectionReadiness): string {
+  if (state === "ready") return "Lifecycle ready";
+  return readiness === "ready" ? "Stopped" : "Needs setup";
+}
+
+function cloudLifecycleTone(state: CloudLifecycleState, readiness: DesktopCloudConnectionReadiness): string {
+  if (state === "ready") return "success";
+  return readiness === "ready" ? "muted" : cloudReadinessTone(readiness);
 }
 
 function runTone(status: OperatorRunStatus): string {
