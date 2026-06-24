@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { stdin } from "node:process";
+import { fileURLToPath } from "node:url";
 import {
   startDesktopCloudAgentFromPayload,
   type DesktopCloudAgentApprovalMode,
@@ -111,7 +112,7 @@ function printHelp(): void {
   ].join("\n"));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   runDesktopCloudAgentCli(process.argv.slice(2)).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
