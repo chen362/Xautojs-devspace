@@ -1,8 +1,5 @@
 import assert from "node:assert/strict";
-import type {
-  CloudDeviceAuthorizationRecord,
-  CloudDeviceAuthorizationStatus,
-} from "./cloud-device-code-auth.js";
+import type { CloudDeviceAuthorizationStatus } from "./cloud-device-code-auth.js";
 import {
   PostgresCloudDeviceAuthorizationStore,
   type PostgresCloudDeviceAuthorizationQuery,
