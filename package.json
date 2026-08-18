@@ -47,6 +47,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && npm run desktop:typecheck",
     "release:sync-lockfile": "node scripts/sync-package-lock-root.mjs",
     "release:check": "node scripts/check-release-packaging.mjs",
+    "security:check": "npm audit --omit=dev",
     "prepublishOnly": "npm run release:check && npm run typecheck && npm test && npm run build"
   },
   "keywords": [
