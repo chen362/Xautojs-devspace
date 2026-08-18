@@ -31,6 +31,7 @@ export function registerCloudDesktopMcpTools(
         expiresAt: z.string().optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      _meta: {},
     },
     async (input) => {
       const result = await service.connectDesktop(getExecutionContext(), input);
@@ -62,6 +63,7 @@ export function registerCloudDesktopMcpTools(
         })),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      _meta: {},
     },
     async () => {
       const result = await service.listDevices(getExecutionContext());
@@ -97,6 +99,7 @@ export function registerCloudDesktopMcpTools(
         catalogPending: z.boolean(),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      _meta: {},
     },
     async (input) => {
       const result = await service.listWorkspaces(getExecutionContext(), input);
@@ -134,6 +137,7 @@ export function registerCloudDesktopMcpTools(
         idempotentReplay: z.boolean().optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      _meta: {},
     },
     async (input) => {
       const result = await service.connectWorkspace(getExecutionContext(), input);
