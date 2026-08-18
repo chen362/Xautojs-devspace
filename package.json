@@ -65,12 +65,11 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@pierre/diffs": "^1.2.5",
     "better-sqlite3": "^12.10.0",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "^0.45.0",
     "express": "^5.2.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "semver": "^7.8.4",
-    "ws": "8.21.0",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
@@ -88,13 +87,12 @@
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@types/semver": "^7.7.1",
-    "@vitejs/plugin-react": "^6.0.2",
+    "@vitejs/plugin-react": "^6.0.3",
     "tsx": "^4.22.3",
     "typescript": "^6.0.3",
     "vite": "^8.0.14"
   },
   "overrides": {
-    "protobufjs": "7.6.4",
-    "ws": "8.21.0"
+    "protobufjs": "7.6.4"
   }
 }
