@@ -106,12 +106,18 @@ export class LocalAgentToolReceiver {
   private async executeToolCall(
     message: Extract<CloudDeviceGatewayMessage, { type: "tool.call" }>,
   ): Promise<unknown> {
+    const context: DevspaceToolExecutionContext = {
+      ...message.context,
+      deviceId: message.deviceId,
+      toolCallId: message.toolCallId,
+    };
+
     switch (message.tool) {
       case "open_workspace":
-        return this.executor.openWorkspace(message.context, message.input as OpenWorkspaceToolInput);
+        return this.executor.openWorkspace(context, message.input as OpenWorkspaceToolInput);
       case "read_file":
         return this.executor.readFile(
-          message.context,
+          context,
           requiredWorkspaceId(message.workspaceId),
           message.input as ReadFileToolInput,
         );
@@ -119,29 +125,29 @@ export class LocalAgentToolReceiver {
         const workspaceId = requiredWorkspaceId(message.workspaceId);
         const input = message.input as WriteFileToolInput;
         await this.requireApproval(message, "write_file", workspaceId, input, "medium", writeApprovalTitle(input));
-        return this.executor.writeFile(message.context, workspaceId, input);
+        return this.executor.writeFile(context, workspaceId, input);
       }
       case "edit_file": {
         const workspaceId = requiredWorkspaceId(message.workspaceId);
         const input = message.input as EditFileToolInput;
         await this.requireApproval(message, "edit_file", workspaceId, input, "medium", editApprovalTitle(input));
-        return this.executor.editFile(message.context, workspaceId, input);
+        return this.executor.editFile(context, workspaceId, input);
       }
       case "grep_files":
         return this.executor.grepFiles(
-          message.context,
+          context,
           requiredWorkspaceId(message.workspaceId),
           message.input as GrepFilesToolInput,
         );
       case "find_files":
         return this.executor.findFiles(
-          message.context,
+          context,
           requiredWorkspaceId(message.workspaceId),
           message.input as FindFilesToolInput,
         );
       case "list_directory":
         return this.executor.listDirectory(
-          message.context,
+          context,
           requiredWorkspaceId(message.workspaceId),
           message.input as ListDirectoryToolInput,
         );
@@ -149,10 +155,10 @@ export class LocalAgentToolReceiver {
         const workspaceId = requiredWorkspaceId(message.workspaceId);
         const input = message.input as RunShellToolInput;
         await this.requireApproval(message, "run_shell", workspaceId, input, "high", shellApprovalTitle(input));
-        return this.executor.runShell(message.context, workspaceId, input);
+        return this.executor.runShell(context, workspaceId, input);
       }
       case "show_changes":
-        return this.executor.showChanges(message.context, message.input as ShowChangesToolInput);
+        return this.executor.showChanges(context, message.input as ShowChangesToolInput);
     }
   }
 
@@ -171,7 +177,11 @@ export class LocalAgentToolReceiver {
       toolCallId: message.toolCallId,
       tool,
       workspaceId,
-      context: message.context,
+      context: {
+        ...message.context,
+        deviceId: message.deviceId,
+        toolCallId: message.toolCallId,
+      },
       input,
       risk,
       title,
