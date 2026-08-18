@@ -27,7 +27,6 @@ const deviceToken = issueCloudGatewayDeviceToken({
   deviceId: "dev_prod_a",
   desktopInstanceId: "desk_prod_a",
   issuedAt: "2026-06-24T00:00:00.000Z",
-  expiresAt: "2026-06-24T01:00:00.000Z",
 }, authSecret);
 const routingStore = new InMemoryCloudRoutingStore();
 const sessionBindings = new InMemoryCloudSessionBindingService(routingStore);
