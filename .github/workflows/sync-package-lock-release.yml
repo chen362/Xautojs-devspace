@@ -1,24 +1,9 @@
 name: Sync Package Lock Release Identity
 
-# Keeps release-facing package-lock metadata aligned with package.json.
-# The workflow may push a maintenance branch, but repository policy can prohibit
-# GitHub Actions from creating pull requests with GITHUB_TOKEN. Maintainers can
-# open the generated branch as a PR manually.
+# Rebuilds package-lock.json from package.json so CI's npm ci always installs
+# the exact dependency graph declared by the repository.
 on:
   workflow_dispatch:
-    inputs:
-      base_branch:
-        description: Base branch to sync from.
-        required: true
-        default: main
-      work_branch:
-        description: Branch that will receive the generated package-lock.json commit.
-        required: true
-        default: automation/package-lock-release-identity
-      commit_message:
-        description: Commit message for the generated package-lock.json update.
-        required: true
-        default: Fix package-lock release identity
   push:
     branches:
       - main
@@ -33,25 +18,23 @@ permissions:
   contents: write
 
 concurrency:
-  group: sync-package-lock-release-${{ github.event.inputs.base_branch || github.ref_name }}
+  group: sync-package-lock-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   sync-package-lock:
-    name: Sync package-lock root metadata
+    name: Rebuild package-lock.json
     runs-on: ubuntu-latest
     env:
-      BASE_BRANCH: ${{ github.event.inputs.base_branch || github.ref_name }}
-      WORK_BRANCH: ${{ github.event.inputs.work_branch || 'automation/package-lock-release-identity' }}
-      COMMIT_MESSAGE: ${{ github.event.inputs.commit_message || 'Fix package-lock release identity' }}
+      NPM_CONFIG_AUDIT: false
+      NPM_CONFIG_FUND: false
 
     steps:
-      - name: Checkout base branch
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.BASE_BRANCH }}
+          ref: main
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -59,8 +42,8 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Sync package-lock root metadata
-        run: npm run release:sync-lockfile
+      - name: Rebuild package-lock.json
+        run: npm install --package-lock-only --ignore-scripts
 
       - name: Verify release packaging metadata
         run: npm run release:check
@@ -74,28 +57,19 @@ jobs:
             echo "package-lock.json is already in sync." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "package-lock.json needs release identity sync:" >> "$GITHUB_STEP_SUMMARY"
-            git diff -- package-lock.json | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+            echo "package-lock.json was regenerated from package.json." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Commit package-lock update
+      - name: Commit package-lock update to main
         if: steps.diff.outputs.changed == 'true'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$WORK_BRANCH"
           git add package-lock.json
-          git commit -m "$COMMIT_MESSAGE"
-          git push --force origin "HEAD:$WORK_BRANCH"
-
-      - name: Summary
-        if: steps.diff.outputs.changed == 'true'
-        shell: bash
-        run: |
-          echo "package-lock.json was updated on branch: $WORK_BRANCH" >> "$GITHUB_STEP_SUMMARY"
-          echo "Open a pull request from $WORK_BRANCH into $BASE_BRANCH to review and merge the change." >> "$GITHUB_STEP_SUMMARY"
+          git commit -m "chore: sync package-lock with package.json"
+          git push origin HEAD:main
 
       - name: Summary
         if: steps.diff.outputs.changed != 'true'
-        run: echo "No package-lock release identity PR was needed."
+        run: echo "No package-lock update was required."
