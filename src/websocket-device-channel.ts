@@ -120,7 +120,6 @@ export class WebSocketDeviceChannel implements CloudDeviceChannel {
           },
         });
       }, this.toolCallTimeoutMs);
-      timeout.unref();
 
       this.pendingToolCalls.set(call.toolCallId, {
         deviceId: call.deviceId,
