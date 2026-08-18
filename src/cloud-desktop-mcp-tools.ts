@@ -37,7 +37,7 @@ export function registerCloudDesktopMcpTools(
       const result = await service.connectDesktop(getExecutionContext(), input);
       return {
         content: [text(`Connected Desktop device ${result.deviceId}.`)],
-        structuredContent: result,
+        structuredContent: { ...result },
       };
     },
   );
@@ -71,7 +71,7 @@ export function registerCloudDesktopMcpTools(
         content: [text(result.devices.length === 0
           ? "No Desktop devices are registered for this owner."
           : `Found ${result.devices.length} Desktop device${result.devices.length === 1 ? "" : "s"}.`)],
-        structuredContent: result,
+        structuredContent: { ...result },
       };
     },
   );
@@ -107,7 +107,7 @@ export function registerCloudDesktopMcpTools(
         content: [text(result.catalogPending
           ? "Workspace catalog is not available yet; connect_workspace requires a catalog entry reported by the Desktop device."
           : `Found ${result.workspaces.length} workspace${result.workspaces.length === 1 ? "" : "s"}.`)],
-        structuredContent: result,
+        structuredContent: { ...result },
       };
     },
   );
@@ -143,7 +143,7 @@ export function registerCloudDesktopMcpTools(
       const result = await service.connectWorkspace(getExecutionContext(), input);
       return {
         content: [text(`Connected workspace ${result.displayName} as ${result.workspaceId}.`)],
-        structuredContent: result,
+        structuredContent: { ...result },
       };
     },
   );
