@@ -6,7 +6,7 @@ on:
       base_branch:
         description: Base branch to sync from.
         required: true
-        default: Xautojs-devspace
+        default: main
       work_branch:
         description: Branch that will receive the generated package-lock.json commit.
         required: true
@@ -17,7 +17,7 @@ on:
         default: Fix package-lock release identity
   push:
     branches:
-      - Xautojs-devspace
+      - main
     paths:
       - package.json
       - package-lock.json
@@ -140,7 +140,7 @@ jobs:
                 body,
                 maintainer_can_modify: true,
               });
-              core.summary.addRaw(`Created PR #${pull.data.number}: ${pull.data.html_url}`).write();
+              core.summary.addRaw(`Created PR #${pull.data.number}: ${pull.html_url}`).write();
             }
 
       - name: Summary
