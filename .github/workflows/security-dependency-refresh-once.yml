@@ -55,20 +55,31 @@ jobs:
           fi
           exit 0
 
-      - name: Verify refreshed lockfiles
+      - name: Commit refreshed lockfiles
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json apps/desktop/src-tauri/Cargo.lock
+          if git diff --cached --quiet; then
+            echo "No lockfile changes required."
+          else
+            git commit -m "security: refresh dependency lockfiles"
+            git push origin HEAD:main
+          fi
+
+      - name: Verify refreshed lockfiles in a clean install
         run: |
           npm ci --ignore-scripts
           npm run release:check
           npm run typecheck
           npm audit --omit=dev --audit-level=high || echo "::warning::npm audit still reports high-severity production findings; Dependabot/upstream remediation may still be required."
 
-      - name: Commit lockfile refresh and remove one-shot workflow
+      - name: Remove one-shot workflow
         shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
+          git fetch origin main
+          git reset --hard origin/main
           git rm .github/workflows/security-dependency-refresh-once.yml
-          git add package-lock.json apps/desktop/src-tauri/Cargo.lock
-          git commit -m "security: refresh dependency lockfiles"
+          git commit -m "ci: remove one-shot security refresh"
           git push origin HEAD:main
