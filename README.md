@@ -22,7 +22,7 @@
 <p align="center">
   <img alt="Package" src="https://img.shields.io/badge/package-xautojs--devspace-blue?style=flat-square" />
   <a href="https://github.com/chen362/Xautojs-devspace/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/chen362/Xautojs-devspace/ci.yml?style=flat-square&branch=main" /></a>
-  <img alt="Node.js" src="https://img.shields.io/badge/node-%3E%3D20.12-green?style=flat-square" />
+  <img alt="Node.js" src="https://img.shields.io/badge/node-%3E%3D22.19-green?style=flat-square" />
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green?style=flat-square" /></a>
 </p>
 
@@ -87,7 +87,7 @@ The goal is not to replace an AI model. The goal is to provide the **local execu
 
 ## Quick Start
 
-Requirements: Node `>=20.12 <27`. Node 22 LTS is recommended.
+Requirements: Node `>=22.19 <27`. Node 22 LTS is recommended.
 
 ```bash
 git clone https://github.com/chen362/Xautojs-devspace.git
