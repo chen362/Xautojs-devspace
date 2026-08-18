@@ -32,12 +32,12 @@ assert.equal(auth?.deviceId, "dev_auth_a");
 assert.equal(await authenticator({ headers: {} } as IncomingMessage), undefined);
 
 await assert.rejects(
-  () => Promise.resolve(verifyCloudGatewayDeviceToken(`${token}x`, secret, "2026-06-24T00:05:00.000Z")),
+  async () => verifyCloudGatewayDeviceToken(`${token}x`, secret, "2026-06-24T00:05:00.000Z"),
   (error: unknown) => error instanceof CloudGatewayAuthError && error.code === "AUTH_INVALID",
 );
 
 await assert.rejects(
-  () => Promise.resolve(verifyCloudGatewayDeviceToken(token, secret, "2026-06-24T00:10:00.000Z")),
+  async () => verifyCloudGatewayDeviceToken(token, secret, "2026-06-24T00:10:00.000Z"),
   (error: unknown) => error instanceof CloudGatewayAuthError && error.code === "AUTH_EXPIRED",
 );
 
