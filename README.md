@@ -14,6 +14,8 @@
 
 <p align="center">
   <a href="README-cn.md">中文</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="docs/project-status.md">Project Status</a> ·
   <a href="docs/setup.md">Documentation</a> ·
   <a href="docs/releases/v1.0.1.md">v1.0.1 Release Notes</a> ·
   <a href="docs/native-agent-runtime.md">Native Agent Runtime</a> ·
@@ -136,6 +138,8 @@ For production deployments, Postgres is used for workspace, automation, and nati
 ## Documentation
 
 - [中文 README](README-cn.md)
+- [Contributing Guide](CONTRIBUTING.md)
+- [Project Status & Roadmap](docs/project-status.md)
 - [Setup Guide](docs/setup.md)
 - [v1.0.1 Release Notes](docs/releases/v1.0.1.md)
 - [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
