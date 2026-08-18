@@ -18,6 +18,7 @@ permissions:
 
 jobs:
   refresh:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_branch == github.event.repository.default_branch
     name: Refresh npm and Cargo lockfiles
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -58,7 +59,7 @@ jobs:
           npm ci --ignore-scripts
           npm run release:check
           npm run typecheck
-          npm run security:check || true
+          npm audit --omit=dev --audit-level=high
 
       - name: Commit lockfile refresh and remove one-shot workflow
         shell: bash
@@ -68,13 +69,5 @@ jobs:
 
           git rm .github/workflows/security-dependency-refresh-once.yml
           git add package-lock.json apps/desktop/src-tauri/Cargo.lock
-
-          if git diff --cached --quiet; then
-            echo "No lockfile changes required."
-            git reset
-            git checkout -- .github/workflows/security-dependency-refresh-once.yml
-            exit 0
-          fi
-
           git commit -m "security: refresh dependency lockfiles"
           git push origin HEAD:main
