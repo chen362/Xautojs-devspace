@@ -1,0 +1,74 @@
+name: One-shot Security Dependency Refresh
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    name: Refresh npm and Cargo lockfiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Refresh npm lockfile
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Attempt Rust security refresh
+        working-directory: apps/desktop/src-tauri
+        shell: bash
+        run: |
+          set +e
+          cargo update -p glib --precise 0.20.0
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "glib could not be refreshed independently; preserving the working Cargo graph."
+            git checkout -- Cargo.lock
+          fi
+          exit 0
+
+      - name: Verify refreshed lockfiles
+        run: |
+          npm ci --ignore-scripts
+          npm run release:check
+          npm run typecheck
+
+      - name: Commit lockfile refresh and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git rm .github/workflows/security-dependency-refresh-once.yml
+          git add package-lock.json apps/desktop/src-tauri/Cargo.lock
+
+          if git diff --cached --quiet; then
+            echo "No lockfile changes required."
+            git reset
+            git checkout -- .github/workflows/security-dependency-refresh-once.yml
+            exit 0
+          fi
+
+          git commit -m "security: refresh dependency lockfiles"
+          git push origin HEAD:main
