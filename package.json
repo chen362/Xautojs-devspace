@@ -1,104 +1,65 @@
 {
   "name": "xautojs-devspace",
   "version": "1.0.1",
-  "description": "Self-hosted MCP workspace bridge and native local agent runtime for ChatGPT.",
+  "description": "Self-hosted MCP workspace and native local agent runtime for ChatGPT and OSS maintenance.",
   "homepage": "https://github.com/chen362/Xautojs-devspace#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/chen362/Xautojs-devspace.git"
-  },
-  "bugs": {
-    "url": "https://github.com/chen362/Xautojs-devspace/issues"
-  },
+  "repository": {"type":"git","url":"git+https://github.com/chen362/Xautojs-devspace.git"},
+  "bugs": {"url":"https://github.com/chen362/Xautojs-devspace/issues"},
   "type": "module",
   "main": "dist/server.js",
-  "engines": {
-    "node": ">=22.19 <27"
-  },
-  "bin": {
-    "devspace": "dist/cli.js",
-    "devspace-desktop-agent": "dist/desktop-cloud-agent-cli.js"
-  },
-  "files": [
-    "dist",
-    "docs",
-    "examples",
-    "migrations",
-    "scripts",
-    "README.md",
-    "README-cn.md"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
+  "engines": {"node": ">=22.19 <27"},
+  "bin": {"devspace":"dist/cli.js","devspace-desktop-agent":"dist/desktop-cloud-agent-cli.js"},
+  "files": ["dist","docs","examples","migrations","scripts","README.md","README-cn.md"],
+  "publishConfig": {"access":"public"},
   "scripts": {
-    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && npm run build:app && tsc -p tsconfig.build.json",
-    "build:app": "vite build",
-    "dev": "node scripts/dev-server.mjs",
-    "start": "node dist/cli.js serve",
-    "desktop:typecheck": "tsc -p apps/desktop/tsconfig.json --noEmit",
-    "desktop:test": "tsx apps/desktop/src/operator-client.test.ts && tsx apps/desktop/src/cloud-connection-client.test.ts && tsx apps/desktop/src/tauri-cloud-lifecycle-client.test.ts && tsx apps/desktop/src/tauri-cloud-token-client.test.ts",
-    "desktop:build": "npm run desktop:typecheck && vite build --config apps/desktop/vite.config.ts",
-    "desktop:bundle": "npm --prefix apps/desktop run tauri:build",
-    "desktop:bundle:debug": "npm --prefix apps/desktop run tauri:build:debug",
-    "test": "tsx src/identity.test.ts && tsx src/mcp-session-identity.test.ts && tsx src/postgres-workspace-store.test.ts && tsx src/postgres-automation-store.test.ts && tsx src/postgres-cloud-routing-store.test.ts && tsx src/postgres-cloud-session-binding.test.ts && tsx src/postgres-cloud-device-connection-store.test.ts && tsx src/postgres-cloud-workspace-catalog-store.test.ts && tsx src/postgres-cloud-device-authorization-store.test.ts && tsx src/postgres-cloud-control-plane-audit-store.test.ts && tsx src/automation-api.test.ts && tsx src/github-webhook-api.test.ts && tsx src/automation-source-cli.test.ts && tsx src/native-agent-policy.test.ts && tsx src/native-agent-hooks.test.ts && tsx src/native-agent-process.test.ts && tsx src/native-agent-workflows.test.ts && tsx src/native-agent-store.test.ts && tsx src/native-agent-operator.test.ts && tsx src/native-agent-runtime.test.ts && tsx src/native-agent-api.test.ts && tsx src/operator-server.test.ts && tsx src/operator-console-ui.test.ts && tsx src/oauth-store.test.ts && tsx src/db/postgres-migrations.test.ts && tsx src/readiness.test.ts && tsx src/config.test.ts && tsx src/roots.test.ts && tsx src/skills.test.ts && tsx src/cloud-routing-store.test.ts && tsx src/cloud-session-binding.test.ts && tsx src/cloud-control-plane-audit.test.ts && tsx src/cloud-workspace-catalog-store.test.ts && tsx src/cloud-device-code-auth.test.ts && tsx src/cloud-device-code-api.test.ts && tsx src/cloud-gateway-http-routes.test.ts && tsx src/cloud-gateway-auth.test.ts && tsx src/cloud-workspace-selection-service.test.ts && tsx src/gateway-mcp-tool-executor.test.ts && tsx src/websocket-device-channel.test.ts && tsx src/cloud-agent-control-plane.test.ts && tsx src/cloud-production-gateway-wiring.test.ts && tsx src/local-agent-outbound-client.test.ts && tsx src/local-agent-receiver-approval.test.ts && tsx src/desktop-outbound-agent-lifecycle.test.ts && tsx src/desktop-cloud-agent-runner.test.ts && tsx src/remote-mcp-tool-executor.test.ts && tsx src/local-mcp-tool-executor.test.ts && tsx src/workspaces.test.ts && tsx src/workspace-identity.test.ts && tsx src/review-checkpoints.test.ts && npm run desktop:test",
-    "test:postgres": "tsx src/postgres.integration.test.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit && npm run desktop:typecheck",
-    "release:sync-lockfile": "node scripts/sync-package-lock-root.mjs",
-    "release:check": "node scripts/check-release-packaging.mjs",
-    "security:check": "npm audit --omit=dev",
-    "prepublishOnly": "npm run release:check && npm run typecheck && npm test && npm run build"
+    "clean":"node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build":"npm run clean && npm run build:app && tsc -p tsconfig.build.json",
+    "build:app":"vite build",
+    "dev":"node scripts/dev-server.mjs",
+    "start":"node dist/cli.js serve",
+    "desktop:typecheck":"tsc -p apps/desktop/tsconfig.json --noEmit",
+    "desktop:test":"tsx apps/desktop/src/operator-client.test.ts && tsx apps/desktop/src/cloud-connection-client.test.ts && tsx apps/desktop/src/tauri-cloud-lifecycle-client.test.ts && tsx apps/desktop/src/tauri-cloud-token-client.test.ts",
+    "desktop:build":"npm run desktop:typecheck && vite build --config apps/desktop/vite.config.ts",
+    "desktop:bundle":"npm --prefix apps/desktop run tauri:build",
+    "desktop:bundle:debug":"npm --prefix apps/desktop run tauri:build:debug",
+    "test":"tsx src/identity.test.ts && tsx src/mcp-session-identity.test.ts && tsx src/postgres-workspace-store.test.ts && tsx src/postgres-automation-store.test.ts && tsx src/postgres-cloud-routing-store.test.ts && tsx src/postgres-cloud-session-binding.test.ts && tsx src/postgres-cloud-device-connection-store.test.ts && tsx src/postgres-cloud-workspace-catalog-store.test.ts && tsx src/postgres-cloud-device-authorization-store.test.ts && tsx src/postgres-cloud-control-plane-audit-store.test.ts && tsx src/automation-api.test.ts && tsx src/github-webhook-api.test.ts && tsx src/automation-source-cli.test.ts && tsx src/native-agent-policy.test.ts && tsx src/native-agent-hooks.test.ts && tsx src/native-agent-process.test.ts && tsx src/native-agent-workflows.test.ts && tsx src/native-agent-store.test.ts && tsx src/native-agent-operator.test.ts && tsx src/native-agent-runtime.test.ts && tsx src/native-agent-api.test.ts && tsx src/operator-server.test.ts && tsx src/operator-console-ui.test.ts && tsx src/oauth-store.test.ts && tsx src/db/postgres-migrations.test.ts && tsx src/readiness.test.ts && tsx src/config.test.ts && tsx src/roots.test.ts && tsx src/skills.test.ts && tsx src/cloud-routing-store.test.ts && tsx src/cloud-session-binding.test.ts && tsx src/cloud-control-plane-audit.test.ts && tsx src/cloud-workspace-catalog-store.test.ts && tsx src/cloud-device-code-auth.test.ts && tsx src/cloud-device-code-api.test.ts && tsx src/cloud-gateway-http-routes.test.ts && tsx src/cloud-gateway-auth.test.ts && tsx src/cloud-workspace-selection-service.test.ts && tsx src/gateway-mcp-tool-executor.test.ts && tsx src/websocket-device-channel.test.ts && tsx src/cloud-agent-control-plane.test.ts && tsx src/cloud-production-gateway-wiring.test.ts && tsx src/local-agent-outbound-client.test.ts && tsx src/local-agent-receiver-approval.test.ts && tsx src/desktop-outbound-agent-lifecycle.test.ts && tsx src/desktop-cloud-agent-runner.test.ts && tsx src/remote-mcp-tool-executor.test.ts && tsx src/local-mcp-tool-executor.test.ts && tsx src/workspaces.test.ts && tsx src/workspace-identity.test.ts && tsx src/review-checkpoints.test.ts && npm run desktop:test",
+    "test:postgres":"tsx src/postgres.integration.test.ts",
+    "typecheck":"tsc -p tsconfig.json --noEmit && npm run desktop:typecheck",
+    "release:sync-lockfile":"node scripts/sync-package-lock-root.mjs",
+    "release:check":"node scripts/check-release-packaging.mjs",
+    "security:check":"npm audit --omit=dev",
+    "prepublishOnly":"npm run release:check && npm run typecheck && npm test && npm run build"
   },
-  "keywords": [
-    "mcp",
-    "chatgpt",
-    "devspace",
-    "xautojs",
-    "agent-runtime"
-  ],
-  "author": "",
-  "license": "MIT",
-  "dependencies": {
-    "@clack/prompts": "^1.5.1",
-    "@earendil-works/pi-coding-agent": "^0.79.4",
-    "@modelcontextprotocol/ext-apps": "^1.7.2",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@pierre/diffs": "^1.2.5",
-    "better-sqlite3": "^12.10.0",
-    "drizzle-orm": "^0.45.2",
-    "express": "^5.2.1",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "semver": "^7.8.4",
-    "zod": "^4.4.3"
+  "keywords":["mcp","chatgpt","devspace","xautojs","agent-runtime"],
+  "author":"",
+  "license":"MIT",
+  "dependencies":{
+    "@clack/prompts":"^1.5.1",
+    "@earendil-works/pi-coding-agent":"^0.79.4",
+    "@modelcontextprotocol/ext-apps":"^1.7.2",
+    "@modelcontextprotocol/sdk":"^1.29.0",
+    "@pierre/diffs":"^1.2.5",
+    "better-sqlite3":"^12.10.0",
+    "drizzle-orm":"^0.45.2",
+    "express":"^5.2.1",
+    "react":"^19.2.6",
+    "react-dom":"^19.2.6",
+    "semver":"^7.8.4",
+    "zod":"^4.4.3"
   },
-  "peerDependencies": {
-    "pg": "^8.16.3"
+  "peerDependencies":{"pg":"^8.16.3"},
+  "peerDependenciesMeta":{"pg":{"optional":true}},
+  "devDependencies":{
+    "@types/better-sqlite3":"^7.6.13",
+    "@types/express":"^5.0.6",
+    "@types/node":"^25.9.1",
+    "@types/react":"^19.2.15",
+    "@types/react-dom":"^19.2.3",
+    "@types/semver":"^7.7.1",
+    "@vitejs/plugin-react":"^6.0.2",
+    "tsx":"^4.22.3",
+    "typescript":"^6.0.3",
+    "vite":"^8.0.14"
   },
-  "peerDependenciesMeta": {
-    "pg": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/express": "^5.0.6",
-    "@types/node": "^25.9.1",
-    "@types/react": "^19.2.15",
-    "@types/react-dom": "^19.2.3",
-    "@types/semver": "^7.7.1",
-    "@vitejs/plugin-react": "^6.0.2",
-    "tsx": "^4.22.3",
-    "typescript": "^6.0.3",
-    "vite": "^8.0.14"
-  },
-  "overrides": {
-    "protobufjs": "7.6.4",
-    "ws": "8.21.1",
-    "fast-uri": "3.1.5",
-    "ip-address": "10.3.1",
-    "hono": "4.12.27",
-    "undici": "8.5.0"
-  }
+  "overrides":{"protobufjs":"7.6.4","ws":"8.21.1","fast-uri":"3.1.5","ip-address":"10.3.1","hono":"4.12.27","undici":"8.5.0"}
 }
