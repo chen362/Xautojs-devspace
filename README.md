@@ -15,6 +15,7 @@
 <p align="center">
   <a href="README-cn.md">中文</a> ·
   <a href="docs/setup.md">Documentation</a> ·
+  <a href="docs/releases/v1.0.1.md">v1.0.1 Release Notes</a> ·
   <a href="docs/native-agent-runtime.md">Native Agent Runtime</a> ·
   <a href="docs/security.md">Security Model</a>
 </p>
@@ -136,6 +137,7 @@ For production deployments, Postgres is used for workspace, automation, and nati
 
 - [中文 README](README-cn.md)
 - [Setup Guide](docs/setup.md)
+- [v1.0.1 Release Notes](docs/releases/v1.0.1.md)
 - [ChatGPT Coding Workflow](docs/chatgpt-coding-workflow.md)
 - [Configuration Reference](docs/configuration.md)
 - [Security Model](docs/security.md)
@@ -168,7 +170,7 @@ npm run test:postgres
 
 ## Platform Support
 
-Linux and macOS are fully supported. Windows is supported with Git Bash, WSL, MSYS2, or Cygwin Bash; pure PowerShell/cmd-only environments have limited shell-workflow compatibility.
+Linux and macOS are fully supported. Windows is supported with Git Bash, WSL, MSYS2, or Cygwin Bash; pure PowerShell/cmd-only shell workflows have limited compatibility.
 
 ## License
 
