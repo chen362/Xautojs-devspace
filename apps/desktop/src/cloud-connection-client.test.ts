@@ -11,6 +11,34 @@ import {
   type DesktopCloudConnectionSettings,
 } from "./cloud-connection-client.js";
 
+class MemoryStorage implements Storage {
+  private readonly values = new Map<string, string>();
+
+  get length(): number {
+    return this.values.size;
+  }
+
+  clear(): void {
+    this.values.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return [...this.values.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+}
+
 assert.equal(normalizeGatewayWsUrl("https://gateway.example.com/cloud/devices/ws/"), "wss://gateway.example.com/cloud/devices/ws");
 assert.equal(normalizeGatewayWsUrl("gateway.example.com/cloud/devices/ws"), "wss://gateway.example.com/cloud/devices/ws");
 assert.equal(normalizeGatewayWsUrl("http://127.0.0.1:8787/cloud/devices/ws"), "ws://127.0.0.1:8787/cloud/devices/ws");
@@ -46,31 +74,3 @@ assert.equal(readCloudConnectionSettings(storage).deviceId, "dev_desktop_a");
 
 assert.equal(cloudConnectionReadiness({ ...settings, deviceToken: "" }), "missing_token");
 assert.equal(cloudConnectionReadiness({ ...settings, deviceId: "" }), "missing_device");
-
-class MemoryStorage implements Storage {
-  private readonly values = new Map<string, string>();
-
-  get length(): number {
-    return this.values.size;
-  }
-
-  clear(): void {
-    this.values.clear();
-  }
-
-  getItem(key: string): string | null {
-    return this.values.get(key) ?? null;
-  }
-
-  key(index: number): string | null {
-    return [...this.values.keys()][index] ?? null;
-  }
-
-  removeItem(key: string): void {
-    this.values.delete(key);
-  }
-
-  setItem(key: string, value: string): void {
-    this.values.set(key, value);
-  }
-}
